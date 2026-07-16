@@ -113,6 +113,7 @@ fun MainScreen(
     
     var mediaToDelete by remember { mutableStateOf<MediaEntity?>(null) }
     var multiMediaToDelete by remember { mutableStateOf<List<MediaEntity>?>(null) }
+    var folderToDelete by remember { mutableStateOf<Pair<String, List<MediaEntity>>?>(null) }
 
     var isSelectModeActive by remember { mutableStateOf(false) }
     val selectedMediaSet = remember { mutableStateListOf<MediaEntity>() }
@@ -132,6 +133,7 @@ fun MainScreen(
                         showAboutDialog || 
                         mediaToDelete != null ||
                         multiMediaToDelete != null ||
+                        folderToDelete != null ||
                         selectedTab != "Play"
 
     BackHandler(enabled = isBackEnabled) {
@@ -182,6 +184,9 @@ fun MainScreen(
             }
             multiMediaToDelete != null -> {
                 multiMediaToDelete = null
+            }
+            folderToDelete != null -> {
+                folderToDelete = null
             }
             selectedTab != "Play" -> {
                 viewModel.selectTab("Play")
@@ -393,14 +398,22 @@ fun MainScreen(
                 ) {
                     val accentOrange = MaterialTheme.colorScheme.primary
                     
-                    Crossfade(targetState = selectionState.isInSelectionMode, label = "TopBarCrossfade") { inSelection ->
+                    val context = LocalContext.current
+                    val getFilesForFolder = { folderName: String ->
+                        mediaList.filter { item ->
+                            item.genre != "Live Stream" && (java.io.File(item.path).parentFile?.name ?: "Root Folder") == folderName
+                        }
+                    }
+                    val isSelectionActive = isSelectModeActive || selectionState.isInSelectionMode
+                    
+                    Crossfade(targetState = isSelectionActive, label = "TopBarCrossfade") { inSelection ->
                         if (inSelection) {
                             // Contextual Action Top Bar (M3 Complaint)
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .statusBarsPadding()
-                                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                                    .padding(horizontal = 16.dp, vertical = 8.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
@@ -408,10 +421,22 @@ fun MainScreen(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    IconButton(onClick = { viewModel.clearSelection() }) {
+                                    IconButton(onClick = { 
+                                        if (isSelectModeActive) {
+                                            isSelectModeActive = false
+                                            selectedMediaSet.clear()
+                                        }
+                                        if (selectionState.isInSelectionMode) {
+                                            viewModel.clearSelection()
+                                        }
+                                    }) {
                                         Icon(Icons.Default.Close, contentDescription = "Clear Selection", tint = accentOrange)
                                     }
-                                    val totalCount = selectionState.selectedFolderPaths.size + selectionState.selectedVideoIds.size
+                                    val totalCount = if (isSelectModeActive) {
+                                        selectedMediaSet.size
+                                    } else {
+                                        selectionState.selectedFolderPaths.size + selectionState.selectedVideoIds.size
+                                    }
                                     Text(
                                         text = "$totalCount Selected",
                                         fontSize = 18.sp,
@@ -424,54 +449,270 @@ fun MainScreen(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                                 ) {
-                                    TextButton(
-                                        onClick = {
-                                            if (browseScreenState is BrowseScreenState.FileList) {
-                                                // Select all videos in the active folder view
-                                                val folderName = (browseScreenState as BrowseScreenState.FileList).folderName
-                                                val folderVideos = mediaList.filter {
-                                                    it.genre != "Live Stream" && it.isVideo &&
-                                                    (java.io.File(it.path).parentFile?.name ?: "Root Folder") == folderName
-                                                }.map { it.uriString }
-                                                viewModel.selectAllVideos(folderVideos)
-                                            } else {
-                                                // Select all folders
-                                                val allFolders = mediaList.filter { it.genre != "Live Stream" && it.isVideo }
-                                                    .map { java.io.File(it.path).parentFile?.name ?: "Root Folder" }.toSet()
-                                                allFolders.forEach { folderName ->
-                                                    viewModel.toggleFolderSelection(folderName)
-                                                }
+                                    if (isSelectModeActive) {
+                                        // File selection actions
+                                        if (selectedMediaSet.size == 1) {
+                                            val selectedItem = selectedMediaSet.first()
+                                            // Single file selected: show ALL options!
+                                            // 1. Play
+                                            IconButton(onClick = {
+                                                val currentList = mediaList.filter { it.genre != "Live Stream" }
+                                                viewModel.setPlayingItemWithQueue(selectedItem, currentList)
+                                                onPlayItem(selectedItem)
+                                                isSelectModeActive = false
+                                                selectedMediaSet.clear()
+                                            }) {
+                                                Icon(Icons.Default.PlayArrow, contentDescription = "Play", tint = accentOrange)
+                                            }
+                                            // 2. Play Next (Insert Next in Queue)
+                                            IconButton(onClick = {
+                                                viewModel.insertNext(selectedItem)
+                                                android.widget.Toast.makeText(context, "Inserted next in queue", android.widget.Toast.LENGTH_SHORT).show()
+                                                isSelectModeActive = false
+                                                selectedMediaSet.clear()
+                                            }) {
+                                                Icon(Icons.Default.Queue, contentDescription = "Play Next", tint = accentOrange)
+                                            }
+                                            // 3. Add to Queue
+                                            IconButton(onClick = {
+                                                viewModel.addToQueue(listOf(selectedItem))
+                                                android.widget.Toast.makeText(context, "Added to play queue", android.widget.Toast.LENGTH_SHORT).show()
+                                                isSelectModeActive = false
+                                                selectedMediaSet.clear()
+                                            }) {
+                                                Icon(Icons.Default.AddToPhotos, contentDescription = "Add to Queue", tint = accentOrange)
+                                            }
+                                            // 4. Add to Playlist
+                                            IconButton(onClick = {
+                                                showPlaylistPickerForMedia = selectedItem
+                                                isSelectModeActive = false
+                                                selectedMediaSet.clear()
+                                            }) {
+                                                Icon(Icons.Default.PlaylistAdd, contentDescription = "Add to Playlist", tint = accentOrange)
+                                            }
+                                            // 5. Info
+                                            IconButton(onClick = {
+                                                showInfoDialogForMedia = selectedItem
+                                            }) {
+                                                Icon(Icons.Default.Info, contentDescription = "Info", tint = accentOrange)
+                                            }
+                                            // 6. Delete (from storage)
+                                            IconButton(onClick = {
+                                                mediaToDelete = selectedItem
+                                                isSelectModeActive = false
+                                                selectedMediaSet.clear()
+                                            }) {
+                                                Icon(Icons.Default.Delete, contentDescription = "Delete File", tint = MaterialTheme.colorScheme.error)
+                                            }
+                                        } else if (selectedMediaSet.size > 1) {
+                                            // Multi file selected: show BULK options only!
+                                            // 1. Play Selected
+                                            IconButton(onClick = {
+                                                viewModel.playAll(selectedMediaSet.toList())
+                                                isSelectModeActive = false
+                                                selectedMediaSet.clear()
+                                            }) {
+                                                Icon(Icons.Default.PlayArrow, contentDescription = "Play Selected", tint = accentOrange)
+                                            }
+                                            // 2. Queue Selected
+                                            IconButton(onClick = {
+                                                viewModel.addToQueue(selectedMediaSet.toList())
+                                                android.widget.Toast.makeText(context, "Added selected files to queue", android.widget.Toast.LENGTH_SHORT).show()
+                                                isSelectModeActive = false
+                                                selectedMediaSet.clear()
+                                            }) {
+                                                Icon(Icons.Default.PlaylistAdd, contentDescription = "Queue Selected", tint = accentOrange)
+                                            }
+                                            // 3. Add Selected to Playlist
+                                            IconButton(onClick = {
+                                                showPlaylistPickerForFolder = selectedMediaSet.toList()
+                                                isSelectModeActive = false
+                                                selectedMediaSet.clear()
+                                            }) {
+                                                Icon(Icons.Default.QueueMusic, contentDescription = "Add Selected to Playlist", tint = accentOrange)
+                                            }
+                                            // 4. Delete Selected
+                                            IconButton(onClick = {
+                                                multiMediaToDelete = selectedMediaSet.toList()
+                                                isSelectModeActive = false
+                                                selectedMediaSet.clear()
+                                            }) {
+                                                Icon(Icons.Default.Delete, contentDescription = "Delete Selected", tint = MaterialTheme.colorScheme.error)
                                             }
                                         }
-                                    ) {
-                                        Text(
-                                            text = "Select All",
-                                            color = accentOrange,
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 13.sp
-                                        )
-                                    }
-
-                                    // Add Selected to Playlist (Videos only)
-                                    IconButton(
-                                        onClick = {
-                                            val selectedItems = mediaList.filter { selectionState.selectedVideoIds.contains(it.uriString) }
-                                            if (selectedItems.isNotEmpty()) {
-                                                showPlaylistPickerForFolder = selectedItems
+                                    } else {
+                                        // Folder-tab / Browse-tab selection actions
+                                        val totalSelected = selectionState.selectedFolderPaths.size + selectionState.selectedVideoIds.size
+                                        if (totalSelected == 1) {
+                                            // Single item selected in Browse/Folder tab
+                                            if (selectionState.selectedFolderPaths.isNotEmpty()) {
+                                                val folderPath = selectionState.selectedFolderPaths.first()
+                                                val folderFiles = getFilesForFolder(folderPath)
+                                                
+                                                // Single folder options: Play, Queue, Pin, Ban, Delete
+                                                // 1. Play All
+                                                IconButton(onClick = {
+                                                    if (folderFiles.isNotEmpty()) {
+                                                        viewModel.playAll(folderFiles)
+                                                    }
+                                                    viewModel.clearSelection()
+                                                }, enabled = folderFiles.isNotEmpty()) {
+                                                    Icon(Icons.Default.PlayArrow, contentDescription = "Play Folder", tint = if (folderFiles.isNotEmpty()) accentOrange else Color.Gray)
+                                                }
+                                                // 2. Queue All
+                                                IconButton(onClick = {
+                                                    if (folderFiles.isNotEmpty()) {
+                                                        viewModel.addToQueue(folderFiles)
+                                                    }
+                                                    viewModel.clearSelection()
+                                                }, enabled = folderFiles.isNotEmpty()) {
+                                                    Icon(Icons.Default.PlaylistAdd, contentDescription = "Queue Folder", tint = if (folderFiles.isNotEmpty()) accentOrange else Color.Gray)
+                                                }
+                                                // 3. Favorite/Pin Folder
+                                                val isPinned = try {
+                                                    val array = org.json.JSONArray(prefs.favoriteFoldersJson)
+                                                    var found = false
+                                                    for (i in 0 until array.length()) {
+                                                        if (array.getString(i) == folderPath) found = true
+                                                    }
+                                                    found
+                                                } catch (e: Exception) { false }
+                                                
+                                                IconButton(onClick = {
+                                                    viewModel.toggleFavoriteFolder(folderPath)
+                                                    viewModel.clearSelection()
+                                                }) {
+                                                    Icon(
+                                                        imageVector = if (isPinned) Icons.Default.FolderOff else Icons.Default.FolderSpecial,
+                                                        contentDescription = if (isPinned) "Unpin Folder" else "Pin Folder",
+                                                        tint = accentOrange
+                                                    )
+                                                }
+                                                // 4. Ban Folder
+                                                val isBanned = try {
+                                                    val array = org.json.JSONArray(prefs.bannedFoldersJson)
+                                                    var found = false
+                                                    for (i in 0 until array.length()) {
+                                                        if (array.getString(i) == folderPath) found = true
+                                                    }
+                                                    found
+                                                } catch (e: Exception) { false }
+                                                
+                                                IconButton(onClick = {
+                                                    viewModel.toggleBannedFolder(folderPath)
+                                                    viewModel.clearSelection()
+                                                }) {
+                                                    Icon(
+                                                        imageVector = if (isBanned) Icons.Default.Folder else Icons.Default.Block,
+                                                        contentDescription = if (isBanned) "Unban Folder" else "Ban Folder",
+                                                        tint = accentOrange
+                                                    )
+                                                }
+                                                // 5. Delete Folder from Storage (Real delete!)
+                                                IconButton(onClick = {
+                                                    folderToDelete = Pair(folderPath, folderFiles)
+                                                    viewModel.clearSelection()
+                                                }) {
+                                                    Icon(Icons.Default.Delete, contentDescription = "Delete Folder", tint = MaterialTheme.colorScheme.error)
+                                                }
+                                            } else {
+                                                // Single file inside folder is selected in Browse tab
+                                                val fileUri = selectionState.selectedVideoIds.first()
+                                                val selectedItem = mediaList.find { it.uriString == fileUri }
+                                                if (selectedItem != null) {
+                                                    // Single file options: Play, Queue, Playlist, Info, Delete
+                                                    // 1. Play
+                                                    IconButton(onClick = {
+                                                        viewModel.setPlayingItemWithQueue(selectedItem, mediaList.filter { it.genre != "Live Stream" })
+                                                        onPlayItem(selectedItem)
+                                                        viewModel.clearSelection()
+                                                    }) {
+                                                        Icon(Icons.Default.PlayArrow, contentDescription = "Play", tint = accentOrange)
+                                                    }
+                                                    // 2. Play Next
+                                                    IconButton(onClick = {
+                                                        viewModel.insertNext(selectedItem)
+                                                        viewModel.clearSelection()
+                                                    }) {
+                                                        Icon(Icons.Default.Queue, contentDescription = "Play Next", tint = accentOrange)
+                                                    }
+                                                    // 3. Add to Queue
+                                                    IconButton(onClick = {
+                                                        viewModel.addToQueue(listOf(selectedItem))
+                                                        viewModel.clearSelection()
+                                                    }) {
+                                                        Icon(Icons.Default.AddToPhotos, contentDescription = "Add to Queue", tint = accentOrange)
+                                                    }
+                                                    // 4. Add to Playlist
+                                                    IconButton(onClick = {
+                                                        showPlaylistPickerForMedia = selectedItem
+                                                        viewModel.clearSelection()
+                                                    }) {
+                                                        Icon(Icons.Default.PlaylistAdd, contentDescription = "Add to Playlist", tint = accentOrange)
+                                                    }
+                                                    // 5. Info
+                                                    IconButton(onClick = {
+                                                        showInfoDialogForMedia = selectedItem
+                                                    }) {
+                                                        Icon(Icons.Default.Info, contentDescription = "Info", tint = accentOrange)
+                                                    }
+                                                    // 6. Delete
+                                                    IconButton(onClick = {
+                                                        mediaToDelete = selectedItem
+                                                        viewModel.clearSelection()
+                                                    }) {
+                                                        Icon(Icons.Default.Delete, contentDescription = "Delete File", tint = MaterialTheme.colorScheme.error)
+                                                    }
+                                                }
                                             }
-                                        },
-                                        enabled = selectionState.selectedVideoIds.isNotEmpty()
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.PlaylistAdd, 
-                                            contentDescription = "Add Selected to Playlist", 
-                                            tint = if (selectionState.selectedVideoIds.isNotEmpty()) accentOrange else Color.Gray
-                                        )
-                                    }
-
-                                    // Delete Selected Items
-                                    IconButton(onClick = { viewModel.deleteSelectedItems() }) {
-                                        Icon(Icons.Default.Delete, contentDescription = "Delete Selected", tint = MaterialTheme.colorScheme.error)
+                                        } else if (totalSelected > 1) {
+                                            // Multiple folders/files selected in Browse/Folder tab
+                                            // Show BULK options only: Play, Queue, Playlist, Delete
+                                            val allMedia = mutableListOf<MediaEntity>()
+                                            selectionState.selectedFolderPaths.forEach { folderPath ->
+                                                allMedia.addAll(getFilesForFolder(folderPath))
+                                            }
+                                            selectionState.selectedVideoIds.forEach { uri ->
+                                                mediaList.find { it.uriString == uri }?.let { allMedia.add(it) }
+                                            }
+                                            
+                                            // 1. Play Selected
+                                            IconButton(onClick = {
+                                                if (allMedia.isNotEmpty()) {
+                                                    viewModel.playAll(allMedia)
+                                                }
+                                                viewModel.clearSelection()
+                                            }, enabled = allMedia.isNotEmpty()) {
+                                                Icon(Icons.Default.PlayArrow, contentDescription = "Play Selected", tint = if (allMedia.isNotEmpty()) accentOrange else Color.Gray)
+                                            }
+                                            // 2. Queue Selected
+                                            IconButton(onClick = {
+                                                if (allMedia.isNotEmpty()) {
+                                                    viewModel.addToQueue(allMedia)
+                                                }
+                                                viewModel.clearSelection()
+                                            }, enabled = allMedia.isNotEmpty()) {
+                                                Icon(Icons.Default.PlaylistAdd, contentDescription = "Queue Selected", tint = if (allMedia.isNotEmpty()) accentOrange else Color.Gray)
+                                            }
+                                            // 3. Add Selected to Playlist
+                                            IconButton(onClick = {
+                                                if (allMedia.isNotEmpty()) {
+                                                    showPlaylistPickerForFolder = allMedia
+                                                }
+                                                viewModel.clearSelection()
+                                            }, enabled = allMedia.isNotEmpty()) {
+                                                Icon(Icons.Default.QueueMusic, contentDescription = "Add Selected to Playlist", tint = if (allMedia.isNotEmpty()) accentOrange else Color.Gray)
+                                            }
+                                            // 4. Delete Bulk Selected
+                                            IconButton(onClick = {
+                                                if (allMedia.isNotEmpty()) {
+                                                    multiMediaToDelete = allMedia
+                                                }
+                                                viewModel.clearSelection()
+                                            }, enabled = allMedia.isNotEmpty()) {
+                                                Icon(Icons.Default.Delete, contentDescription = "Delete Selected", tint = MaterialTheme.colorScheme.error)
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -1246,7 +1487,9 @@ fun MainScreen(
                                                                 },
                                                                 onLongClick = {
                                                                     if (!isSelectModeActive) {
-                                                                        selectedMediaForOptions = item
+                                                                        isSelectModeActive = true
+                                                                        selectedMediaSet.clear()
+                                                                        selectedMediaSet.add(item)
                                                                     } else {
                                                                         if (isSelected) {
                                                                             selectedMediaSet.removeAll { it.uriString == item.uriString }
@@ -1288,7 +1531,9 @@ fun MainScreen(
                                                                 },
                                                                 onLongClick = {
                                                                     if (!isSelectModeActive) {
-                                                                        selectedMediaForOptions = item
+                                                                        isSelectModeActive = true
+                                                                        selectedMediaSet.clear()
+                                                                        selectedMediaSet.add(item)
                                                                     } else {
                                                                         if (isSelected) {
                                                                             selectedMediaSet.removeAll { it.uriString == item.uriString }
@@ -1356,7 +1601,9 @@ fun MainScreen(
                                                                 },
                                                                 onLongClick = {
                                                                 if (!isSelectModeActive) {
-                                                                selectedMediaForOptions = item
+                                                                isSelectModeActive = true
+                                                                selectedMediaSet.clear()
+                                                                selectedMediaSet.add(item)
                                                                 } else {
                                                                 if (isSelected) {
                                                                 selectedMediaSet.removeAll { it.uriString == item.uriString }
@@ -1403,7 +1650,9 @@ fun MainScreen(
                                                         },
                                                         onLongClick = {
                                                         if (!isSelectModeActive) {
-                                                        selectedMediaForOptions = item
+                                                        isSelectModeActive = true
+                                                        selectedMediaSet.clear()
+                                                        selectedMediaSet.add(item)
                                                         } else {
                                                         if (isSelected) {
                                                         selectedMediaSet.removeAll { it.uriString == item.uriString }
@@ -1466,7 +1715,9 @@ fun MainScreen(
                                                                 },
                                                                 onLongClick = {
                                                                 if (!isSelectModeActive) {
-                                                                selectedMediaForOptions = item
+                                                                isSelectModeActive = true
+                                                                selectedMediaSet.clear()
+                                                                selectedMediaSet.add(item)
                                                                 } else {
                                                                 if (isSelected) {
                                                                 selectedMediaSet.removeAll { it.uriString == item.uriString }
@@ -1513,7 +1764,9 @@ fun MainScreen(
                                                         },
                                                         onLongClick = {
                                                         if (!isSelectModeActive) {
-                                                        selectedMediaForOptions = item
+                                                        isSelectModeActive = true
+                                                        selectedMediaSet.clear()
+                                                        selectedMediaSet.add(item)
                                                         } else {
                                                         if (isSelected) {
                                                         selectedMediaSet.removeAll { it.uriString == item.uriString }
@@ -3378,6 +3631,40 @@ fun MainScreen(
                 }
             )
         }
+
+        if (folderToDelete != null) {
+            val (folderPath, filesInFolder) = folderToDelete!!
+            AlertDialog(
+                onDismissRequest = { folderToDelete = null },
+                icon = { Icon(Icons.Default.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+                title = { Text(text = "Confirm Folder Deletion", fontWeight = FontWeight.Bold) },
+                text = { Text(text = "Are you sure you want to permanently delete the folder '$folderPath' and all of its ${filesInFolder.size} physical files from storage?", fontSize = 14.sp) },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            filesInFolder.forEach { viewModel.deleteMedia(it) }
+                            try {
+                                val dirFile = java.io.File("/storage/emulated/0/$folderPath")
+                                if (dirFile.exists() && dirFile.isDirectory) {
+                                    dirFile.delete()
+                                }
+                            } catch (e: Exception) {
+                                // ignore
+                            }
+                            folderToDelete = null
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                    ) {
+                        Text("Delete Folder", color = MaterialTheme.colorScheme.onError)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { folderToDelete = null }) {
+                        Text("Cancel")
+                    }
+                }
+            )
+        }
     }
     }
 }
@@ -3756,21 +4043,19 @@ fun MediaGridCard(
                         )
                     }
                 } else {
-                    // Menu button on top-right of thumb
+                    // Menu button on top-right of thumb (ghost button style)
                     IconButton(
                         onClick = onMenuClick,
                         modifier = Modifier
                             .align(Alignment.TopEnd)
                             .padding(4.dp)
                             .size(28.dp)
-                            .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.85f))
                     ) {
                         Icon(
                             imageVector = Icons.Default.MoreVert,
                             contentDescription = "More options",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(16.dp)
+                            tint = Color.White,
+                            modifier = Modifier.size(18.dp)
                         )
                     }
                 }
