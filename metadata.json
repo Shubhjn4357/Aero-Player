@@ -1,0 +1,6 @@
+{
+  "name": "Aero Player",
+  "description": "Aero Player is a premium, immersive media player with glassmorphism styling, advanced playback controls, folder and group management, and seamless offline-first experience.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

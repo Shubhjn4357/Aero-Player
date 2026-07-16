@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    
+    <!-- Outer Glow / Ambient shadow layer -->
+    <path
+        android:pathData="M 34,32 C 34,29.5 36.5,29 38.5,30 L 78,51 C 80.5,52.5 80.5,55.5 78,57 L 38.5,78 C 36.5,79 34,78.5 34,76 C 34,74 35,71.5 36.5,70 L 52,54 L 36.5,38 C 35,36.5 34,34 34,32 Z"
+        android:fillColor="#15000000" />
+
+    <!-- Main Aerodynamic "A" Stealth-Wing Play Button Logo -->
+    <path
+        android:pathData="M 34,32 C 34,29.5 36.5,29 38.5,30 L 78,51 C 80.5,52.5 80.5,55.5 78,57 L 38.5,78 C 36.5,79 34,78.5 34,76 C 34,74 35,71.5 36.5,70 L 52,54 L 36.5,38 C 35,36.5 34,34 34,32 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="34"
+                android:startY="32"
+                android:endX="78"
+                android:endY="57"
+                android:type="linear">
+                <item android:offset="0" android:color="#FF00F0FF" /> <!-- Cyber Cyan -->
+                <item android:offset="1" android:color="#FF7000FF" /> <!-- Deep Violet -->
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Glossy aerodynamic inner accent / light highlight crease -->
+    <path
+        android:pathData="M 36.5,38 L 52,54 L 36.5,70"
+        android:strokeWidth="2.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round">
+        <aapt:attr name="android:strokeColor">
+            <gradient
+                android:startX="36.5"
+                android:startY="38"
+                android:endX="52"
+                android:endY="54"
+                android:type="linear">
+                <item android:offset="0" android:color="#99FFFFFF" /> <!-- Semi-transparent White -->
+                <item android:offset="1" android:color="#3300F0FF" /> <!-- Semi-transparent Cyan -->
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Center core aerodynamic light dot indicator -->
+    <path
+        android:pathData="M 52,54 M -2,0 A 2,2 0 1,1 2,0 A 2,2 0 1,1 -2,0"
+        android:fillColor="#FFFFFFFF" />
+</vector>
