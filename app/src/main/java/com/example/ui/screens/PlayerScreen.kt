@@ -3717,40 +3717,34 @@ fun PlayerRightSideDrawer(
     content: @Composable () -> Unit
 ) {
     if (isOpen) {
-        androidx.compose.ui.window.Dialog(
-            onDismissRequest = onDismissRequest,
-            properties = androidx.compose.ui.window.DialogProperties(
-                usePlatformDefaultWidth = false,
-                dismissOnBackPress = true,
-                dismissOnClickOutside = true
-            )
+        androidx.activity.compose.BackHandler(enabled = true) {
+            onDismissRequest()
+        }
+
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.5f))
+                .clickable(
+                    interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                    indication = null,
+                    onClick = onDismissRequest
+                ),
+            contentAlignment = Alignment.CenterEnd
         ) {
             Box(
                 modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.5f))
-                    .clickable(
-                        interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
-                        indication = null,
-                        onClick = onDismissRequest
-                    ),
-                contentAlignment = Alignment.CenterEnd
+                    .fillMaxHeight()
+                    .width(300.dp)
+                    .background(
+                        color = MaterialTheme.colorScheme.surface,
+                        shape = RoundedCornerShape(topStart = 24.dp, bottomStart = 24.dp)
+                    )
+                    .clickable(enabled = false) { /* Prevent click through */ }
+                    .statusBarsPadding()
+                    .navigationBarsPadding()
             ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxHeight()
-                        .widthIn(max = 360.dp)
-                        .fillMaxWidth(0.85f)
-                        .background(
-                            color = MaterialTheme.colorScheme.surface,
-                            shape = RoundedCornerShape(topStart = 24.dp, bottomStart = 24.dp)
-                        )
-                        .clickable(enabled = false) { /* Prevent click through */ }
-                        .statusBarsPadding()
-                        .navigationBarsPadding()
-                ) {
-                    content()
-                }
+                content()
             }
         }
     }

@@ -1,0 +1,9 @@
+# Treat binary files as binary so Git doesn't modify their line endings or corrupt them
+*.jar binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.jks binary
+*.keystore binary
