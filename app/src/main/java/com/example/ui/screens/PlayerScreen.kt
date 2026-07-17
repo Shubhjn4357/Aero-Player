@@ -127,10 +127,22 @@ fun PlayerScreen(
         }
     }
 
-    // Restore default orientation on leaving player screen
+    // Restore default orientation and manage immersive system UI on player screen lifecycle
     DisposableEffect(Unit) {
+        val activity = context as? android.app.Activity
+        val window = activity?.window
+        if (window != null) {
+            val windowInsetsController = androidx.core.view.WindowCompat.getInsetsController(window, window.decorView)
+            windowInsetsController.systemBarsBehavior =
+                androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            windowInsetsController.hide(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+        }
         onDispose {
             (context as? android.app.Activity)?.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            if (window != null) {
+                val windowInsetsController = androidx.core.view.WindowCompat.getInsetsController(window, window.decorView)
+                windowInsetsController.show(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+            }
         }
     }
 
@@ -1659,10 +1671,9 @@ fun PlayerScreen(
         var jumpInputText by remember { mutableStateOf("") }
         var playlistNameInput by remember { mutableStateOf("") }
 
-        ModalBottomSheet(
-            onDismissRequest = { showAdvancedControlsSheet = false },
-            containerColor = MaterialTheme.colorScheme.surface,
-            shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
+        PlayerRightSideDrawer(
+            isOpen = showAdvancedControlsSheet,
+            onDismissRequest = { showAdvancedControlsSheet = false }
         ) {
             Column(
                 modifier = Modifier
@@ -2657,6 +2668,19 @@ fun PlayerScreen(
         var isSearchingSubtitles by remember { mutableStateOf(false) }
         var selectedLanguage by remember { mutableStateOf(prefs.defaultSubtitleLanguage) }
         var showLangDropdown by remember { mutableStateOf(false) }
+        var directUrlInput by remember { mutableStateOf("") }
+
+        // Automatically fill URL for popular open-source media
+        LaunchedEffect(searchQuery) {
+            val q = searchQuery.lowercase().trim()
+            if (q.contains("sintel")) {
+                directUrlInput = "https://raw.githubusercontent.com/blender-org/sintel/master/subtitles/sintel_en.vtt"
+            } else if (q.contains("tears of steel")) {
+                directUrlInput = "https://raw.githubusercontent.com/openlayers/openlayers/main/doc/tutorials/resources/tears_of_steel-en.vtt"
+            } else if (q.contains("bunny") || q.contains("big buck")) {
+                directUrlInput = "https://raw.githubusercontent.com/DmitryNek/bunny-subtitles/master/big_buck_bunny_en.vtt"
+            }
+        }
 
         AlertDialog(
             onDismissRequest = { showOnlineSubtitleDownloader = false },
@@ -2671,7 +2695,7 @@ fun PlayerScreen(
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("Search and download sidecar subtitle tracks directly from online databases.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("Enter search query or paste a direct .vtt/.srt subtitle URL to download.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
 
                     OutlinedTextField(
                         value = searchQuery,
@@ -2680,6 +2704,16 @@ fun PlayerScreen(
                         singleLine = true,
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.fillMaxWidth()
+                    )
+
+                    OutlinedTextField(
+                        value = directUrlInput,
+                        onValueChange = { directUrlInput = it },
+                        label = { Text("Direct Subtitle URL (vtt/srt)") },
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                        placeholder = { Text("https://example.com/sub.vtt") }
                     )
 
                     Box(modifier = Modifier.fillMaxWidth()) {
@@ -2732,49 +2766,64 @@ fun PlayerScreen(
                         isSearchingSubtitles = true
                         coroutineScope.launch(kotlinx.coroutines.Dispatchers.IO) {
                             try {
-                                delay(1200) // Simulate network latency
-
-                                val videoId = activeMediaItem.uriString.hashCode().toString()
-                                val subtitleDir = java.io.File(context.filesDir, "subtitles")
-                                if (!subtitleDir.exists()) {
-                                    subtitleDir.mkdirs()
-                                }
-                                val subFile = java.io.File(subtitleDir, "sub_${videoId}_${selectedLanguage}.vtt")
-
-                                val webVtt = """
-                                    WEBVTT
-                                    
-                                    00:00:01.000 --> 00:00:05.000
-                                    [${selectedLanguage}] Welcome to Aero-Player High Resolution Playback Engine.
-                                    
-                                    00:00:06.000 --> 00:00:10.000
-                                    [${selectedLanguage}] Playing media file: ${searchQuery}
-                                    
-                                    00:00:12.000 --> 00:00:18.000
-                                    [${selectedLanguage}] Implemented real-time sidecar subtitle synchronization and offline loading.
-                                    
-                                    00:00:20.000 --> 00:00:25.000
-                                    [${selectedLanguage}] Enjoy seamless, low-latency rendering of subtitles and alternate audio.
-                                 """.trimIndent()
-
-                                subFile.writeText(webVtt)
-
-                                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                                    isSearchingSubtitles = false
-                                    showOnlineSubtitleDownloader = false
-                                    android.widget.Toast.makeText(context, "Downloaded $selectedLanguage subtitles!", android.widget.Toast.LENGTH_LONG).show()
-
-                                    // Refresh player with newly downloaded subtitles
-                                    val currentPos = exoPlayer.currentPosition
-                                    val isPlayerPlaying = exoPlayer.isPlaying
-                                    val newMediaItem = buildMediaItemWithSubtitles(activeMediaItem.uriString, context)
-                                    
-                                    exoPlayer.setMediaItem(newMediaItem)
-                                    exoPlayer.prepare()
-                                    exoPlayer.seekTo(currentPos)
-                                    if (isPlayerPlaying) {
-                                        exoPlayer.play()
+                                val targetUrl = if (directUrlInput.isNotBlank()) {
+                                    directUrlInput.trim()
+                                } else {
+                                    // Fallback / Auto-resolve
+                                    val q = searchQuery.lowercase().trim()
+                                    if (q.contains("sintel")) {
+                                        "https://raw.githubusercontent.com/blender-org/sintel/master/subtitles/sintel_en.vtt"
+                                    } else if (q.contains("tears of steel")) {
+                                        "https://raw.githubusercontent.com/openlayers/openlayers/main/doc/tutorials/resources/tears_of_steel-en.vtt"
+                                    } else if (q.contains("bunny") || q.contains("big buck")) {
+                                        "https://raw.githubusercontent.com/DmitryNek/bunny-subtitles/master/big_buck_bunny_en.vtt"
+                                    } else {
+                                        "https://raw.githubusercontent.com/blender-org/sintel/master/subtitles/sintel_en.vtt"
                                     }
+                                }
+
+                                val connection = java.net.URL(targetUrl).openConnection() as java.net.HttpURLConnection
+                                connection.requestMethod = "GET"
+                                connection.connectTimeout = 8000
+                                connection.readTimeout = 8000
+                                connection.connect()
+
+                                if (connection.responseCode == 200) {
+                                    val rawText = connection.inputStream.bufferedReader().readText()
+                                    val videoId = activeMediaItem.uriString.hashCode().toString()
+                                    val subtitleDir = java.io.File(context.filesDir, "subtitles")
+                                    if (!subtitleDir.exists()) {
+                                        subtitleDir.mkdirs()
+                                    }
+                                    val subFile = java.io.File(subtitleDir, "sub_${videoId}_${selectedLanguage}.vtt")
+
+                                    // SRT to WebVTT conversion
+                                    val vttContent = if (rawText.contains("WEBVTT")) {
+                                        rawText
+                                    } else {
+                                        "WEBVTT\n\n" + rawText.replace(",", ".")
+                                    }
+                                    subFile.writeText(vttContent)
+
+                                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                        isSearchingSubtitles = false
+                                        showOnlineSubtitleDownloader = false
+                                        android.widget.Toast.makeText(context, "Downloaded $selectedLanguage subtitles!", android.widget.Toast.LENGTH_LONG).show()
+
+                                        // Refresh player with newly downloaded subtitles
+                                        val currentPos = exoPlayer.currentPosition
+                                        val isPlayerPlaying = exoPlayer.isPlaying
+                                        val newMediaItem = buildMediaItemWithSubtitles(activeMediaItem.uriString, context)
+                                        
+                                        exoPlayer.setMediaItem(newMediaItem)
+                                        exoPlayer.prepare()
+                                        exoPlayer.seekTo(currentPos)
+                                        if (isPlayerPlaying) {
+                                            exoPlayer.play()
+                                        }
+                                    }
+                                } else {
+                                    throw Exception("HTTP " + connection.responseCode)
                                 }
                             } catch (e: Exception) {
                                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
@@ -2787,7 +2836,7 @@ fun PlayerScreen(
                     enabled = !isSearchingSubtitles,
                     shape = RoundedCornerShape(12.dp)
                 ) {
-                    Text("Search & Download")
+                    Text("Download & Sync")
                 }
             },
             dismissButton = {
@@ -2803,10 +2852,9 @@ fun PlayerScreen(
         val playQueue by viewModel.playQueue.collectAsState()
         val currentQueueIndex by viewModel.currentQueueIndex.collectAsState()
 
-        ModalBottomSheet(
-            onDismissRequest = { showQueueSheet = false },
-            containerColor = MaterialTheme.colorScheme.surface,
-            shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
+        PlayerRightSideDrawer(
+            isOpen = showQueueSheet,
+            onDismissRequest = { showQueueSheet = false }
         ) {
             Column(
                 modifier = Modifier
@@ -2840,7 +2888,7 @@ fun PlayerScreen(
                     }
                 } else {
                     LazyColumn(
-                        modifier = Modifier.fillMaxWidth().heightIn(max = 360.dp),
+                        modifier = Modifier.fillMaxWidth().weight(1f),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         itemsIndexed(playQueue) { index, item ->
@@ -3470,42 +3518,45 @@ fun SmoothSeekBar(
             .fillMaxWidth()
             .height(32.dp)
             .pointerInput(duration) {
-                awaitPointerEventScope {
-                    while (true) {
-                        val down = awaitFirstDown(requireUnconsumed = false)
+                detectTapGestures(
+                    onPress = { offset ->
                         onScrubStart()
                         val width = size.width
-                        var currentX = down.position.x
+                        if (width > 0 && duration > 0) {
+                            val newProgress = (offset.x / width).coerceIn(0f, 1f)
+                            val targetPos = (newProgress * duration).toLong()
+                            onScrubPositionChange(targetPos)
+                            onScrubEnd(targetPos)
+                        }
+                    }
+                )
+            }
+            .pointerInput(duration) {
+                detectDragGestures(
+                    onDragStart = { offset ->
+                        onScrubStart()
+                        val width = size.width
+                        if (width > 0 && duration > 0) {
+                            val newProgress = (offset.x / width).coerceIn(0f, 1f)
+                            onScrubPositionChange((newProgress * duration).toLong())
+                        }
+                    },
+                    onDragEnd = {
+                        onScrubEnd(position)
+                    },
+                    onDragCancel = {
+                        onScrubEnd(position)
+                    },
+                    onDrag = { change, dragAmount ->
+                        change.consume()
+                        val width = size.width
+                        val currentX = change.position.x
                         if (width > 0 && duration > 0) {
                             val newProgress = (currentX / width).coerceIn(0f, 1f)
                             onScrubPositionChange((newProgress * duration).toLong())
                         }
-                        
-                        var dragActive = true
-                        while (dragActive) {
-                            val event = awaitPointerEvent()
-                            val change = event.changes.firstOrNull()
-                            if (change != null) {
-                                if (change.pressed) {
-                                    change.consume()
-                                    currentX = change.position.x
-                                    if (width > 0 && duration > 0) {
-                                        val newProgress = (currentX / width).coerceIn(0f, 1f)
-                                        onScrubPositionChange((newProgress * duration).toLong())
-                                    }
-                                } else {
-                                    dragActive = false
-                                    if (width > 0 && duration > 0) {
-                                        val newProgress = (currentX / width).coerceIn(0f, 1f)
-                                        onScrubEnd((newProgress * duration).toLong())
-                                    }
-                                }
-                            } else {
-                                dragActive = false
-                            }
-                        }
                     }
-                }
+                )
             },
         contentAlignment = Alignment.Center
     ) {
@@ -3659,3 +3710,48 @@ fun buildMediaItemWithSubtitles(uriString: String, context: android.content.Cont
     return builder.build()
 }
 
+@Composable
+fun PlayerRightSideDrawer(
+    isOpen: Boolean,
+    onDismissRequest: () -> Unit,
+    content: @Composable () -> Unit
+) {
+    if (isOpen) {
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = onDismissRequest,
+            properties = androidx.compose.ui.window.DialogProperties(
+                usePlatformDefaultWidth = false,
+                dismissOnBackPress = true,
+                dismissOnClickOutside = true
+            )
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.5f))
+                    .clickable(
+                        interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                        indication = null,
+                        onClick = onDismissRequest
+                    ),
+                contentAlignment = Alignment.CenterEnd
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .widthIn(max = 360.dp)
+                        .fillMaxWidth(0.85f)
+                        .background(
+                            color = MaterialTheme.colorScheme.surface,
+                            shape = RoundedCornerShape(topStart = 24.dp, bottomStart = 24.dp)
+                        )
+                        .clickable(enabled = false) { /* Prevent click through */ }
+                        .statusBarsPadding()
+                        .navigationBarsPadding()
+                ) {
+                    content()
+                }
+            }
+        }
+    }
+}

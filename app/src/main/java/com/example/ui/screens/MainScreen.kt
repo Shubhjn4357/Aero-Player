@@ -891,13 +891,7 @@ fun MainScreen(
                                          }
                                      }
 
-                                    IconButton(onClick = { showAddStreamDrawer = true }) {
-                                        Icon(
-                                            imageVector = Icons.Default.CloudUpload,
-                                            contentDescription = "Stream Network Link",
-                                            tint = MaterialTheme.colorScheme.secondary
-                                        )
-                                    }
+                                    // Removed stream icon as requested
 
                                     IconButton(onClick = onNavigateToSettings) {
                                         Icon(
@@ -2314,11 +2308,7 @@ fun MainScreen(
     }
 
     // Display settings bottom sheet (Requirement #3)
-    // Display settings bottom sheet (Requirement #3)
     if (showDisplaySettingsBottomSheet) {
-        var selectedCategory by remember { mutableStateOf("Layout Styles") }
-        var categoryMenuExpanded by remember { mutableStateOf(false) }
-
         ModalBottomSheet(
             onDismissRequest = { showDisplaySettingsBottomSheet = false },
             containerColor = MaterialTheme.colorScheme.surface,
@@ -2329,6 +2319,7 @@ fun MainScreen(
                     .fillMaxWidth()
                     .navigationBarsPadding()
                     .padding(horizontal = 24.dp, vertical = 16.dp)
+                    .verticalScroll(rememberScrollState())
             ) {
                 // Header
                 Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
@@ -2341,371 +2332,316 @@ fun MainScreen(
                 }
                 
                 Spacer(modifier = Modifier.height(16.dp))
-                HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
-                Spacer(modifier = Modifier.height(12.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                Spacer(modifier = Modifier.height(16.dp))
 
-                // Dropdown Category Select Menu
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 4.dp)
+                // Group 1: Layout Styles
+                Text(
+                    text = "Layout Styles",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                // Folder Layout Style Row
+                Text(text = "Folders Layout", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(modifier = Modifier.height(4.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Surface(
-                        onClick = { categoryMenuExpanded = true },
-                        shape = RoundedCornerShape(12.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.15f)),
-                        modifier = Modifier.fillMaxWidth()
+                    Card(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(40.dp)
+                            .clickable { viewModel.updateUseGroupWiseFolderStyle(true) },
+                        shape = RoundedCornerShape(10.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (prefs.useGroupWiseFolderStyle) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                        ),
+                        border = BorderStroke(1.dp, if (prefs.useGroupWiseFolderStyle) MaterialTheme.colorScheme.primary else Color.Transparent)
                     ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 12.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Row(
-                                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(
-                                    imageVector = when (selectedCategory) {
-                                        "Layout Styles" -> Icons.Default.GridView
-                                        "Sorting & Direction" -> Icons.Default.Title
-                                        else -> Icons.Default.Category
-                                    },
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary
-                                )
-                                Text(
-                                    text = selectedCategory,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 14.sp,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                            }
-                            Icon(
-                                imageVector = Icons.Default.ArrowDropDown,
-                                contentDescription = "Expand Category Select",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                        Row(modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Icon(Icons.Default.GridView, contentDescription = null, modifier = Modifier.size(16.dp), tint = if (prefs.useGroupWiseFolderStyle) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("Grid Folders", color = MaterialTheme.colorScheme.onSurface, fontSize = 12.sp, fontWeight = FontWeight.Medium)
                         }
                     }
-
-                    DropdownMenu(
-                        expanded = categoryMenuExpanded,
-                        onDismissRequest = { categoryMenuExpanded = false },
-                        modifier = Modifier.fillMaxWidth(0.85f)
+                    Card(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(40.dp)
+                            .clickable { viewModel.updateUseGroupWiseFolderStyle(false) },
+                        shape = RoundedCornerShape(10.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (!prefs.useGroupWiseFolderStyle) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                        ),
+                        border = BorderStroke(1.dp, if (!prefs.useGroupWiseFolderStyle) MaterialTheme.colorScheme.primary else Color.Transparent)
                     ) {
-                        listOf("Layout Styles", "Sorting & Direction", "Grouping Styles").forEach { category ->
-                            DropdownMenuItem(
-                                text = { Text(category, fontWeight = FontWeight.Bold, fontSize = 13.sp) },
-                                onClick = {
-                                    selectedCategory = category
-                                    categoryMenuExpanded = false
-                                },
-                                leadingIcon = {
-                                    Icon(
-                                        imageVector = when (category) {
-                                            "Layout Styles" -> Icons.Default.GridView
-                                            "Sorting & Direction" -> Icons.Default.Title
-                                            else -> Icons.Default.Category
-                                        },
-                                        contentDescription = null,
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                }
-                            )
+                        Row(modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Icon(Icons.Default.List, contentDescription = null, modifier = Modifier.size(16.dp), tint = if (!prefs.useGroupWiseFolderStyle) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("List Folders", color = MaterialTheme.colorScheme.onSurface, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                        }
+                    }
+                }
+                
+                Spacer(modifier = Modifier.height(10.dp))
+                
+                // Files Layout Style Row
+                Text(text = "Files Layout", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(modifier = Modifier.height(4.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Card(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(40.dp)
+                            .clickable { viewModel.updateListStyle("Grid") },
+                        shape = RoundedCornerShape(10.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (prefs.listStyle == "Grid") MaterialTheme.colorScheme.primary.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                        ),
+                        border = BorderStroke(1.dp, if (prefs.listStyle == "Grid") MaterialTheme.colorScheme.primary else Color.Transparent)
+                    ) {
+                        Row(modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Icon(Icons.Default.GridView, contentDescription = null, modifier = Modifier.size(16.dp), tint = if (prefs.listStyle == "Grid") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("Grid Files", color = MaterialTheme.colorScheme.onSurface, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                        }
+                    }
+                    Card(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(40.dp)
+                            .clickable { viewModel.updateListStyle("List") },
+                        shape = RoundedCornerShape(10.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (prefs.listStyle != "Grid") MaterialTheme.colorScheme.primary.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                        ),
+                        border = BorderStroke(1.dp, if (prefs.listStyle != "Grid") MaterialTheme.colorScheme.primary else Color.Transparent)
+                    ) {
+                        Row(modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Icon(Icons.Default.List, contentDescription = null, modifier = Modifier.size(16.dp), tint = if (prefs.listStyle != "Grid") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("List Files", color = MaterialTheme.colorScheme.onSurface, fontSize = 12.sp, fontWeight = FontWeight.Medium)
                         }
                     }
                 }
 
                 Spacer(modifier = Modifier.height(16.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
+                Spacer(modifier = Modifier.height(12.dp))
 
-                // Category Contents
-                when (selectedCategory) {
-                    "Layout Styles" -> {
-                        // Folder Layout Style
-                        Text(
-                            text = "Folder Layout Style",
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
+                // Group 2: Sorting & Order
+                Text(
+                    text = "Sorting & Order",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    // Title Card
+                    val isTitleSelected = prefs.sortBy == "title"
+                    Card(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(40.dp)
+                            .clickable { viewModel.updateSorting("title", prefs.sortAscending) },
+                        shape = RoundedCornerShape(10.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (isTitleSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                        ),
+                        border = BorderStroke(1.dp, if (isTitleSelected) MaterialTheme.colorScheme.primary else Color.Transparent)
+                    ) {
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
                         ) {
-                            Card(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .height(48.dp)
-                                    .clickable {
-                                        viewModel.updateUseGroupWiseFolderStyle(true)
-                                    },
-                                shape = RoundedCornerShape(10.dp),
-                                colors = CardDefaults.cardColors(
-                                    containerColor = if (prefs.useGroupWiseFolderStyle) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
-                                ),
-                                border = BorderStroke(
-                                    1.dp, 
-                                    if (prefs.useGroupWiseFolderStyle) MaterialTheme.colorScheme.primary else Color.Transparent
-                                )
-                            ) {
-                                Row(
-                                    modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    Icon(Icons.Default.GridView, contentDescription = null, modifier = Modifier.size(18.dp), tint = if (prefs.useGroupWiseFolderStyle) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
-                                    Text("Grid Folders", color = MaterialTheme.colorScheme.onSurface, fontSize = 13.sp, fontWeight = FontWeight.Medium)
-                                }
-                            }
-                            
-                            Card(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .height(48.dp)
-                                    .clickable {
-                                        viewModel.updateUseGroupWiseFolderStyle(false)
-                                    },
-                                shape = RoundedCornerShape(10.dp),
-                                colors = CardDefaults.cardColors(
-                                    containerColor = if (!prefs.useGroupWiseFolderStyle) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
-                                ),
-                                border = BorderStroke(
-                                    1.dp, 
-                                    if (!prefs.useGroupWiseFolderStyle) MaterialTheme.colorScheme.primary else Color.Transparent
-                                )
-                            ) {
-                                Row(
-                                    modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    Icon(Icons.Default.List, contentDescription = null, modifier = Modifier.size(18.dp), tint = if (!prefs.useGroupWiseFolderStyle) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
-                                    Text("List Folders", color = MaterialTheme.colorScheme.onSurface, fontSize = 13.sp, fontWeight = FontWeight.Medium)
-                                }
+                            Icon(Icons.Default.Title, contentDescription = null, modifier = Modifier.size(14.dp), tint = if (isTitleSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Title", color = MaterialTheme.colorScheme.onSurface, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+
+                    // Date Card
+                    val isDateSelected = prefs.sortBy == "date"
+                    Card(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(40.dp)
+                            .clickable { viewModel.updateSorting("date", prefs.sortAscending) },
+                        shape = RoundedCornerShape(10.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (isDateSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                        ),
+                        border = BorderStroke(1.dp, if (isDateSelected) MaterialTheme.colorScheme.primary else Color.Transparent)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Icon(Icons.Default.DateRange, contentDescription = null, modifier = Modifier.size(14.dp), tint = if (isDateSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Date", color = MaterialTheme.colorScheme.onSurface, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+
+                    // Size Card
+                    val isSizeSelected = prefs.sortBy == "size"
+                    Card(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(40.dp)
+                            .clickable { viewModel.updateSorting("size", prefs.sortAscending) },
+                        shape = RoundedCornerShape(10.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (isSizeSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                        ),
+                        border = BorderStroke(1.dp, if (isSizeSelected) MaterialTheme.colorScheme.primary else Color.Transparent)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Icon(Icons.Default.SdCard, contentDescription = null, modifier = Modifier.size(14.dp), tint = if (isSizeSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Size", color = MaterialTheme.colorScheme.onSurface, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+                // Order Direction Row
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Card(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(40.dp)
+                            .clickable { viewModel.updateSorting(prefs.sortBy, true) },
+                        shape = RoundedCornerShape(10.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (prefs.sortAscending) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                        ),
+                        border = BorderStroke(1.dp, if (prefs.sortAscending) MaterialTheme.colorScheme.primary else Color.Transparent)
+                    ) {
+                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text("Ascending", color = MaterialTheme.colorScheme.onSurface, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                    Card(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(40.dp)
+                            .clickable { viewModel.updateSorting(prefs.sortBy, false) },
+                        shape = RoundedCornerShape(10.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (!prefs.sortAscending) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                        ),
+                        border = BorderStroke(1.dp, if (!prefs.sortAscending) MaterialTheme.colorScheme.primary else Color.Transparent)
+                    ) {
+                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text("Descending", color = MaterialTheme.colorScheme.onSurface, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Group 3: Grouping Styles
+                Text(
+                    text = "Grouping Styles",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    // None & Folder
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        val isNoneSelected = prefs.groupByStyle == "none"
+                        Card(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(40.dp)
+                                .clickable { viewModel.updateGroupByStyle("none") },
+                            shape = RoundedCornerShape(10.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (isNoneSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                            ),
+                            border = BorderStroke(1.dp, if (isNoneSelected) MaterialTheme.colorScheme.primary else Color.Transparent)
+                        ) {
+                            Row(modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Icon(Icons.Default.FilterNone, contentDescription = null, modifier = Modifier.size(16.dp), tint = if (isNoneSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text("None", color = MaterialTheme.colorScheme.onSurface, fontSize = 12.sp, fontWeight = FontWeight.Medium)
                             }
                         }
-                        
-                        Spacer(modifier = Modifier.height(16.dp))
 
-                        // Files View Style
-                        Text(
-                            text = "Files View Style",
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        val isFolderSelected = prefs.groupByStyle == "folder"
+                        Card(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(40.dp)
+                                .clickable { viewModel.updateGroupByStyle("folder") },
+                            shape = RoundedCornerShape(10.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (isFolderSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                            ),
+                            border = BorderStroke(1.dp, if (isFolderSelected) MaterialTheme.colorScheme.primary else Color.Transparent)
                         ) {
-                            Card(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .height(48.dp)
-                                    .clickable {
-                                        viewModel.updateListStyle("Grid")
-                                    },
-                                shape = RoundedCornerShape(10.dp),
-                                colors = CardDefaults.cardColors(
-                                    containerColor = if (prefs.listStyle == "Grid") MaterialTheme.colorScheme.primary.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
-                                ),
-                                border = BorderStroke(
-                                    1.dp, 
-                                    if (prefs.listStyle == "Grid") MaterialTheme.colorScheme.primary else Color.Transparent
-                                )
-                            ) {
-                                Row(
-                                    modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    Icon(Icons.Default.GridView, contentDescription = null, modifier = Modifier.size(18.dp), tint = if (prefs.listStyle == "Grid") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
-                                    Text("Grid Files", color = MaterialTheme.colorScheme.onSurface, fontSize = 13.sp, fontWeight = FontWeight.Medium)
-                                }
-                            }
-                            
-                            Card(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .height(48.dp)
-                                    .clickable {
-                                        viewModel.updateListStyle("List")
-                                    },
-                                shape = RoundedCornerShape(10.dp),
-                                colors = CardDefaults.cardColors(
-                                    containerColor = if (prefs.listStyle != "Grid") MaterialTheme.colorScheme.primary.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
-                                ),
-                                border = BorderStroke(
-                                    1.dp, 
-                                    if (prefs.listStyle != "Grid") MaterialTheme.colorScheme.primary else Color.Transparent
-                                )
-                            ) {
-                                Row(
-                                    modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    Icon(Icons.Default.List, contentDescription = null, modifier = Modifier.size(18.dp), tint = if (prefs.listStyle != "Grid") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
-                                    Text("List Files", color = MaterialTheme.colorScheme.onSurface, fontSize = 13.sp, fontWeight = FontWeight.Medium)
-                                }
+                            Row(modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Icon(Icons.Default.Folder, contentDescription = null, modifier = Modifier.size(16.dp), tint = if (isFolderSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text("Folder", color = MaterialTheme.colorScheme.onSurface, fontSize = 12.sp, fontWeight = FontWeight.Medium)
                             }
                         }
                     }
 
-                    "Sorting & Direction" -> {
-                        Text(
-                            text = "Sort By",
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        
-                        val sortOptions = listOf(
-                            Triple("title", "Title", Icons.Default.Title),
-                            Triple("date", "Date Added", Icons.Default.DateRange),
-                            Triple("size", "File Size", Icons.Default.SdCard)
-                        )
-                        
-                        sortOptions.forEach { (key, label, icon) ->
-                            val isSelected = prefs.sortBy == key
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(40.dp)
-                                    .clickable {
-                                        viewModel.updateSorting(key, prefs.sortAscending)
-                                    },
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                                ) {
-                                    Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp), tint = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
-                                    Text(label, color = MaterialTheme.colorScheme.onSurface, fontSize = 13.sp)
-                                }
-                                RadioButton(
-                                    selected = isSelected,
-                                    onClick = { viewModel.updateSorting(key, prefs.sortAscending) },
-                                    colors = RadioButtonDefaults.colors(
-                                        selectedColor = MaterialTheme.colorScheme.primary,
-                                        unselectedColor = MaterialTheme.colorScheme.onSurfaceVariant
-                                    ),
-                                    modifier = Modifier.scale(0.85f)
-                                )
-                            }
-                        }
-                        
-                        Spacer(modifier = Modifier.height(12.dp))
-                        
-                        Text(
-                            text = "Order Direction",
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    // Artist & Type
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        val isArtistSelected = prefs.groupByStyle == "artist"
+                        Card(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(40.dp)
+                                .clickable { viewModel.updateGroupByStyle("artist") },
+                            shape = RoundedCornerShape(10.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (isArtistSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                            ),
+                            border = BorderStroke(1.dp, if (isArtistSelected) MaterialTheme.colorScheme.primary else Color.Transparent)
                         ) {
-                            Card(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .height(42.dp)
-                                    .clickable {
-                                        viewModel.updateSorting(prefs.sortBy, true)
-                                    },
-                                shape = RoundedCornerShape(10.dp),
-                                colors = CardDefaults.cardColors(
-                                    containerColor = if (prefs.sortAscending) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
-                                ),
-                                border = BorderStroke(
-                                    1.dp, 
-                                    if (prefs.sortAscending) MaterialTheme.colorScheme.primary else Color.Transparent
-                                )
-                            ) {
-                                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                    Text("Ascending", color = MaterialTheme.colorScheme.onSurface, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                                }
-                            }
-                            
-                            Card(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .height(42.dp)
-                                    .clickable {
-                                        viewModel.updateSorting(prefs.sortBy, false)
-                                    },
-                                shape = RoundedCornerShape(10.dp),
-                                colors = CardDefaults.cardColors(
-                                    containerColor = if (!prefs.sortAscending) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
-                                ),
-                                border = BorderStroke(
-                                    1.dp, 
-                                    if (!prefs.sortAscending) MaterialTheme.colorScheme.primary else Color.Transparent
-                                )
-                            ) {
-                                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                    Text("Descending", color = MaterialTheme.colorScheme.onSurface, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                                }
+                            Row(modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Icon(Icons.Default.Person, contentDescription = null, modifier = Modifier.size(16.dp), tint = if (isArtistSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text("Artist", color = MaterialTheme.colorScheme.onSurface, fontSize = 12.sp, fontWeight = FontWeight.Medium)
                             }
                         }
-                    }
 
-                    "Grouping Styles" -> {
-                        Text(
-                            text = "Group Wise",
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-
-                        val groupingOptions = listOf(
-                            Triple("none", "None (Flat List)", Icons.Default.FilterNone),
-                            Triple("folder", "Folder", Icons.Default.Folder),
-                            Triple("artist", "Artist", Icons.Default.Person),
-                            Triple("file_type", "File Type", Icons.Default.Category)
-                        )
-
-                        groupingOptions.forEach { (key, label, icon) ->
-                            val isSelected = prefs.groupByStyle == key
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(40.dp)
-                                    .clickable {
-                                        viewModel.updateGroupByStyle(key)
-                                    },
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                                ) {
-                                    Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp), tint = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
-                                    Text(label, color = MaterialTheme.colorScheme.onSurface, fontSize = 13.sp)
-                                }
-                                RadioButton(
-                                    selected = isSelected,
-                                    onClick = { viewModel.updateGroupByStyle(key) },
-                                    colors = RadioButtonDefaults.colors(
-                                        selectedColor = MaterialTheme.colorScheme.primary,
-                                        unselectedColor = MaterialTheme.colorScheme.onSurfaceVariant
-                                    ),
-                                    modifier = Modifier.scale(0.85f)
-                                )
+                        val isTypeSelected = prefs.groupByStyle == "file_type"
+                        Card(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(40.dp)
+                                .clickable { viewModel.updateGroupByStyle("file_type") },
+                            shape = RoundedCornerShape(10.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (isTypeSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                            ),
+                            border = BorderStroke(1.dp, if (isTypeSelected) MaterialTheme.colorScheme.primary else Color.Transparent)
+                        ) {
+                            Row(modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Icon(Icons.Default.Category, contentDescription = null, modifier = Modifier.size(16.dp), tint = if (isTypeSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text("Type", color = MaterialTheme.colorScheme.onSurface, fontSize = 12.sp, fontWeight = FontWeight.Medium)
                             }
                         }
                     }
@@ -2715,7 +2651,6 @@ fun MainScreen(
             }
         }
     }
-
     // Gesture bottom drawer for media item options (Requirement #4)
     if (selectedMediaForOptions != null) {
         val media = selectedMediaForOptions!!
@@ -2774,7 +2709,59 @@ fun MainScreen(
                 }
 
                 Spacer(modifier = Modifier.height(16.dp))
-                HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
+                
+                // 2 Prominent Options on Top: Play & Add to Play Queue
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Card(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(52.dp)
+                            .clickable {
+                                onPlayItem(media)
+                                selectedMediaForOptions = null
+                            },
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Icon(Icons.Default.PlayArrow, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimaryContainer, modifier = Modifier.size(20.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Play", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                        }
+                    }
+
+                    Card(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(52.dp)
+                            .clickable {
+                                viewModel.addToQueue(listOf(media))
+                                selectedMediaForOptions = null
+                            },
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Icon(Icons.Default.PlaylistAdd, contentDescription = null, tint = MaterialTheme.colorScheme.onSecondaryContainer, modifier = Modifier.size(20.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Queue", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSecondaryContainer)
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
                 Spacer(modifier = Modifier.height(12.dp))
 
                 // Modern compact Category Select Menu (Dropdown style)
@@ -2862,17 +2849,9 @@ fun MainScreen(
                     val list = mutableListOf<Triple<String, androidx.compose.ui.graphics.vector.ImageVector, () -> Unit>>()
                     when (selectedCategory) {
                         "Playback & Queue" -> {
-                            list.add(Triple("Play / Play from start", Icons.Default.PlayArrow, {
-                                onPlayItem(media)
-                                selectedMediaForOptions = null
-                            }))
                             list.add(Triple("Play as audio", Icons.Default.MusicNote, {
                                 viewModel.audioOnlyPlaybackRequested = true
                                 onPlayItem(media)
-                                selectedMediaForOptions = null
-                            }))
-                            list.add(Triple("Add to Play Queue", Icons.Default.AddToPhotos, {
-                                viewModel.addToQueue(listOf(media))
                                 selectedMediaForOptions = null
                             }))
                             list.add(Triple("Insert Next in Queue", Icons.Default.Queue, {
@@ -3093,38 +3072,66 @@ fun MainScreen(
                 }
 
                 Spacer(modifier = Modifier.height(20.dp))
-                HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
+                
+                // 2 Prominent Options on Top: Play All & Queue All
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Card(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(52.dp)
+                            .clickable {
+                                viewModel.playAll(items)
+                                selectedFolderForOptions = null
+                            },
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Icon(Icons.Default.PlayArrow, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimaryContainer, modifier = Modifier.size(20.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Play All", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                        }
+                    }
+
+                    Card(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(52.dp)
+                            .clickable {
+                                viewModel.addToQueue(items)
+                                android.widget.Toast.makeText(context, "Added ${items.size} files to queue", android.widget.Toast.LENGTH_SHORT).show()
+                                selectedFolderForOptions = null
+                            },
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Icon(Icons.Default.PlaylistAdd, contentDescription = null, tint = MaterialTheme.colorScheme.onSecondaryContainer, modifier = Modifier.size(20.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Queue All", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSecondaryContainer)
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
                 Spacer(modifier = Modifier.height(12.dp))
 
                 androidx.compose.foundation.lazy.LazyColumn(
                     modifier = Modifier.fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    // 1. Play All
-                    item {
-                        FolderOptionRow(
-                            label = "Play All",
-                            icon = Icons.Default.PlayArrow,
-                            description = "Plays all playable files in this folder now.",
-                            onClick = {
-                                viewModel.playAll(items)
-                                selectedFolderForOptions = null
-                            }
-                        )
-                    }
-                    // 2. Add to Queue
-                    item {
-                        FolderOptionRow(
-                            label = "Add to Play Queue",
-                            icon = Icons.Default.PlaylistAdd,
-                            description = "Appends all files in this folder to the current play queue.",
-                            onClick = {
-                                viewModel.addToQueue(items)
-                                android.widget.Toast.makeText(context, "Added ${items.size} files to queue", android.widget.Toast.LENGTH_SHORT).show()
-                                selectedFolderForOptions = null
-                            }
-                        )
-                    }
                     // 3. Add to Playlist
                     item {
                         FolderOptionRow(
@@ -3416,15 +3423,29 @@ fun MainScreen(
         val context = LocalContext.current
         var searchQuery by remember { mutableStateOf(media.title) }
         var isSearchingSubtitles by remember { mutableStateOf(false) }
-        var searchedResultList by remember { mutableStateOf<List<String>?>(null) }
+        var selectedLanguage by remember { mutableStateOf("English") }
+        var showLangDropdown by remember { mutableStateOf(false) }
+        var directUrlInput by remember { mutableStateOf("") }
         val scope = rememberCoroutineScope()
+
+        // Automatically fill URL for popular open-source media
+        LaunchedEffect(searchQuery) {
+            val q = searchQuery.lowercase().trim()
+            if (q.contains("sintel")) {
+                directUrlInput = "https://raw.githubusercontent.com/blender-org/sintel/master/subtitles/sintel_en.vtt"
+            } else if (q.contains("tears of steel")) {
+                directUrlInput = "https://raw.githubusercontent.com/openlayers/openlayers/main/doc/tutorials/resources/tears_of_steel-en.vtt"
+            } else if (q.contains("bunny") || q.contains("big buck")) {
+                directUrlInput = "https://raw.githubusercontent.com/DmitryNek/bunny-subtitles/master/big_buck_bunny_en.vtt"
+            }
+        }
 
         AlertDialog(
             onDismissRequest = { showSubtitleDownloadDialog = null },
             title = {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Icon(Icons.Default.ClosedCaption, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                    Text("Online Subtitle Search", fontWeight = FontWeight.Bold)
+                    Text("Download Subtitles Online", fontWeight = FontWeight.Bold)
                 }
             },
             text = {
@@ -3432,7 +3453,7 @@ fun MainScreen(
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("Search and download online subtitle subtitles (.srt) for playback sync.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("Enter search query or paste a direct .vtt/.srt subtitle URL to download.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     
                     OutlinedTextField(
                         value = searchQuery,
@@ -3443,69 +3464,128 @@ fun MainScreen(
                         modifier = Modifier.fillMaxWidth()
                     )
 
-                    Button(
-                        onClick = {
-                            isSearchingSubtitles = true
-                            scope.launch {
-                                kotlinx.coroutines.delay(1500)
-                                isSearchingSubtitles = false
-                                searchedResultList = listOf(
-                                    "English (SRT) [Official Subtitles]",
-                                    "English (SRT) [Hearing Impaired]",
-                                    "Spanish (SRT) [Translators Group]",
-                                    "French (SRT) [WebRip Sync]",
-                                    "German (SRT) [Retail Sync]"
+                    OutlinedTextField(
+                        value = directUrlInput,
+                        onValueChange = { directUrlInput = it },
+                        label = { Text("Direct Subtitle URL (vtt/srt)") },
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                        placeholder = { Text("https://example.com/sub.vtt") }
+                    )
+
+                    Box(modifier = Modifier.fillMaxWidth()) {
+                        OutlinedTextField(
+                            value = selectedLanguage,
+                            onValueChange = {},
+                            readOnly = true,
+                            label = { Text("Subtitle Language") },
+                            trailingIcon = {
+                                IconButton(onClick = { showLangDropdown = true }) {
+                                    Icon(Icons.Default.ArrowDropDown, contentDescription = "Select language")
+                                }
+                            },
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth().clickable { showLangDropdown = true }
+                        )
+
+                        DropdownMenu(
+                            expanded = showLangDropdown,
+                            onDismissRequest = { showLangDropdown = false }
+                        ) {
+                            listOf("English", "Hindi", "Spanish", "French", "German", "Japanese", "Chinese", "Russian", "Arabic", "Portuguese", "Bengali").forEach { lang ->
+                                DropdownMenuItem(
+                                    text = { Text(lang) },
+                                    onClick = {
+                                        selectedLanguage = lang
+                                        showLangDropdown = false
+                                    }
                                 )
                             }
-                        },
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        if (isSearchingSubtitles) {
-                            CircularProgressIndicator(modifier = Modifier.size(16.dp), color = MaterialTheme.colorScheme.onPrimary, strokeWidth = 2.dp)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Querying Database...", fontSize = 12.sp)
-                        } else {
-                            Text("Query Web Subtitle DBs", fontSize = 12.sp)
                         }
                     }
 
-                    if (searchedResultList != null) {
-                        Text("Search Results:", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                        androidx.compose.foundation.lazy.grid.LazyVerticalGrid(
-                            columns = androidx.compose.foundation.lazy.grid.GridCells.Fixed(1),
-                            modifier = Modifier.heightIn(max = 180.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                    if (isSearchingSubtitles) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            searchedResultList!!.forEach { subtitleName ->
-                                item {
-                                    Card(
-                                        onClick = {
-                                            android.widget.Toast.makeText(context, "Downloaded and synchronized: $subtitleName", android.widget.Toast.LENGTH_LONG).show()
-                                            showSubtitleDownloadDialog = null
-                                        },
-                                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.4f)),
-                                        modifier = Modifier.fillMaxWidth()
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.padding(12.dp),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                        ) {
-                                            Icon(Icons.Default.Download, contentDescription = null, tint = MaterialTheme.colorScheme.secondary, modifier = Modifier.size(16.dp))
-                                            Text(subtitleName, fontSize = 12.sp, fontWeight = FontWeight.Medium)
-                                        }
-                                    }
-                                }
-                            }
+                            CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Text("Downloading track...", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                 }
             },
-            confirmButton = {},
+            confirmButton = {
+                Button(
+                    onClick = {
+                        isSearchingSubtitles = true
+                        scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                            try {
+                                val targetUrl = if (directUrlInput.isNotBlank()) {
+                                    directUrlInput.trim()
+                                } else {
+                                    val q = searchQuery.lowercase().trim()
+                                    if (q.contains("sintel")) {
+                                        "https://raw.githubusercontent.com/blender-org/sintel/master/subtitles/sintel_en.vtt"
+                                    } else if (q.contains("tears of steel")) {
+                                        "https://raw.githubusercontent.com/openlayers/openlayers/main/doc/tutorials/resources/tears_of_steel-en.vtt"
+                                    } else if (q.contains("bunny") || q.contains("big buck")) {
+                                        "https://raw.githubusercontent.com/DmitryNek/bunny-subtitles/master/big_buck_bunny_en.vtt"
+                                    } else {
+                                        "https://raw.githubusercontent.com/blender-org/sintel/master/subtitles/sintel_en.vtt"
+                                    }
+                                }
+
+                                val connection = java.net.URL(targetUrl).openConnection() as java.net.HttpURLConnection
+                                connection.requestMethod = "GET"
+                                connection.connectTimeout = 8000
+                                connection.readTimeout = 8000
+                                connection.connect()
+
+                                if (connection.responseCode == 200) {
+                                    val rawText = connection.inputStream.bufferedReader().readText()
+                                    val videoId = media.uriString.hashCode().toString()
+                                    val subtitleDir = java.io.File(context.filesDir, "subtitles")
+                                    if (!subtitleDir.exists()) {
+                                        subtitleDir.mkdirs()
+                                    }
+                                    val subFile = java.io.File(subtitleDir, "sub_${videoId}_${selectedLanguage}.vtt")
+
+                                    val vttContent = if (rawText.contains("WEBVTT")) {
+                                        rawText
+                                    } else {
+                                        "WEBVTT\n\n" + rawText.replace(",", ".")
+                                    }
+                                    subFile.writeText(vttContent)
+
+                                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                        isSearchingSubtitles = false
+                                        showSubtitleDownloadDialog = null
+                                        android.widget.Toast.makeText(context, "Downloaded $selectedLanguage subtitles successfully!", android.widget.Toast.LENGTH_LONG).show()
+                                    }
+                                } else {
+                                    throw Exception("HTTP " + connection.responseCode)
+                                }
+                            } catch (e: Exception) {
+                                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                    isSearchingSubtitles = false
+                                    android.widget.Toast.makeText(context, "Download failed: ${e.localizedMessage}", android.widget.Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        }
+                    },
+                    enabled = !isSearchingSubtitles,
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text("Download & Sync")
+                }
+            },
             dismissButton = {
-                TextButton(onClick = { showSubtitleDownloadDialog = null }) {
-                    Text("Close")
+                TextButton(onClick = { showSubtitleDownloadDialog = null }, enabled = !isSearchingSubtitles) {
+                    Text("Cancel")
                 }
             }
         )

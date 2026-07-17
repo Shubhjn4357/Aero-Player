@@ -125,14 +125,8 @@ fun PermissionAndNavigationContainer(viewModel: MainViewModel) {
         }
     }
 
-    // App Navigation Content - Bypass blocking check entirely
-    if (!prefs.onboardingCompleted) {
-        OnboardingScreen(
-            onFinished = {
-                viewModel.completeOnboarding()
-            }
-        )
-    } else {
+    // App Navigation Content - Main screen is index screen, onboarding is a secondary overlay
+    Box(modifier = Modifier.fillMaxSize()) {
         AnimatedContent(
             targetState = currentScreen,
             transitionSpec = {
@@ -203,6 +197,14 @@ fun PermissionAndNavigationContainer(viewModel: MainViewModel) {
                     )
                 }
             }
+        }
+
+        if (!prefs.onboardingCompleted) {
+            OnboardingScreen(
+                onFinished = {
+                    viewModel.completeOnboarding()
+                }
+            )
         }
     }
 }
