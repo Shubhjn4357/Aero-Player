@@ -71,10 +71,20 @@ data class PreferenceEntity(
     val subtitleBackground: String = "#00000000",
     val subtitleTextColor: String = "#FFFFFF",
     val subtitleFontStyle: String = "Normal",
+    val subtitleShadowColor: String = "#FF000000",
+    val subtitleShadowRadius: Float = 3f,
+    val subtitleShadowOpacity: Float = 1.0f,
+    val subtitleOutlineColor: String = "#FF000000",
+    val subtitleOutlineWidth: Float = 2f,
+    val subtitleOutlineOpacity: Float = 1.0f,
+    val subtitleOpacity: Float = 1.0f,
+    val subtitlePreset: String = "Custom",
+    val subtitleEncoding: String = "UTF-8",
     val saveVolumeBrightnessBehavior: String = "None", // "None", "Global", "Individual"
     val globalVolume: Float = 1.0f,
     val globalBrightness: Float = 0.5f,
     val useDynamicColor: Boolean = true,
     val useGroupWiseFolderStyle: Boolean = true,
-    val groupByStyle: String = "none"
+    val groupByStyle: String = "none",
+    val deletedUrisJson: String = "[]"
 )

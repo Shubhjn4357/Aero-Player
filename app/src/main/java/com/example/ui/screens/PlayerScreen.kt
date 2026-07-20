@@ -15,6 +15,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -35,6 +36,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.scale
@@ -58,13 +60,16 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.interaction.collectIsDraggedAsState
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.example.data.database.MediaEntity
 import com.example.data.database.displayArtist
-import com.example.ui.viewmodel.MainViewModel
+import com.example.ui.viewmodel.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.abs
@@ -98,19 +103,21 @@ fun PlayerScreen(
     val exoPlayer = viewModel.exoPlayer
 
     var showResumePrompt by remember { mutableStateOf(false) }
+    var isNewSession by remember { mutableStateOf(true) }
     var resumePosition by remember { mutableStateOf(0L) }
     var isPlaying by remember { mutableStateOf(true) }
     val currentEqualizerPreset by viewModel.currentEqualizerPreset.collectAsState()
     var resizeMode by remember { mutableStateOf(AspectRatioFrameLayout.RESIZE_MODE_FIT) }
     var currentBrightness by remember { mutableStateOf(-1f) }
     var showOnlineSubtitleDownloader by remember { mutableStateOf(false) }
+    var playAsAudioOnly by remember { mutableStateOf(viewModel.audioOnlyPlaybackRequested) }
 
     // Session-based screen orientation override (not stored persistently)
     var sessionOrientation by remember(prefs.defaultOrientation) {
         mutableStateOf(
             when (prefs.defaultOrientation) {
                 "Portrait" -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-                "Landscape" -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+                "Landscape" -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
                 "Reverse Portrait" -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_REVERSE_PORTRAIT
                 "Reverse Landscape" -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE
                 else -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
@@ -119,23 +126,47 @@ fun PlayerScreen(
     }
 
     // Apply orientation changes dynamically
-    LaunchedEffect(sessionOrientation, prefs.rotationLock) {
-        if (prefs.rotationLock) {
-            (context as? android.app.Activity)?.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LOCKED
-        } else {
-            (context as? android.app.Activity)?.requestedOrientation = sessionOrientation
+    LaunchedEffect(sessionOrientation, prefs.rotationLock, activeMediaItem, playAsAudioOnly) {
+        val isAudio = !activeMediaItem.isVideo || playAsAudioOnly
+        val activity = context as? android.app.Activity
+        if (activity != null) {
+            if (isAudio) {
+                if (prefs.rotationLock) {
+                    activity.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                } else {
+                    activity.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR
+                }
+            } else {
+                if (prefs.rotationLock) {
+                    activity.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LOCKED
+                } else {
+                    val targetOrientation = if (sessionOrientation == android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE) {
+                        android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                    } else {
+                        sessionOrientation
+                    }
+                    activity.requestedOrientation = targetOrientation
+                }
+            }
         }
     }
 
     // Restore default orientation and manage immersive system UI on player screen lifecycle
-    DisposableEffect(Unit) {
+    DisposableEffect(activeMediaItem, playAsAudioOnly) {
+        val isAudio = !activeMediaItem.isVideo || playAsAudioOnly
         val activity = context as? android.app.Activity
         val window = activity?.window
         if (window != null) {
             val windowInsetsController = androidx.core.view.WindowCompat.getInsetsController(window, window.decorView)
-            windowInsetsController.systemBarsBehavior =
-                androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-            windowInsetsController.hide(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+            if (!isAudio) {
+                // Enter immersive full screen mode ONLY for video player
+                windowInsetsController.systemBarsBehavior =
+                    androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                windowInsetsController.hide(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+            } else {
+                // Keep standard system bars visible for audio player
+                windowInsetsController.show(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+            }
         }
         onDispose {
             (context as? android.app.Activity)?.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
@@ -148,11 +179,26 @@ fun PlayerScreen(
 
     // Listen to Lifecycle Events to pause playback instantly when minimized
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner, exoPlayer) {
+    DisposableEffect(lifecycleOwner, exoPlayer, prefs, isInPipMode, activeMediaItem) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
-            if (event == androidx.lifecycle.Lifecycle.Event.ON_PAUSE ||
-                event == androidx.lifecycle.Lifecycle.Event.ON_STOP) {
-                exoPlayer.pause()
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_PAUSE) {
+                val activity = context as? android.app.Activity
+                val activityInPip = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+                    activity?.isInPictureInPictureMode == true
+                } else {
+                    false
+                }
+                val inPip = isInPipMode || activityInPip
+                val shouldPlayBackground = prefs.backgroundMode == "PLAY_BACKGROUND_AUDIO" ||
+                        (prefs.backgroundMode == "LAUNCH_PIP_MODE" && activeMediaItem.isVideo && inPip)
+                if (!shouldPlayBackground) {
+                    exoPlayer.pause()
+                }
+            } else if (event == androidx.lifecycle.Lifecycle.Event.ON_STOP) {
+                val shouldPlayBackground = prefs.backgroundMode == "PLAY_BACKGROUND_AUDIO"
+                if (!shouldPlayBackground) {
+                    exoPlayer.pause()
+                }
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -164,10 +210,11 @@ fun PlayerScreen(
     // Load Uri Source
     LaunchedEffect(activeMediaItem) {
         val currentUri = try { exoPlayer.currentMediaItem?.localConfiguration?.uri?.toString() } catch (e: Exception) { null }
-        if (currentUri == activeMediaItem.uriString) {
+        if (currentUri == activeMediaItem.uriString && !isNewSession) {
             // Already playing this item, don't restart it
             return@LaunchedEffect
         }
+        isNewSession = false
 
         // Stop and clear media items sequentially to prevent playback freeze on play/re-play
         exoPlayer.stop()
@@ -212,6 +259,11 @@ fun PlayerScreen(
         exoPlayer.setPlaybackSpeed(speedToApply)
         exoPlayer.volume = volumeToApply
         resizeMode = resizeToApply
+        // Ensure subtitle/text tracks are NOT disabled and can be selected by default!
+        exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
+            .buildUpon()
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+            .build()
         if (eqPresetToApply.isNotBlank()) {
             viewModel.applyPreset(eqPresetToApply)
         }
@@ -233,8 +285,7 @@ fun PlayerScreen(
             currentBrightness = if (currentB < 0f) 0.5f else currentB
         }
 
-        val historyList = viewModel.historyState.value
-        val history = historyList.find { it.uriString == activeMediaItem.uriString }
+        val history = viewModel.getHistoryByUri(activeMediaItem.uriString)
         if (history != null && history.progressMs > 1000L && history.progressMs < history.duration - 5000L) {
             resumePosition = history.progressMs
             when (prefs.resumePlaybackBehavior) {
@@ -273,9 +324,19 @@ fun PlayerScreen(
         }
     }
 
+    // Log history immediately when playback is paused
+    LaunchedEffect(isPlaying) {
+        if (!isPlaying) {
+            viewModel.addPlaybackHistory(activeMediaItem, exoPlayer.currentPosition)
+        }
+    }
+
     DisposableEffect(activeMediaItem) {
         onDispose {
             viewModel.addPlaybackHistory(activeMediaItem, exoPlayer.currentPosition)
+            if (activeMediaItem.isVideo && !isPipActive && !isInPipMode) {
+                exoPlayer.pause()
+            }
         }
     }
 
@@ -321,6 +382,12 @@ fun PlayerScreen(
     var duration by remember { mutableStateOf(0L) }
     var isControlsVisible by remember { mutableStateOf(true) }
     var isLocked by remember { mutableStateOf(false) }
+    var isSaved by remember(activeMediaItem.uriString, prefs.playlistsJson) {
+        mutableStateOf(viewModel.isMediaFavorite(activeMediaItem.uriString))
+    }
+    var isLeftPillExpanded by remember { mutableStateOf(false) }
+    var isRightPillExpanded by remember { mutableStateOf(false) }
+    var rotateAngle by remember { mutableStateOf(0f) }
     var isLockControlVisible by remember { mutableStateOf(true) }
     var isScrubbing by remember { mutableStateOf(false) }
     var scrubPosition by remember { mutableStateOf(0L) }
@@ -331,35 +398,62 @@ fun PlayerScreen(
     var selectedMockSubtitleIndex by remember { mutableStateOf(0) }
     var selectedMockVideoIndex by remember { mutableStateOf(0) }
 
-    // Async thumbnail extractor during scrubbing
-    LaunchedEffect(scrubPosition, activeMediaItem, isScrubbing) {
+    // Async thumbnail extractor during scrubbing (highly optimized, preloaded, cached seek frame system)
+    var cachedRetriever by remember { mutableStateOf<android.media.MediaMetadataRetriever?>(null) }
+
+    LaunchedEffect(isScrubbing, activeMediaItem) {
         if (isScrubbing && activeMediaItem.isVideo) {
-            delay(120) // debounce slight dragging jitter
             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                val retriever = android.media.MediaMetadataRetriever()
                 try {
+                    val r = android.media.MediaMetadataRetriever()
                     if (activeMediaItem.uriString.startsWith("content://")) {
-                        retriever.setDataSource(context, android.net.Uri.parse(activeMediaItem.uriString))
+                        r.setDataSource(context, android.net.Uri.parse(activeMediaItem.uriString))
                     } else {
-                        retriever.setDataSource(activeMediaItem.path ?: activeMediaItem.uriString)
+                        r.setDataSource(activeMediaItem.path ?: activeMediaItem.uriString)
                     }
-                    val frame = retriever.getFrameAtTime(
-                        scrubPosition * 1000L,
-                        android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC
-                    )
+                    cachedRetriever = r
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+        } else {
+            val r = cachedRetriever
+            cachedRetriever = null
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                try {
+                    r?.release()
+                } catch (e: Exception) {}
+            }
+            scrubbingBitmap = null
+        }
+    }
+
+    LaunchedEffect(scrubPosition, cachedRetriever) {
+        val retriever = cachedRetriever
+        if (retriever != null && isScrubbing) {
+            delay(40) // fast debounce
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                try {
+                    val frame = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O_MR1) {
+                        retriever.getScaledFrameAtTime(
+                            scrubPosition * 1000L,
+                            android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                            160, // width
+                            95   // height
+                        )
+                    } else {
+                        retriever.getFrameAtTime(
+                            scrubPosition * 1000L,
+                            android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC
+                        )
+                    }
                     if (frame != null) {
                         scrubbingBitmap = frame
                     }
                 } catch (e: Exception) {
                     e.printStackTrace()
-                } finally {
-                    try {
-                        retriever.release()
-                    } catch (e: Exception) {}
                 }
             }
-        } else if (!isScrubbing) {
-            scrubbingBitmap = null
         }
     }
 
@@ -388,7 +482,6 @@ fun PlayerScreen(
 
     // Playback modifiers
     var bookmarks by remember { mutableStateOf(listOf<Long>()) }
-    var playAsAudioOnly by remember { mutableStateOf(viewModel.audioOnlyPlaybackRequested) }
 
     LaunchedEffect(Unit) {
         if (viewModel.audioOnlyPlaybackRequested) {
@@ -420,13 +513,19 @@ fun PlayerScreen(
     var gestureSessionType by remember { mutableStateOf("none") }
     var totalPanX by remember { mutableStateOf(0f) }
     var totalPanY by remember { mutableStateOf(0f) }
+    var tracksUpdateTrigger by remember { mutableStateOf(0) }
 
     var lastGestureTime by remember { mutableStateOf(0L) }
 
     var leftRippleTrigger by remember { mutableStateOf(0) }
     var rightRippleTrigger by remember { mutableStateOf(0) }
+    var centerRippleTrigger by remember { mutableStateOf(0) }
+    var leftDoubleTapOffset by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
+    var rightDoubleTapOffset by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
+    var centerDoubleTapOffset by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
     val leftAnim = remember { Animatable(0f) }
     val rightAnim = remember { Animatable(0f) }
+    val centerAnim = remember { Animatable(0f) }
 
     LaunchedEffect(leftRippleTrigger) {
         if (leftRippleTrigger > 0) {
@@ -436,6 +535,17 @@ fun PlayerScreen(
                 animationSpec = tween(durationMillis = 650, easing = LinearOutSlowInEasing)
             )
             leftAnim.snapTo(0f)
+        }
+    }
+
+    LaunchedEffect(centerRippleTrigger) {
+        if (centerRippleTrigger > 0) {
+            centerAnim.snapTo(0f)
+            centerAnim.animateTo(
+                targetValue = 1f,
+                animationSpec = tween(durationMillis = 650, easing = LinearOutSlowInEasing)
+            )
+            centerAnim.snapTo(0f)
         }
     }
 
@@ -495,9 +605,9 @@ fun PlayerScreen(
         }
     }
 
-    DisposableEffect(isPlaying, isSleepTimerRunning, sleepTimeLeftMinutes) {
+    DisposableEffect(isPlaying, isSleepTimerRunning, sleepTimeLeftMinutes, isLocked) {
         val activity = context as? android.app.Activity
-        if (isPlaying && (!isSleepTimerRunning || sleepTimeLeftMinutes > 0)) {
+        if ((isPlaying || isLocked) && (!isSleepTimerRunning || sleepTimeLeftMinutes > 0)) {
             try {
                 if (!wakeLock.isHeld) {
                     wakeLock.acquire(10 * 60 * 1000L) // 10 mins fallback lock
@@ -550,6 +660,9 @@ fun PlayerScreen(
                     duration = exoPlayer.duration
                     playbackErrorMsg = null
                 }
+            }
+            override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
+                tracksUpdateTrigger++
             }
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
                 playbackErrorMsg = "Unable to play source: ${error.localizedMessage ?: "Network or codec failure"}"
@@ -734,10 +847,9 @@ fun PlayerScreen(
             onTogglePlay = {
                 if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
             },
-            onSeek = { percent ->
-                val target = (percent * duration).toLong()
-                exoPlayer.seekTo(target)
-                currentPosition = target
+            onSeek = { pos ->
+                exoPlayer.seekTo(pos)
+                currentPosition = pos
             },
             onPrev = { viewModel.playPrevious() },
             onNext = { viewModel.playNext() },
@@ -756,13 +868,22 @@ fun PlayerScreen(
             onOpenQueue = { showQueueSheet = true },
             onOpenSleepTimer = { showSleepTimerSheet = true },
             onOpenEqualizer = { showEqualizerSheet = true },
-            onOpenInfo = { showVideoInfoOverlay = true }
+            onOpenInfo = { showVideoInfoOverlay = true },
+            isSaved = isSaved,
+            onToggleFavorite = {
+                viewModel.toggleFavoriteMedia(activeMediaItem.uriString)
+                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                val msg = if (!isSaved) "Saved to Library ❤️" else "Removed from Library"
+                android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
+            },
+            onOpenAdvancedControls = { showAdvancedControlsSheet = true }
         )
     } else {
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(Color.Black)
+                .padding(vertical = 5.dp)
         ) {
             // Video View or Audio Vinyl visualizer
             Box(
@@ -842,8 +963,10 @@ fun PlayerScreen(
                                                         
                                                         val currentPercent = (currentBri * 100).toInt()
                                                         val targetPercent = (targetB * 100).toInt()
-                                                        if (currentPercent != targetPercent && targetPercent % 2 == 0) {
-                                                            hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                                        val prevStep = (currentBri * 10).toInt()
+                                                        val nextStep = (targetB * 10).toInt()
+                                                        if (prevStep != nextStep) {
+                                                            hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
                                                         }
                                                         
                                                         activeDragBrightness = targetB
@@ -861,12 +984,13 @@ fun PlayerScreen(
                                                         
                                                         val currentPercent = (currentVol * 100).toInt()
                                                         val targetPercent = (targetV * 100).toInt()
-                                                        if (currentPercent != targetPercent && targetPercent % 2 == 0) {
-                                                            hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                                        val prevSysVol = (currentVol * maxVolume).roundToInt().coerceIn(0, maxVolume)
+                                                        val systemVol = (targetV * maxVolume).roundToInt().coerceIn(0, maxVolume)
+                                                        if (prevSysVol != systemVol) {
+                                                            hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
                                                         }
                                                         
                                                         activeDragVolume = targetV
-                                                        val systemVol = (targetV * maxVolume).roundToInt().coerceIn(0, maxVolume)
                                                         audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, systemVol, 0)
                                                         gestureFeedbackValue = "$targetPercent%"
                                                     }
@@ -905,12 +1029,22 @@ fun PlayerScreen(
                                 if (!isLocked) {
                                     val width = size.width
                                     val seekAmountMs = (prefs.doubleTapSeekSeconds * 1000L)
-                                    if (offset.x < width / 2) {
+                                    hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                                    if (offset.x > width * 0.30f && offset.x < width * 0.70f) {
+                                        centerDoubleTapOffset = offset
+                                        centerRippleTrigger++
+                                        if (exoPlayer.isPlaying) {
+                                            exoPlayer.pause()
+                                        } else {
+                                            exoPlayer.play()
+                                        }
+                                    } else if (offset.x <= width * 0.30f) {
                                         val targetSeek = (exoPlayer.currentPosition - seekAmountMs).coerceAtLeast(0L)
                                         exoPlayer.seekTo(targetSeek)
                                         currentPosition = targetSeek
                                         gestureFeedbackType = "seek_back"
                                         gestureFeedbackValue = "-${prefs.doubleTapSeekSeconds}s"
+                                        leftDoubleTapOffset = offset
                                         leftRippleTrigger++
                                     } else {
                                         val targetSeek = (exoPlayer.currentPosition + seekAmountMs).coerceAtMost(duration)
@@ -918,6 +1052,7 @@ fun PlayerScreen(
                                         currentPosition = targetSeek
                                         gestureFeedbackType = "seek_forward"
                                         gestureFeedbackValue = "+${prefs.doubleTapSeekSeconds}s"
+                                        rightDoubleTapOffset = offset
                                         rightRippleTrigger++
                                     }
                                     coroutineScope.launch {
@@ -954,7 +1089,13 @@ fun PlayerScreen(
                         update = { view -> 
                             view.resizeMode = resizeMode
                             try {
-                                val textColorInt = try { android.graphics.Color.parseColor(prefs.subtitleTextColor) } catch (e: Exception) { android.graphics.Color.WHITE }
+                                val textColorInt = try {
+                                    val baseColor = android.graphics.Color.parseColor(prefs.subtitleTextColor)
+                                    val alpha = (prefs.subtitleOpacity * 255).toInt().coerceIn(0, 255)
+                                    (baseColor and 0x00FFFFFF) or (alpha shl 24)
+                                } catch (e: Exception) {
+                                    android.graphics.Color.WHITE
+                                }
                                 val bgColorInt = try { android.graphics.Color.parseColor(prefs.subtitleBackground) } catch (e: Exception) { android.graphics.Color.TRANSPARENT }
                                 
                                 val fontTypeface = when (prefs.subtitleFontStyle) {
@@ -963,16 +1104,45 @@ fun PlayerScreen(
                                     else -> android.graphics.Typeface.DEFAULT
                                 }
                                 
+                                val edgeType = if (prefs.subtitleOutlineColor != "#00000000" && prefs.subtitleOutlineColor.isNotEmpty()) {
+                                    androidx.media3.ui.CaptionStyleCompat.EDGE_TYPE_OUTLINE
+                                } else if (prefs.subtitleShadowColor != "#00000000" && prefs.subtitleShadowColor.isNotEmpty()) {
+                                    androidx.media3.ui.CaptionStyleCompat.EDGE_TYPE_DROP_SHADOW
+                                } else {
+                                    androidx.media3.ui.CaptionStyleCompat.EDGE_TYPE_NONE
+                                }
+
+                                val edgeColorInt = try {
+                                    if (prefs.subtitleOutlineColor != "#00000000" && prefs.subtitleOutlineColor.isNotEmpty()) {
+                                        val baseEdgeColor = android.graphics.Color.parseColor(prefs.subtitleOutlineColor)
+                                        val edgeAlpha = (prefs.subtitleOutlineOpacity * 255).toInt().coerceIn(0, 255)
+                                        (baseEdgeColor and 0x00FFFFFF) or (edgeAlpha shl 24)
+                                    } else if (prefs.subtitleShadowColor != "#00000000" && prefs.subtitleShadowColor.isNotEmpty()) {
+                                        val baseEdgeColor = android.graphics.Color.parseColor(prefs.subtitleShadowColor)
+                                        val edgeAlpha = (prefs.subtitleShadowOpacity * 255).toInt().coerceIn(0, 255)
+                                        (baseEdgeColor and 0x00FFFFFF) or (edgeAlpha shl 24)
+                                    } else {
+                                        android.graphics.Color.BLACK
+                                    }
+                                } catch (e: Exception) {
+                                    android.graphics.Color.BLACK
+                                }
+
                                 val captionStyle = androidx.media3.ui.CaptionStyleCompat(
                                     textColorInt,
                                     bgColorInt,
                                     android.graphics.Color.TRANSPARENT,
-                                    androidx.media3.ui.CaptionStyleCompat.EDGE_TYPE_OUTLINE,
-                                    android.graphics.Color.BLACK,
+                                    edgeType,
+                                    edgeColorInt,
                                     fontTypeface
                                 )
-                                view.subtitleView?.setStyle(captionStyle)
-                                view.subtitleView?.setFixedTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, prefs.subtitleSize)
+                                view.subtitleView?.let { subView ->
+                                    subView.setViewType(androidx.media3.ui.SubtitleView.VIEW_TYPE_CANVAS)
+                                    subView.setApplyEmbeddedStyles(false)
+                                    subView.setApplyEmbeddedFontSizes(false)
+                                    subView.setStyle(captionStyle)
+                                    subView.setFixedTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, prefs.subtitleSize)
+                                }
                             } catch (e: Exception) {
                                 e.printStackTrace()
                             }
@@ -987,39 +1157,164 @@ fun PlayerScreen(
                     )
                 }
 
-                // Double Tap Ripple Animations
+                // Double Tap Ripple Animations (Unified Full-Screen Canvas for Perfect Placement)
+                val primaryColor = MaterialTheme.colorScheme.primary
+                androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
+                    // Left Ripple
+                    val leftProgress = leftAnim.value
+                    if (leftProgress > 0f && leftProgress < 1f) {
+                        val tapCenter = if (leftDoubleTapOffset != androidx.compose.ui.geometry.Offset.Zero) {
+                            leftDoubleTapOffset
+                        } else {
+                            androidx.compose.ui.geometry.Offset(size.width * 0.15f, size.height / 2f)
+                        }
+                        // Base fading glow
+                        val glowAlpha = (1f - leftProgress) * 0.18f
+                        val glowRadius = size.height * 0.7f * leftProgress
+                        drawCircle(
+                            brush = androidx.compose.ui.graphics.Brush.radialGradient(
+                                colors = listOf(
+                                    primaryColor.copy(alpha = glowAlpha),
+                                    primaryColor.copy(alpha = 0f)
+                                ),
+                                center = tapCenter,
+                                radius = glowRadius.coerceAtLeast(1f)
+                            ),
+                            radius = glowRadius,
+                            center = tapCenter
+                        )
+                        // Sharp expanding rings (two of them)
+                        val ring1Alpha = (1f - leftProgress) * 0.5f
+                        val ring1Radius = size.height * 0.55f * leftProgress
+                        drawCircle(
+                            color = primaryColor,
+                            radius = ring1Radius,
+                            center = tapCenter,
+                            alpha = ring1Alpha,
+                            style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.dp.toPx())
+                        )
+                        if (leftProgress > 0.2f) {
+                            val progress2 = (leftProgress - 0.2f) / 0.8f
+                            val ring2Alpha = (1f - progress2) * 0.3f
+                            val ring2Radius = size.height * 0.55f * progress2
+                            drawCircle(
+                                color = primaryColor,
+                                radius = ring2Radius,
+                                center = tapCenter,
+                                alpha = ring2Alpha,
+                                style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.dp.toPx())
+                            )
+                        }
+                    }
+
+                    // Center Ripple
+                    val centerProgress = centerAnim.value
+                    if (centerProgress > 0f && centerProgress < 1f) {
+                        val tapCenter = if (centerDoubleTapOffset != androidx.compose.ui.geometry.Offset.Zero) {
+                            centerDoubleTapOffset
+                        } else {
+                            androidx.compose.ui.geometry.Offset(size.width / 2f, size.height / 2f)
+                        }
+                        // Base fading glow
+                        val glowAlpha = (1f - centerProgress) * 0.25f
+                        val glowRadius = size.height * 0.4f * centerProgress
+                        drawCircle(
+                            brush = androidx.compose.ui.graphics.Brush.radialGradient(
+                                colors = listOf(
+                                    primaryColor.copy(alpha = glowAlpha),
+                                    primaryColor.copy(alpha = 0f)
+                                ),
+                                center = tapCenter,
+                                radius = glowRadius.coerceAtLeast(1f)
+                            ),
+                            radius = glowRadius,
+                            center = tapCenter
+                        )
+                        // Fading and expanding ring
+                        val ringAlpha = (1f - centerProgress) * 0.6f
+                        val ringRadius = size.height * 0.3f * centerProgress
+                        drawCircle(
+                            color = primaryColor,
+                            radius = ringRadius,
+                            center = tapCenter,
+                            alpha = ringAlpha,
+                            style = androidx.compose.ui.graphics.drawscope.Stroke(width = 3.dp.toPx())
+                        )
+                    }
+
+                    // Right Ripple
+                    val rightProgress = rightAnim.value
+                    if (rightProgress > 0f && rightProgress < 1f) {
+                        val tapCenter = if (rightDoubleTapOffset != androidx.compose.ui.geometry.Offset.Zero) {
+                            rightDoubleTapOffset
+                        } else {
+                            androidx.compose.ui.geometry.Offset(size.width * 0.85f, size.height / 2f)
+                        }
+                        // Base fading glow
+                        val glowAlpha = (1f - rightProgress) * 0.18f
+                        val glowRadius = size.height * 0.7f * rightProgress
+                        drawCircle(
+                            brush = androidx.compose.ui.graphics.Brush.radialGradient(
+                                colors = listOf(
+                                    primaryColor.copy(alpha = glowAlpha),
+                                    primaryColor.copy(alpha = 0f)
+                                ),
+                                center = tapCenter,
+                                radius = glowRadius.coerceAtLeast(1f)
+                            ),
+                            radius = glowRadius,
+                            center = tapCenter
+                        )
+                        // Sharp expanding rings (two of them)
+                        val ring1Alpha = (1f - rightProgress) * 0.5f
+                        val ring1Radius = size.height * 0.55f * rightProgress
+                        drawCircle(
+                            color = primaryColor,
+                            radius = ring1Radius,
+                            center = tapCenter,
+                            alpha = ring1Alpha,
+                            style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.dp.toPx())
+                        )
+                        if (rightProgress > 0.2f) {
+                            val progress2 = (rightProgress - 0.2f) / 0.8f
+                            val ring2Alpha = (1f - progress2) * 0.3f
+                            val ring2Radius = size.height * 0.55f * progress2
+                            drawCircle(
+                                color = primaryColor,
+                                radius = ring2Radius,
+                                center = tapCenter,
+                                alpha = ring2Alpha,
+                                style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.dp.toPx())
+                            )
+                        }
+                    }
+                }
+
+                // Overlay Row for Chevron Controls and Text
                 Row(
                     modifier = Modifier.fillMaxSize()
                 ) {
-                    // Left half (Backward)
+                    // Left third (Backward Overlay)
                     Box(
                         modifier = Modifier
                             .fillMaxHeight()
-                            .weight(1f)
+                            .weight(0.3f)
                     ) {
-                        androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
-                            val progress = leftAnim.value
-                            if (progress > 0f && progress < 1f) {
-                                val alpha = (1f - progress) * 0.35f
-                                val radius = size.height * 0.8f * progress
-                                drawCircle(
-                                    color = Color.White,
-                                    radius = radius,
-                                    center = androidx.compose.ui.geometry.Offset(0f, size.height / 2f),
-                                    alpha = alpha
-                                )
-                            }
-                        }
-
                         if (leftAnim.value > 0f) {
                             val progress = leftAnim.value
                             val alpha = (1f - progress).coerceIn(0f, 1f)
+                            
+                            // Beautiful chasing lights sequence for chevrons
+                            val alpha3 = if (progress in 0.1f..0.5f) 1f else 0.35f
+                            val alpha2 = if (progress in 0.3f..0.7f) 1f else 0.35f
+                            val alpha1 = if (progress in 0.5f..0.9f) 1f else 0.35f
+                            
                             Column(
                                 modifier = Modifier
                                     .align(Alignment.Center)
                                     .graphicsLayer {
                                         this.alpha = alpha
-                                        this.translationX = -progress * 35.dp.toPx()
+                                        this.translationX = -progress * 40.dp.toPx()
                                     },
                                 horizontalAlignment = Alignment.CenterHorizontally,
                                 verticalArrangement = Arrangement.Center
@@ -1031,68 +1326,95 @@ fun PlayerScreen(
                                     Icon(
                                         imageVector = Icons.Default.PlayArrow,
                                         contentDescription = null,
-                                        tint = Color.White,
+                                        tint = Color.White.copy(alpha = alpha1),
                                         modifier = Modifier
-                                            .size(24.dp)
+                                            .size(26.dp)
                                             .graphicsLayer { rotationZ = 180f }
                                     )
                                     Icon(
                                         imageVector = Icons.Default.PlayArrow,
                                         contentDescription = null,
-                                        tint = Color.White,
+                                        tint = Color.White.copy(alpha = alpha2),
                                         modifier = Modifier
-                                            .size(24.dp)
+                                            .size(26.dp)
                                             .graphicsLayer { rotationZ = 180f }
                                     )
                                     Icon(
                                         imageVector = Icons.Default.PlayArrow,
                                         contentDescription = null,
-                                        tint = Color.White,
+                                        tint = Color.White.copy(alpha = alpha3),
                                         modifier = Modifier
-                                            .size(24.dp)
+                                            .size(26.dp)
                                             .graphicsLayer { rotationZ = 180f }
                                     )
                                 }
-                                Spacer(modifier = Modifier.height(4.dp))
+                                Spacer(modifier = Modifier.height(6.dp))
                                 Text(
                                     text = "-${prefs.doubleTapSeekSeconds}s",
                                     color = Color.White,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 14.sp
+                                    fontWeight = FontWeight.ExtraBold,
+                                    fontSize = 16.sp,
+                                    style = MaterialTheme.typography.titleMedium
                                 )
                             }
                         }
                     }
 
-                    // Right half (Forward)
+                    // Center third (Play / Pause double tap feedback Overlay)
                     Box(
                         modifier = Modifier
                             .fillMaxHeight()
-                            .weight(1f)
+                            .weight(0.4f)
                     ) {
-                        androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
-                            val progress = rightAnim.value
-                            if (progress > 0f && progress < 1f) {
-                                val alpha = (1f - progress) * 0.35f
-                                val radius = size.height * 0.8f * progress
-                                drawCircle(
-                                    color = Color.White,
-                                    radius = radius,
-                                    center = androidx.compose.ui.geometry.Offset(size.width, size.height / 2f),
-                                    alpha = alpha
+                        if (centerAnim.value > 0f) {
+                            val progress = centerAnim.value
+                            val alpha = (1f - progress).coerceIn(0f, 1f)
+                            val scale = 0.6f + (progress * 0.6f)
+                            
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.Center)
+                                    .graphicsLayer {
+                                        this.alpha = alpha
+                                        this.scaleX = scale
+                                        this.scaleY = scale
+                                    }
+                                    .size(72.dp)
+                                    .background(Color.Black.copy(alpha = 0.5f), CircleShape)
+                                    .border(1.5.dp, Color.White.copy(alpha = 0.2f), CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                    contentDescription = null,
+                                    tint = Color.White,
+                                    modifier = Modifier.size(36.dp)
                                 )
                             }
                         }
+                    }
 
+                    // Right third (Forward Overlay)
+                    Box(
+                        modifier = Modifier
+                            .fillMaxHeight()
+                            .weight(0.3f)
+                    ) {
                         if (rightAnim.value > 0f) {
                             val progress = rightAnim.value
                             val alpha = (1f - progress).coerceIn(0f, 1f)
+                            
+                            // Beautiful chasing lights sequence for chevrons
+                            val alpha1 = if (progress in 0.1f..0.5f) 1f else 0.35f
+                            val alpha2 = if (progress in 0.3f..0.7f) 1f else 0.35f
+                            val alpha3 = if (progress in 0.5f..0.9f) 1f else 0.35f
+                            
                             Column(
                                 modifier = Modifier
                                     .align(Alignment.Center)
                                     .graphicsLayer {
                                         this.alpha = alpha
-                                        this.translationX = progress * 35.dp.toPx()
+                                        this.translationX = progress * 40.dp.toPx()
                                     },
                                 horizontalAlignment = Alignment.CenterHorizontally,
                                 verticalArrangement = Arrangement.Center
@@ -1104,28 +1426,29 @@ fun PlayerScreen(
                                     Icon(
                                         imageVector = Icons.Default.PlayArrow,
                                         contentDescription = null,
-                                        tint = Color.White,
-                                        modifier = Modifier.size(24.dp)
+                                        tint = Color.White.copy(alpha = alpha1),
+                                        modifier = Modifier.size(26.dp)
                                     )
                                     Icon(
                                         imageVector = Icons.Default.PlayArrow,
                                         contentDescription = null,
-                                        tint = Color.White,
-                                        modifier = Modifier.size(24.dp)
+                                        tint = Color.White.copy(alpha = alpha2),
+                                        modifier = Modifier.size(26.dp)
                                     )
                                     Icon(
                                         imageVector = Icons.Default.PlayArrow,
                                         contentDescription = null,
-                                        tint = Color.White,
-                                        modifier = Modifier.size(24.dp)
+                                        tint = Color.White.copy(alpha = alpha3),
+                                        modifier = Modifier.size(26.dp)
                                     )
                                 }
-                                Spacer(modifier = Modifier.height(4.dp))
+                                Spacer(modifier = Modifier.height(6.dp))
                                 Text(
                                     text = "+${prefs.doubleTapSeekSeconds}s",
                                     color = Color.White,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 14.sp
+                                    fontWeight = FontWeight.ExtraBold,
+                                    fontSize = 16.sp,
+                                    style = MaterialTheme.typography.titleMedium
                                 )
                             }
                         }
@@ -1224,61 +1547,67 @@ fun PlayerScreen(
                 Box(
                     modifier = Modifier.fillMaxSize()
                 ) {
-                    // Floating auto-hide rotate screen button on left top 40%
-                    if (!isLocked) {
-                        val configuration = androidx.compose.ui.platform.LocalConfiguration.current
-                        val screenHeight = configuration.screenHeightDp.dp
-                        val rotateButtonOffsetY = screenHeight * 0.4f
-                        Box(
+                    if (isLocked) {
+                        // Locked Screen State overlay
+                        Row(
                             modifier = Modifier
-                                .align(Alignment.TopStart)
-                                .offset(x = 16.dp, y = rotateButtonOffsetY)
+                                .fillMaxWidth()
+                                .align(Alignment.TopEnd)
+                                .statusBarsPadding()
+                                .padding(horizontal = 24.dp, vertical = 12.dp),
+                            horizontalArrangement = Arrangement.End
                         ) {
                             IconButton(
                                 onClick = {
-                                    hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
-                                    sessionOrientation = if (sessionOrientation == android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE) {
-                                        android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-                                    } else {
-                                        android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-                                    }
+                                    isLockControlVisible = true
                                 },
-                                modifier = Modifier
-                                    .size(48.dp)
-                                    .background(Color.Black.copy(alpha = 0.6f), CircleShape)
+                                modifier = Modifier.background(Color.Black.copy(alpha = 0.5f), CircleShape)
                             ) {
-                                Icon(
-                                    imageVector = Icons.Default.ScreenRotation,
-                                    contentDescription = "Rotate Screen",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(24.dp)
-                                )
+                                Icon(Icons.Default.Lock, contentDescription = "Locked", tint = Color.Red)
                             }
                         }
-                    }
 
-                    // Top gradient background with floating controls
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .align(Alignment.TopCenter)
-                            .background(
-                                if (isLocked) androidx.compose.ui.graphics.SolidColor(Color.Transparent) else androidx.compose.ui.graphics.Brush.verticalGradient(
-                                    colors = listOf(
-                                        Color.Black.copy(alpha = 0.85f),
-                                        Color.Transparent
-                                    )
-                                )
+                        if (isLockControlVisible) {
+                            SwipeToUnlock(
+                                onUnlock = {
+                                    isLocked = false
+                                    isControlsVisible = true
+                                    isLockControlVisible = true
+                                },
+                                modifier = Modifier
+                                    .align(Alignment.BottomCenter)
+                                    .navigationBarsPadding()
+                                    .padding(bottom = 48.dp)
                             )
-                            .statusBarsPadding()
-                            .padding(horizontal = 24.dp, vertical = 5.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
+                        }
+                    } else {
+                        // 1. Subtle dark gradient vignette mask toward top and bottom
+                        val vignetteBrush = androidx.compose.ui.graphics.Brush.verticalGradient(
+                            colors = listOf(
+                                Color.Black.copy(alpha = 0.85f),
+                                Color.Black.copy(alpha = 0.4f),
+                                Color.Transparent,
+                                Color.Transparent,
+                                Color.Black.copy(alpha = 0.4f),
+                                Color.Black.copy(alpha = 0.85f)
+                            )
+                        )
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(vignetteBrush)
                         ) {
-                            if (!isLocked) {
+                            // Top Action Bar (Flex Row)
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .align(Alignment.TopCenter)
+                                    .statusBarsPadding()
+                                    .padding(horizontal = 24.dp, vertical = 12.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.Top
+                            ) {
+                                // Left Cluster: Down arrow chevron + Stacked Text Block (Title / Subtitle)
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -1290,19 +1619,23 @@ fun PlayerScreen(
                                             .background(Color.Black.copy(alpha = 0.5f), CircleShape)
                                             .testTag("player_back_button")
                                     ) {
-                                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
+                                        Icon(
+                                            imageVector = Icons.Default.KeyboardArrowDown,
+                                            contentDescription = "Minimize Player",
+                                            tint = Color.White
+                                        )
                                     }
                                     Column(modifier = Modifier.weight(1f)) {
                                         Text(
                                             text = activeMediaItem.title,
                                             color = Color.White,
-                                            fontSize = 15.sp,
+                                            fontSize = 16.sp,
                                             fontWeight = FontWeight.Bold,
                                             maxLines = 1,
                                             modifier = Modifier.basicMarquee()
                                         )
                                         Text(
-                                            text = activeMediaItem.displayArtist,
+                                            text = "@" + activeMediaItem.displayArtist,
                                             color = Color.White.copy(alpha = 0.6f),
                                             fontSize = 11.sp,
                                             maxLines = 1,
@@ -1310,194 +1643,227 @@ fun PlayerScreen(
                                         )
                                     }
                                 }
-                            } else {
-                                Spacer(modifier = Modifier.weight(1f))
+
+                                // Right Cluster: CC/Subtitles Toggle (other buttons are now on the bottom floating dock!)
+                                IconButton(
+                                    onClick = {
+                                        hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                        showAudioSubtitleSelectorSheet = true
+                                    },
+                                    modifier = Modifier.background(Color.Black.copy(alpha = 0.5f), CircleShape)
+                                ) {
+                                    Icon(Icons.Default.ClosedCaption, contentDescription = "Subtitles & Audio", tint = Color.White)
+                                }
                             }
 
-                            // Top Action Badges
-                            Row(
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                if (!isLocked) {
-                                    // Queue Sheet Button (Play Queue)
-                                    IconButton(
-                                        onClick = {
-                                            showQueueSheet = true
-                                        },
-                                        modifier = Modifier.size(36.dp).testTag("top_queue_button")
+                            val configuration = androidx.compose.ui.platform.LocalConfiguration.current
+                            val isLandscape = configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+
+                            val transportControls = @Composable { isMini: Boolean ->
+                                Row(
+                                    modifier = Modifier.wrapContentSize(),
+                                    horizontalArrangement = Arrangement.spacedBy(if (isMini) 14.dp else 24.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    // Skip Backward (Single Tap: Prev Track, Double Tap: Seek Back 10s with Ripple Animation)
+                                    Box(
+                                        modifier = Modifier
+                                            .size(if (isMini) 42.dp else 52.dp)
+                                            .background(Color.Black.copy(alpha = 0.45f), CircleShape)
+                                            .border(1.dp, Color.White.copy(alpha = 0.1f), CircleShape)
+                                            .pointerInput(Unit) {
+                                                detectTapGestures(
+                                                    onTap = {
+                                                        hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                                        viewModel.playPrevious()
+                                                    },
+                                                    onDoubleTap = {
+                                                        val seekAmountMs = (prefs.doubleTapSeekSeconds * 1000L)
+                                                        val targetSeek = (exoPlayer.currentPosition - seekAmountMs).coerceAtLeast(0L)
+                                                        exoPlayer.seekTo(targetSeek)
+                                                        currentPosition = targetSeek
+                                                        gestureFeedbackType = "seek_back"
+                                                        gestureFeedbackValue = "-${prefs.doubleTapSeekSeconds}s"
+                                                        leftDoubleTapOffset = androidx.compose.ui.geometry.Offset.Zero
+                                                        leftRippleTrigger++
+                                                        coroutineScope.launch {
+                                                            delay(1000)
+                                                            if (gestureFeedbackType == "seek_back") {
+                                                                gestureFeedbackType = ""
+                                                            }
+                                                        }
+                                                    }
+                                                )
+                                            },
+                                        contentAlignment = Alignment.Center
                                     ) {
                                         Icon(
-                                            imageVector = Icons.Default.Queue,
-                                            contentDescription = "Play Queue",
+                                            imageVector = Icons.Default.SkipPrevious,
+                                            contentDescription = "Previous Track (Double-tap to Rewind)",
                                             tint = Color.White,
-                                            modifier = Modifier.size(20.dp)
+                                            modifier = Modifier.size(if (isMini) 22.dp else 30.dp)
                                         )
                                     }
 
+                                    // Play / Pause Button (Large Prominent White Icon)
                                     IconButton(
                                         onClick = {
-                                            isLocked = true
-                                            isControlsVisible = false
-                                            isLockControlVisible = true
+                                            hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                            if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
                                         },
-                                        modifier = Modifier.size(36.dp)
+                                        modifier = Modifier
+                                            .size(if (isMini) 52.dp else 76.dp)
+                                            .background(Color.White.copy(alpha = 0.95f), CircleShape)
+                                            .border(1.dp, Color.White, CircleShape)
                                     ) {
                                         Icon(
-                                            imageVector = Icons.Default.LockOpen,
-                                            contentDescription = "Lock UI",
-                                            tint = Color.White,
-                                            modifier = Modifier.size(20.dp)
+                                            imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                            contentDescription = "Play/Pause",
+                                            tint = Color.Black,
+                                            modifier = Modifier.size(if (isMini) 28.dp else 42.dp)
                                         )
                                     }
-                                } else {
-                                    IconButton(
-                                        onClick = {
-                                            isLockControlVisible = true
-                                        },
-                                        modifier = Modifier // Removed background as requested by user
+
+                                    // Skip Forward (Single Tap: Next Track, Double Tap: Seek Forward 10s with Ripple Animation)
+                                    Box(
+                                        modifier = Modifier
+                                            .size(if (isMini) 42.dp else 52.dp)
+                                            .background(Color.Black.copy(alpha = 0.45f), CircleShape)
+                                            .border(1.dp, Color.White.copy(alpha = 0.1f), CircleShape)
+                                            .pointerInput(Unit) {
+                                                detectTapGestures(
+                                                    onTap = {
+                                                        hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                                        viewModel.playNext()
+                                                    },
+                                                    onDoubleTap = {
+                                                        val seekAmountMs = (prefs.doubleTapSeekSeconds * 1000L)
+                                                        val targetSeek = (exoPlayer.currentPosition + seekAmountMs).coerceAtMost(duration)
+                                                        exoPlayer.seekTo(targetSeek)
+                                                        currentPosition = targetSeek
+                                                        gestureFeedbackType = "seek_forward"
+                                                        gestureFeedbackValue = "+${prefs.doubleTapSeekSeconds}s"
+                                                        rightDoubleTapOffset = androidx.compose.ui.geometry.Offset.Zero
+                                                        rightRippleTrigger++
+                                                        coroutineScope.launch {
+                                                            delay(1000)
+                                                            if (gestureFeedbackType == "seek_forward") {
+                                                                gestureFeedbackType = ""
+                                                            }
+                                                        }
+                                                    }
+                                                )
+                                            },
+                                        contentAlignment = Alignment.Center
                                     ) {
-                                        Icon(Icons.Default.Lock, contentDescription = "Locked", tint = MaterialTheme.colorScheme.primary)
+                                        Icon(
+                                            imageVector = Icons.Default.SkipNext,
+                                            contentDescription = "Next Track (Double-tap to Fast-Forward)",
+                                            tint = Color.White,
+                                            modifier = Modifier.size(if (isMini) 22.dp else 30.dp)
+                                        )
                                     }
                                 }
                             }
-                        }
-                    }
 
-                    // Play / Pause and Skips (Center overlay) - removed middle control, only show locked floating alert
-                    if (isLocked && isLockControlVisible) {
-                        // Locked floating alert
-                        Card(
-                            colors = CardDefaults.cardColors(containerColor = Color.Black.copy(alpha = 0.8f)),
-                            shape = RoundedCornerShape(16.dp),
-                            modifier = Modifier.align(Alignment.Center)
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(16.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(10.dp)
-                            ) {
-                                Icon(Icons.Default.Lock, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                                Text("Screen Controls Locked", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                            }
-                        }
-
-                        // Bottom Swipe to Unlock Capsule
-                        SwipeToUnlock(
-                            onUnlock = {
-                                isLocked = false
-                                isControlsVisible = true
-                                isLockControlVisible = true
-                            },
-                            modifier = Modifier
-                                .align(Alignment.BottomCenter)
-                                .navigationBarsPadding()
-                                .padding(bottom = 48.dp)
-                        )
-                    }
-
-                    // Seeker and track duration (Bottom HUD bar - Vertical gradient container)
-                    if (!isLocked) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .align(Alignment.BottomCenter)
-                                .background(
-                                    androidx.compose.ui.graphics.Brush.verticalGradient(
-                                        colors = listOf(
-                                            Color.Transparent,
-                                            Color.Black.copy(alpha = 0.85f)
-                                        )
-                                    )
-                                )
-                                .navigationBarsPadding()
-                                .padding(horizontal = 24.dp, vertical = 5.dp)
-                        ) {
+                            // 3. Bottom Control Matrix (Stack with floating tools dock on bottom)
                             Column(
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                                modifier = Modifier
+                                    .align(Alignment.BottomCenter)
+                                    .fillMaxWidth()
+                                    .navigationBarsPadding()
+                                    .padding(horizontal = 24.dp, vertical = 8.dp)
                             ) {
-                            // YouTube style scrubbing floating preview card
-                            if (isScrubbing) {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(bottom = 8.dp),
-                                    contentAlignment = Alignment.BottomCenter
-                                ) {
-                                    Card(
-                                        colors = CardDefaults.cardColors(containerColor = Color.Black.copy(alpha = 0.95f)),
-                                        border = BorderStroke(1.2.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.8f)),
-                                        shape = RoundedCornerShape(12.dp),
+                                // YouTube style scrubbing floating preview card
+                                if (isScrubbing) {
+                                    Box(
                                         modifier = Modifier
-                                            .width(160.dp)
-                                            .height(95.dp)
+                                            .fillMaxWidth()
+                                            .padding(bottom = 8.dp),
+                                        contentAlignment = Alignment.BottomCenter
                                     ) {
-                                        Column(
-                                            modifier = Modifier.fillMaxSize(),
-                                            verticalArrangement = Arrangement.SpaceBetween,
-                                            horizontalAlignment = Alignment.CenterHorizontally
+                                        Card(
+                                            colors = CardDefaults.cardColors(containerColor = Color.Black.copy(alpha = 0.95f)),
+                                            border = BorderStroke(1.2.dp, Color.Red.copy(alpha = 0.8f)),
+                                            shape = RoundedCornerShape(12.dp),
+                                            modifier = Modifier
+                                                .width(160.dp)
+                                                .height(95.dp)
                                         ) {
-                                            Box(
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .weight(1f)
-                                                    .background(Color.DarkGray.copy(alpha = 0.3f)),
-                                                contentAlignment = Alignment.Center
+                                            Column(
+                                                modifier = Modifier.fillMaxSize(),
+                                                verticalArrangement = Arrangement.SpaceBetween,
+                                                horizontalAlignment = Alignment.CenterHorizontally
                                             ) {
-                                                if (scrubbingBitmap != null) {
-                                                    androidx.compose.foundation.Image(
-                                                        bitmap = scrubbingBitmap!!.asImageBitmap(),
-                                                        contentDescription = "Scrubbing frame preview",
-                                                        contentScale = androidx.compose.ui.layout.ContentScale.Crop,
-                                                        modifier = Modifier.fillMaxSize()
-                                                    )
-                                                } else {
-                                                    Column(
-                                                        horizontalAlignment = Alignment.CenterHorizontally,
-                                                        verticalArrangement = Arrangement.Center
-                                                    ) {
-                                                        Icon(
-                                                            imageVector = Icons.Default.PlayCircleOutline,
-                                                            contentDescription = null,
-                                                            tint = MaterialTheme.colorScheme.secondary,
-                                                            modifier = Modifier.size(24.dp)
+                                                Box(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .weight(1f)
+                                                        .background(Color.DarkGray.copy(alpha = 0.3f)),
+                                                    contentAlignment = Alignment.Center
+                                                ) {
+                                                    if (scrubbingBitmap != null) {
+                                                        androidx.compose.foundation.Image(
+                                                            bitmap = scrubbingBitmap!!.asImageBitmap(),
+                                                            contentDescription = "Scrubbing frame preview",
+                                                            contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                                                            modifier = Modifier.fillMaxSize()
                                                         )
-                                                        Spacer(modifier = Modifier.height(2.dp))
-                                                        Text(
-                                                            text = "SCRUBBING",
-                                                            color = Color.White.copy(alpha = 0.7f),
-                                                            fontSize = 9.sp,
-                                                            fontWeight = FontWeight.Bold
-                                                        )
+                                                    } else {
+                                                        Column(
+                                                            horizontalAlignment = Alignment.CenterHorizontally,
+                                                            verticalArrangement = Arrangement.Center
+                                                        ) {
+                                                            Icon(
+                                                                imageVector = Icons.Default.PlayCircleOutline,
+                                                                contentDescription = null,
+                                                                tint = Color.Red,
+                                                                modifier = Modifier.size(24.dp)
+                                                            )
+                                                            Spacer(modifier = Modifier.height(2.dp))
+                                                            Text(
+                                                                text = "SCRUBBING",
+                                                                color = Color.White.copy(alpha = 0.7f),
+                                                                fontSize = 9.sp,
+                                                                fontWeight = FontWeight.Bold
+                                                            )
+                                                        }
                                                     }
                                                 }
-                                            }
-                                            Box(
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .background(MaterialTheme.colorScheme.secondary)
-                                                    .padding(vertical = 4.dp),
-                                                contentAlignment = Alignment.Center
-                                            ) {
-                                                Text(
-                                                    text = formatPlayerDuration(scrubPosition),
-                                                    color = Color.Black,
-                                                    fontSize = 11.sp,
-                                                    fontWeight = FontWeight.ExtraBold
-                                                )
+                                                Box(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .background(Color.Red)
+                                                        .padding(vertical = 4.dp),
+                                                    contentAlignment = Alignment.Center
+                                                ) {
+                                                    Text(
+                                                        text = formatPlayerDuration(scrubPosition),
+                                                        color = Color.White,
+                                                        fontSize = 11.sp,
+                                                        fontWeight = FontWeight.ExtraBold
+                                                    )
+                                                }
                                             }
                                         }
                                     }
                                 }
-                            }
 
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(12.dp)
-                            ) {
                                 val displayPosition = if (isScrubbing) scrubPosition else currentPosition
-                                Text(formatPlayerDuration(displayPosition), color = Color.White, fontSize = 12.sp)
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                        text = formatPlayerDuration(displayPosition) + " / " + formatPlayerDuration(duration),
+                                        color = Color.White,
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+
+                                Spacer(modifier = Modifier.height(6.dp))
 
                                 SmoothSeekBar(
                                     position = displayPosition,
@@ -1511,160 +1877,588 @@ fun PlayerScreen(
                                         currentPosition = pos
                                     },
                                     modifier = Modifier
-                                        .weight(1f)
+                                        .fillMaxWidth()
                                         .testTag("player_timeline_slider")
                                 )
 
-                                Text(formatPlayerDuration(duration), color = Color.White, fontSize = 12.sp)
+                                if (!isLandscape) {
+                                    Spacer(modifier = Modifier.height(12.dp))
+
+                                    // Moved central controls to bottom in portrait mode, aligned nicely in column
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.Center,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        transportControls(false)
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.height(14.dp))
+
+                                // REDESIGNED: Centralized absolute alignment layout with collapsible quick-tools Left Pill
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(top = 14.dp),
+                                    contentAlignment = Alignment.CenterStart
+                                ) {
+                                    // Left Pill: Quick Utilities (Save, Rotate, Lock Screen, Queue, Sleep Timer) - Collapsible
+                                    Box(
+                                        modifier = Modifier.align(if (isLandscape) Alignment.CenterStart else Alignment.BottomStart)
+                                    ) {
+                                        if (!isLandscape) {
+                                            Column(
+                                                modifier = Modifier
+                                                    .wrapContentSize()
+                                                    .clip(RoundedCornerShape(24.dp))
+                                                    .background(Color.Black.copy(alpha = 0.7f))
+                                                    .border(1.2.dp, Color.White.copy(alpha = 0.15f), RoundedCornerShape(24.dp))
+                                                    .padding(horizontal = 6.dp, vertical = 8.dp),
+                                                verticalArrangement = Arrangement.spacedBy(4.dp),
+                                                horizontalAlignment = Alignment.CenterHorizontally
+                                            ) {
+                                                AnimatedVisibility(
+                                                    visible = isLeftPillExpanded,
+                                                    enter = expandVertically() + fadeIn(),
+                                                    exit = shrinkVertically() + fadeOut()
+                                                ) {
+                                                    Column(
+                                                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                                                        horizontalAlignment = Alignment.CenterHorizontally
+                                                    ) {
+                                                        // 1. Interactive Save / Favorite Button with spring animation scale
+                                                        val saveScale by animateFloatAsState(
+                                                            targetValue = if (isSaved) 1.25f else 1.0f,
+                                                            animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium),
+                                                            label = "SaveScale"
+                                                        )
+                                                        IconButton(
+                                                            onClick = {
+                                                                viewModel.toggleFavoriteMedia(activeMediaItem.uriString)
+                                                                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                                                                val msg = if (!isSaved) "Saved to Library ❤️" else "Removed from Library"
+                                                                android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
+                                                            },
+                                                            modifier = Modifier.size(36.dp).graphicsLayer {
+                                                                scaleX = saveScale
+                                                                scaleY = saveScale
+                                                            }
+                                                        ) {
+                                                            Icon(
+                                                                imageVector = if (isSaved) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                                                                contentDescription = "Save Video",
+                                                                tint = if (isSaved) Color.Red else Color.White,
+                                                                modifier = Modifier.size(20.dp)
+                                                            )
+                                                        }
+
+                                                        // 2. Interactive Rotation button with full-spin spring rotation animation
+                                                        val rotateAngleAnim by animateFloatAsState(
+                                                            targetValue = rotateAngle,
+                                                            animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessLow),
+                                                            label = "RotateSpin"
+                                                        )
+                                                        IconButton(
+                                                            onClick = {
+                                                                rotateAngle += 360f
+                                                                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                                                sessionOrientation = if (sessionOrientation == android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE || sessionOrientation == android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE) {
+                                                                    android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                                                                } else {
+                                                                    android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                                                                }
+                                                            },
+                                                            modifier = Modifier.size(36.dp).graphicsLayer {
+                                                                rotationZ = rotateAngleAnim
+                                                            }
+                                                        ) {
+                                                            Icon(
+                                                                imageVector = Icons.Default.ScreenRotation,
+                                                                contentDescription = "Rotate Screen",
+                                                                tint = Color.White,
+                                                                modifier = Modifier.size(20.dp)
+                                                            )
+                                                        }
+
+                                                        // 3. Lock controls button (triggers screen control lock overlay)
+                                                        IconButton(
+                                                            onClick = {
+                                                                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                                                                isLocked = true
+                                                                isControlsVisible = false
+                                                            },
+                                                            modifier = Modifier.size(36.dp)
+                                                        ) {
+                                                            Icon(
+                                                                imageVector = Icons.Default.LockOpen,
+                                                                contentDescription = "Lock Screen Controls",
+                                                                tint = Color.White,
+                                                                modifier = Modifier.size(20.dp)
+                                                            )
+                                                        }
+
+                                                        // 4. Quick Queue Button
+                                                        IconButton(
+                                                            onClick = {
+                                                                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                                                showQueueSheet = true
+                                                            },
+                                                            modifier = Modifier.size(36.dp)
+                                                        ) {
+                                                            Icon(
+                                                                imageVector = Icons.Default.QueueMusic,
+                                                                contentDescription = "View Queue",
+                                                                tint = Color.White,
+                                                                modifier = Modifier.size(20.dp)
+                                                            )
+                                                        }
+
+                                                        // 5. Sleep Timer Button
+                                                        IconButton(
+                                                            onClick = {
+                                                                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                                                showSleepTimerSheet = true
+                                                            },
+                                                            modifier = Modifier.size(36.dp)
+                                                        ) {
+                                                            Icon(
+                                                                imageVector = Icons.Default.Timer,
+                                                                contentDescription = "Sleep Timer",
+                                                                tint = if (isSleepTimerRunning) Color.Green else Color.White,
+                                                                modifier = Modifier.size(20.dp)
+                                                            )
+                                                        }
+                                                    }
+                                                }
+
+                                                // Collapse / Expand toggle button as the bottom-most button in portrait Column
+                                                IconButton(
+                                                    onClick = {
+                                                        isLeftPillExpanded = !isLeftPillExpanded
+                                                        hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                                    },
+                                                    modifier = Modifier.size(36.dp).testTag("left_pill_collapse_button")
+                                                ) {
+                                                    Icon(
+                                                        imageVector = if (isLeftPillExpanded) Icons.Default.KeyboardArrowDown else Icons.Default.KeyboardArrowUp,
+                                                        contentDescription = if (isLeftPillExpanded) "Collapse Tools" else "Expand Tools",
+                                                        tint = MaterialTheme.colorScheme.primary,
+                                                        modifier = Modifier.size(24.dp)
+                                                    )
+                                                }
+                                            }
+                                        } else {
+                                            Row(
+                                                modifier = Modifier
+                                                    .wrapContentSize()
+                                                    .clip(CircleShape)
+                                                    .background(Color.Black.copy(alpha = 0.7f))
+                                                    .border(1.2.dp, Color.White.copy(alpha = 0.15f), CircleShape)
+                                                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                // Collapse / Expand toggle button as the very first button in landscape Row
+                                                IconButton(
+                                                    onClick = {
+                                                        isLeftPillExpanded = !isLeftPillExpanded
+                                                        hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                                    },
+                                                    modifier = Modifier.size(36.dp).testTag("left_pill_collapse_button")
+                                                ) {
+                                                    Icon(
+                                                        imageVector = if (isLeftPillExpanded) Icons.Default.KeyboardArrowLeft else Icons.Default.KeyboardArrowRight,
+                                                        contentDescription = if (isLeftPillExpanded) "Collapse Tools" else "Expand Tools",
+                                                        tint = MaterialTheme.colorScheme.primary,
+                                                        modifier = Modifier.size(24.dp)
+                                                    )
+                                                }
+
+                                                AnimatedVisibility(
+                                                    visible = isLeftPillExpanded,
+                                                    enter = expandHorizontally() + fadeIn(),
+                                                    exit = shrinkHorizontally() + fadeOut()
+                                                ) {
+                                                    Row(
+                                                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                                        verticalAlignment = Alignment.CenterVertically
+                                                    ) {
+                                                        // 1. Interactive Save / Favorite Button with spring animation scale
+                                                        val saveScale by animateFloatAsState(
+                                                            targetValue = if (isSaved) 1.25f else 1.0f,
+                                                            animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium),
+                                                            label = "SaveScale"
+                                                        )
+                                                        IconButton(
+                                                            onClick = {
+                                                                viewModel.toggleFavoriteMedia(activeMediaItem.uriString)
+                                                                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                                                                val msg = if (!isSaved) "Saved to Library ❤️" else "Removed from Library"
+                                                                android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
+                                                            },
+                                                            modifier = Modifier.size(36.dp).graphicsLayer {
+                                                                scaleX = saveScale
+                                                                scaleY = saveScale
+                                                            }
+                                                        ) {
+                                                            Icon(
+                                                                imageVector = if (isSaved) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                                                                contentDescription = "Save Video",
+                                                                tint = if (isSaved) Color.Red else Color.White,
+                                                                modifier = Modifier.size(20.dp)
+                                                            )
+                                                        }
+
+                                                        // 2. Interactive Rotation button with full-spin spring rotation animation
+                                                        val rotateAngleAnim by animateFloatAsState(
+                                                            targetValue = rotateAngle,
+                                                            animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessLow),
+                                                            label = "RotateSpin"
+                                                        )
+                                                        IconButton(
+                                                            onClick = {
+                                                                rotateAngle += 360f
+                                                                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                                                sessionOrientation = if (sessionOrientation == android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE || sessionOrientation == android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE) {
+                                                                    android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                                                                } else {
+                                                                    android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                                                                }
+                                                            },
+                                                            modifier = Modifier.size(36.dp).graphicsLayer {
+                                                                rotationZ = rotateAngleAnim
+                                                            }
+                                                        ) {
+                                                            Icon(
+                                                                imageVector = Icons.Default.ScreenRotation,
+                                                                contentDescription = "Rotate Screen",
+                                                                tint = Color.White,
+                                                                modifier = Modifier.size(20.dp)
+                                                            )
+                                                        }
+
+                                                        // 3. Lock controls button (triggers screen control lock overlay)
+                                                        IconButton(
+                                                            onClick = {
+                                                                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                                                                isLocked = true
+                                                                isControlsVisible = false
+                                                            },
+                                                            modifier = Modifier.size(36.dp)
+                                                        ) {
+                                                            Icon(
+                                                                imageVector = Icons.Default.LockOpen,
+                                                                contentDescription = "Lock Screen Controls",
+                                                                tint = Color.White,
+                                                                modifier = Modifier.size(20.dp)
+                                                            )
+                                                        }
+
+                                                        // 4. Quick Queue Button
+                                                        IconButton(
+                                                            onClick = {
+                                                                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                                                showQueueSheet = true
+                                                            },
+                                                            modifier = Modifier.size(36.dp)
+                                                        ) {
+                                                            Icon(
+                                                                imageVector = Icons.Default.QueueMusic,
+                                                                contentDescription = "View Queue",
+                                                                tint = Color.White,
+                                                                modifier = Modifier.size(20.dp)
+                                                            )
+                                                        }
+
+                                                        // 5. Sleep Timer Button
+                                                        IconButton(
+                                                            onClick = {
+                                                                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                                                showSleepTimerSheet = true
+                                                            },
+                                                            modifier = Modifier.size(36.dp)
+                                                        ) {
+                                                            Icon(
+                                                                imageVector = Icons.Default.Timer,
+                                                                contentDescription = "Sleep Timer",
+                                                                tint = if (isSleepTimerRunning) Color.Green else Color.White,
+                                                                modifier = Modifier.size(20.dp)
+                                                            )
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    if (isLandscape) {
+                                        Box(
+                                            modifier = Modifier.align(Alignment.Center)
+                                        ) {
+                                            transportControls(true)
+                                        }
+                                    }
+
+                                    // Right Pill: Playback Modes, Sizing, & More Settings - Collapsible
+                                    Box(
+                                        modifier = Modifier.align(if (isLandscape) Alignment.CenterEnd else Alignment.BottomEnd)
+                                    ) {
+                                        if (!isLandscape) {
+                                            Column(
+                                                modifier = Modifier
+                                                    .wrapContentSize()
+                                                    .clip(RoundedCornerShape(24.dp))
+                                                    .background(Color.Black.copy(alpha = 0.7f))
+                                                    .border(1.2.dp, Color.White.copy(alpha = 0.15f), RoundedCornerShape(24.dp))
+                                                    .padding(horizontal = 6.dp, vertical = 8.dp),
+                                                verticalArrangement = Arrangement.spacedBy(4.dp),
+                                                horizontalAlignment = Alignment.CenterHorizontally
+                                            ) {
+                                                AnimatedVisibility(
+                                                    visible = isRightPillExpanded,
+                                                    enter = expandVertically() + fadeIn(),
+                                                    exit = shrinkVertically() + fadeOut()
+                                                ) {
+                                                    Column(
+                                                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                                                        horizontalAlignment = Alignment.CenterHorizontally
+                                                    ) {
+                                                        // 1. Sizing / Screen Fit Option
+                                                        IconButton(
+                                                            onClick = {
+                                                                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                                                val modes = listOf(
+                                                                    AspectRatioFrameLayout.RESIZE_MODE_FIT to "Fit",
+                                                                    AspectRatioFrameLayout.RESIZE_MODE_FILL to "Stretch/Fill",
+                                                                    AspectRatioFrameLayout.RESIZE_MODE_ZOOM to "Zoom/Crop",
+                                                                    AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH to "Fixed Width",
+                                                                    AspectRatioFrameLayout.RESIZE_MODE_FIXED_HEIGHT to "Fixed Height"
+                                                                )
+                                                                val currentModeIndex = modes.indexOfFirst { it.first == resizeMode }.coerceAtLeast(0)
+                                                                val nextModeIndex = (currentModeIndex + 1) % modes.size
+                                                                val nextMode = modes[nextModeIndex]
+                                                                resizeMode = nextMode.first
+                                                                android.widget.Toast.makeText(context, "Aspect Ratio: ${nextMode.second}", android.widget.Toast.LENGTH_SHORT).show()
+                                                            },
+                                                            modifier = Modifier.size(36.dp)
+                                                        ) {
+                                                            Icon(
+                                                                imageVector = Icons.Default.AspectRatio,
+                                                                contentDescription = "Screen Fit / Sizing",
+                                                                tint = Color.White,
+                                                                modifier = Modifier.size(20.dp)
+                                                            )
+                                                        }
+
+                                                        // 2. Shuffle
+                                                        IconButton(
+                                                            onClick = {
+                                                                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                                                isShuffleEnabled = !isShuffleEnabled
+                                                                exoPlayer.shuffleModeEnabled = isShuffleEnabled
+                                                            },
+                                                            modifier = Modifier.size(36.dp)
+                                                        ) {
+                                                            Icon(
+                                                                imageVector = Icons.Default.Shuffle,
+                                                                contentDescription = "Shuffle",
+                                                                tint = if (isShuffleEnabled) Color.Green else Color.White,
+                                                                modifier = Modifier.size(20.dp)
+                                                            )
+                                                        }
+
+                                                        // 3. Repeat Mode
+                                                        IconButton(
+                                                            onClick = {
+                                                                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                                                repeatModeState = (repeatModeState + 1) % 3
+                                                                exoPlayer.repeatMode = when (repeatModeState) {
+                                                                    1 -> androidx.media3.common.Player.REPEAT_MODE_ONE
+                                                                    2 -> androidx.media3.common.Player.REPEAT_MODE_ALL
+                                                                    else -> androidx.media3.common.Player.REPEAT_MODE_OFF
+                                                                }
+                                                            },
+                                                            modifier = Modifier.size(36.dp)
+                                                        ) {
+                                                            val repeatIcon = when (repeatModeState) {
+                                                                1 -> Icons.Default.RepeatOne
+                                                                else -> Icons.Default.Repeat
+                                                            }
+                                                            Icon(
+                                                                imageVector = repeatIcon,
+                                                                contentDescription = "Repeat Mode",
+                                                                tint = if (repeatModeState > 0) Color.Green else Color.White,
+                                                                modifier = Modifier.size(20.dp)
+                                                            )
+                                                        }
+
+                                                        // 4. Advanced Settings Gear
+                                                        IconButton(
+                                                            onClick = {
+                                                                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                                                showAdvancedControlsSheet = true
+                                                            },
+                                                            modifier = Modifier.size(36.dp)
+                                                        ) {
+                                                            Icon(
+                                                                imageVector = Icons.Default.Settings,
+                                                                contentDescription = "Advanced Settings",
+                                                                tint = Color.White,
+                                                                modifier = Modifier.size(20.dp)
+                                                            )
+                                                        }
+                                                    }
+                                                }
+
+                                                // Collapse / Expand toggle button as the bottom-most button in portrait Column
+                                                IconButton(
+                                                    onClick = {
+                                                        isRightPillExpanded = !isRightPillExpanded
+                                                        hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                                    },
+                                                    modifier = Modifier.size(36.dp).testTag("right_pill_collapse_button")
+                                                ) {
+                                                    Icon(
+                                                        imageVector = if (isRightPillExpanded) Icons.Default.KeyboardArrowDown else Icons.Default.KeyboardArrowUp,
+                                                        contentDescription = if (isRightPillExpanded) "Collapse Settings" else "Expand Settings",
+                                                        tint = MaterialTheme.colorScheme.primary,
+                                                        modifier = Modifier.size(24.dp)
+                                                    )
+                                                }
+                                            }
+                                        } else {
+                                            Row(
+                                                modifier = Modifier
+                                                    .wrapContentSize()
+                                                    .clip(CircleShape)
+                                                    .background(Color.Black.copy(alpha = 0.7f))
+                                                    .border(1.2.dp, Color.White.copy(alpha = 0.15f), CircleShape)
+                                                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                AnimatedVisibility(
+                                                    visible = isRightPillExpanded,
+                                                    enter = expandHorizontally() + fadeIn(),
+                                                    exit = shrinkHorizontally() + fadeOut()
+                                                ) {
+                                                    Row(
+                                                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                                        verticalAlignment = Alignment.CenterVertically
+                                                    ) {
+                                                        // 1. Sizing / Screen Fit Option
+                                                        IconButton(
+                                                            onClick = {
+                                                                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                                                val modes = listOf(
+                                                                    AspectRatioFrameLayout.RESIZE_MODE_FIT to "Fit",
+                                                                    AspectRatioFrameLayout.RESIZE_MODE_FILL to "Stretch/Fill",
+                                                                    AspectRatioFrameLayout.RESIZE_MODE_ZOOM to "Zoom/Crop",
+                                                                    AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH to "Fixed Width",
+                                                                    AspectRatioFrameLayout.RESIZE_MODE_FIXED_HEIGHT to "Fixed Height"
+                                                                )
+                                                                val currentModeIndex = modes.indexOfFirst { it.first == resizeMode }.coerceAtLeast(0)
+                                                                val nextModeIndex = (currentModeIndex + 1) % modes.size
+                                                                val nextMode = modes[nextModeIndex]
+                                                                resizeMode = nextMode.first
+                                                                android.widget.Toast.makeText(context, "Aspect Ratio: ${nextMode.second}", android.widget.Toast.LENGTH_SHORT).show()
+                                                            },
+                                                            modifier = Modifier.size(36.dp)
+                                                        ) {
+                                                            Icon(
+                                                                imageVector = Icons.Default.AspectRatio,
+                                                                contentDescription = "Screen Fit / Sizing",
+                                                                tint = Color.White,
+                                                                modifier = Modifier.size(20.dp)
+                                                            )
+                                                        }
+
+                                                        // 2. Shuffle
+                                                        IconButton(
+                                                            onClick = {
+                                                                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                                                isShuffleEnabled = !isShuffleEnabled
+                                                                exoPlayer.shuffleModeEnabled = isShuffleEnabled
+                                                            },
+                                                            modifier = Modifier.size(36.dp)
+                                                        ) {
+                                                            Icon(
+                                                                imageVector = Icons.Default.Shuffle,
+                                                                contentDescription = "Shuffle",
+                                                                tint = if (isShuffleEnabled) Color.Green else Color.White,
+                                                                modifier = Modifier.size(20.dp)
+                                                            )
+                                                        }
+
+                                                        // 3. Repeat Mode
+                                                        IconButton(
+                                                            onClick = {
+                                                                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                                                repeatModeState = (repeatModeState + 1) % 3
+                                                                exoPlayer.repeatMode = when (repeatModeState) {
+                                                                    1 -> androidx.media3.common.Player.REPEAT_MODE_ONE
+                                                                    2 -> androidx.media3.common.Player.REPEAT_MODE_ALL
+                                                                    else -> androidx.media3.common.Player.REPEAT_MODE_OFF
+                                                                }
+                                                            },
+                                                            modifier = Modifier.size(36.dp)
+                                                        ) {
+                                                            val repeatIcon = when (repeatModeState) {
+                                                                1 -> Icons.Default.RepeatOne
+                                                                else -> Icons.Default.Repeat
+                                                            }
+                                                            Icon(
+                                                                imageVector = repeatIcon,
+                                                                contentDescription = "Repeat Mode",
+                                                                tint = if (repeatModeState > 0) Color.Green else Color.White,
+                                                                modifier = Modifier.size(20.dp)
+                                                            )
+                                                        }
+
+                                                        // 4. Advanced Settings Gear
+                                                        IconButton(
+                                                            onClick = {
+                                                                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                                                showAdvancedControlsSheet = true
+                                                            },
+                                                            modifier = Modifier.size(36.dp)
+                                                        ) {
+                                                            Icon(
+                                                                imageVector = Icons.Default.Settings,
+                                                                contentDescription = "Advanced Settings",
+                                                                tint = Color.White,
+                                                                modifier = Modifier.size(20.dp)
+                                                            )
+                                                        }
+                                                    }
+                                                }
+
+                                                // Collapse / Expand toggle button as the very last button in landscape Row
+                                                IconButton(
+                                                    onClick = {
+                                                        isRightPillExpanded = !isRightPillExpanded
+                                                        hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                                    },
+                                                    modifier = Modifier.size(36.dp).testTag("right_pill_collapse_button")
+                                                ) {
+                                                    Icon(
+                                                        imageVector = if (isRightPillExpanded) Icons.Default.KeyboardArrowRight else Icons.Default.KeyboardArrowLeft,
+                                                        contentDescription = if (isRightPillExpanded) "Collapse Settings" else "Expand Settings",
+                                                        tint = MaterialTheme.colorScheme.primary,
+                                                        modifier = Modifier.size(24.dp)
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             }
-
-                            Spacer(modifier = Modifier.height(12.dp))
-
-                             Row(
-                                 modifier = Modifier.fillMaxWidth(),
-                                 verticalAlignment = Alignment.CenterVertically
-                             ) {
-                                 // Left side: Subtitles & Rotation Lock (weight 1f, align start)
-                                 Row(
-                                     modifier = Modifier.weight(1f),
-                                     horizontalArrangement = Arrangement.Start,
-                                     verticalAlignment = Alignment.CenterVertically
-                                 ) {
-                                     IconButton(
-                                         onClick = {
-                                             hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
-                                             showAudioSubtitleSelectorSheet = true
-                                         },
-                                         modifier = Modifier.background(Color.Black.copy(alpha = 0.5f), CircleShape)
-                                     ) {
-                                         Icon(Icons.Default.Subtitles, contentDescription = "Subtitles", tint = Color.White)
-                                     }
-
-                                     Spacer(modifier = Modifier.width(8.dp))
-
-                                      IconButton(
-                                          onClick = {
-                                              hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
-                                              viewModel.toggleRotationLock(!prefs.rotationLock)
-                                          },
-                                         modifier = Modifier.size(36.dp)
-                                     ) {
-                                         Icon(
-                                             imageVector = if (prefs.rotationLock) Icons.Default.ScreenLockRotation else Icons.Default.ScreenRotation,
-                                             contentDescription = "Toggle Rotation Lock",
-                                             tint = Color.White,
-                                             modifier = Modifier.size(20.dp)
-                                         )
-                                     }
-                                 }
-
-                                 // Center: Media Navigation Row
-                                 Row(
-                                     horizontalArrangement = Arrangement.spacedBy(16.dp),
-                                     verticalAlignment = Alignment.CenterVertically
-                                 ) {
-                                     IconButton(
-                                         onClick = {
-                                             hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
-                                             viewModel.playPrevious()
-                                         },
-                                         modifier = Modifier.background(Color.Black.copy(alpha = 0.5f), CircleShape)
-                                     ) {
-                                         Icon(Icons.Default.SkipPrevious, contentDescription = "Prev", tint = Color.White)
-                                     }
-
-                                     IconButton(
-                                         onClick = {
-                                             hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
-                                             exoPlayer.seekTo((exoPlayer.currentPosition - 10000).coerceAtLeast(0L))
-                                         },
-                                         modifier = Modifier.background(Color.Black.copy(alpha = 0.5f), CircleShape)
-                                     ) {
-                                         Icon(Icons.Default.FastRewind, contentDescription = "-10s", tint = Color.White)
-                                     }
-
-                                     IconButton(
-                                         onClick = {
-                                             hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
-                                             if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
-                                         },
-                                         modifier = Modifier.size(54.dp).background(MaterialTheme.colorScheme.primary, CircleShape)
-                                     ) {
-                                         Icon(if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, contentDescription = "Play/Pause", tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(28.dp))
-                                     }
-
-                                     IconButton(
-                                         onClick = {
-                                             hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
-                                             exoPlayer.seekTo((exoPlayer.currentPosition + 10000).coerceAtMost(duration))
-                                         },
-                                         modifier = Modifier.background(Color.Black.copy(alpha = 0.5f), CircleShape)
-                                     ) {
-                                         Icon(Icons.Default.FastForward, contentDescription = "+10s", tint = Color.White)
-                                     }
-
-                                     IconButton(
-                                         onClick = {
-                                             hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
-                                             viewModel.playNext()
-                                         },
-                                         modifier = Modifier.background(Color.Black.copy(alpha = 0.5f), CircleShape)
-                                     ) {
-                                         Icon(Icons.Default.SkipNext, contentDescription = "Next", tint = Color.White)
-                                     }
-                                 }
-
-                                 // Right side: Aspect Ratio & Overflow menu (weight 1f, align end)
-                                 Row(
-                                     modifier = Modifier.weight(1f),
-                                     horizontalArrangement = Arrangement.End,
-                                     verticalAlignment = Alignment.CenterVertically
-                                 ) {
-                                     IconButton(
-                                         onClick = {
-                                             hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
-                                             // Loop: Fit, Stretch, Crop, Original
-                                             resizeMode = when (resizeMode) {
-                                                 AspectRatioFrameLayout.RESIZE_MODE_FIT -> AspectRatioFrameLayout.RESIZE_MODE_FILL
-                                                 AspectRatioFrameLayout.RESIZE_MODE_FILL -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-                                                 AspectRatioFrameLayout.RESIZE_MODE_ZOOM -> AspectRatioFrameLayout.RESIZE_MODE_FIT
-                                                 else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
-                                             }
-                                             val desc = when (resizeMode) {
-                                                 AspectRatioFrameLayout.RESIZE_MODE_FIT -> "Fit to Screen"
-                                                 AspectRatioFrameLayout.RESIZE_MODE_FILL -> "Stretch"
-                                                 AspectRatioFrameLayout.RESIZE_MODE_ZOOM -> "Crop 16:9"
-                                                 else -> "Fit"
-                                             }
-                                             gestureFeedbackType = "seek"
-                                             gestureFeedbackValue = desc
-                                         },
-                                         modifier = Modifier.background(Color.Black.copy(alpha = 0.5f), CircleShape)
-                                     ) {
-                                         Icon(Icons.Default.AspectRatio, contentDescription = "Resize Viewport", tint = Color.White)
-                                     }
-
-                                     Spacer(modifier = Modifier.width(8.dp))
-
-                                     IconButton(
-                                         onClick = {
-                                             hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
-                                             showAdvancedControlsSheet = true
-                                         },
-                                         modifier = Modifier.background(Color.Black.copy(alpha = 0.5f), CircleShape)
-                                     ) {
-                                         Icon(Icons.Default.MoreVert, contentDescription = "More Options", tint = Color.White)
-                                     }
-                                 }
-                             }
                         }
                     }
                 }
             }
-        }
-    }
-
-    // Advanced Player options sheet drawer (Unified comprehensive controls)
+    // Advanced Player options sheet drawer (Redesigned with custom premium control board style)
     if (showAdvancedControlsSheet) {
         val playQueue by viewModel.playQueue.collectAsState()
         val scrollState = rememberScrollState()
@@ -1677,52 +2471,471 @@ fun PlayerScreen(
         ) {
             Column(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .navigationBarsPadding()
-                    .padding(horizontal = 24.dp, vertical = 8.dp)
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.background)
+                    .padding(horizontal = 16.dp)
                     .verticalScroll(scrollState)
             ) {
-                Spacer(modifier = Modifier.height(16.dp))
-                Text("Aero Player Advanced Controls", fontWeight = FontWeight.Black, fontSize = 18.sp, color = MaterialTheme.colorScheme.primary, modifier = Modifier.align(Alignment.CenterHorizontally))
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.statusBarsPadding())
+                Spacer(modifier = Modifier.height(12.dp))
 
-                // SECTION 1: PRIMARY PLAYBACK CONFIGS
-                Text("Primary Settings", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = MaterialTheme.colorScheme.primary.copy(alpha = 0.8f))
-                Spacer(modifier = Modifier.height(8.dp))
-
-                // Playback speed slider
-                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)), shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Playback Speed:", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                            var speed = exoPlayer.playbackParameters.speed
-                            Text(String.format("%.2fx", speed), color = MaterialTheme.colorScheme.secondary, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                // Custom Futuristic Drawer Header
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(32.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Tune,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(16.dp)
+                            )
                         }
-                        Slider(
-                            value = exoPlayer.playbackParameters.speed,
-                            onValueChange = { exoPlayer.setPlaybackSpeed(it) },
-                            valueRange = 0.25f..4.00f,
-                            colors = SliderDefaults.colors(thumbColor = MaterialTheme.colorScheme.secondary, activeTrackColor = MaterialTheme.colorScheme.secondary)
+                        Column {
+                            Text(
+                                text = "Aero Deck",
+                                fontWeight = FontWeight.Black,
+                                fontSize = 16.sp,
+                                color = Color.White
+                            )
+                            Text(
+                                text = "PRO DASHBOARD",
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = 1.sp,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+
+                    IconButton(
+                        onClick = { showAdvancedControlsSheet = false },
+                        modifier = Modifier
+                            .size(32.dp)
+                            .background(Color.White.copy(alpha = 0.05f), CircleShape)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Close Deck",
+                            tint = Color.White,
+                            modifier = Modifier.size(16.dp)
                         )
                     }
                 }
-                Spacer(modifier = Modifier.height(8.dp))
 
-                // Jump to Time Card
-                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)), shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        Text("Jump to Time", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                Spacer(modifier = Modifier.height(6.dp))
+                HorizontalDivider(color = Color.White.copy(alpha = 0.08f), thickness = 1.dp)
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // SECTION 1: PLAYBACK SPEED (TEMPO CONTROL COCKPIT)
+                Text(
+                    text = "TEMPO CONTROL",
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.primary,
+                    letterSpacing = 1.5.sp,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Speed,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Text(
+                                    text = "Speed Multiplier",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp,
+                                    color = Color.White
+                                )
+                            }
+                            // Neon display badge
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f))
+                                    .border(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f), RoundedCornerShape(6.dp))
+                                    .padding(horizontal = 8.dp, vertical = 3.dp)
+                            ) {
+                                Text(
+                                    text = String.format("%.2fx", exoPlayer.playbackParameters.speed),
+                                    color = MaterialTheme.colorScheme.primary,
+                                    fontWeight = FontWeight.Black,
+                                    fontSize = 12.sp
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        // Custom Designed Speed Slider with local dragging state to prevent audio processor lag
+                        var localSpeed by remember(exoPlayer.playbackParameters.speed) { mutableStateOf(exoPlayer.playbackParameters.speed) }
+                        CustomSlider(
+                            value = localSpeed,
+                            onValueChange = { localSpeed = it },
+                            onValueChangeFinished = { exoPlayer.setPlaybackSpeed(localSpeed) },
+                            valueRange = 0.25f..4.00f
+                        )
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        // Segments / Presets Row
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            listOf(0.5f, 1.0f, 1.5f, 2.0f).forEach { preset ->
+                                val isSelected = String.format("%.2f", exoPlayer.playbackParameters.speed) == String.format("%.2f", preset)
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(
+                                            if (isSelected) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.05f)
+                                        )
+                                        .border(
+                                            width = 1.dp,
+                                            color = if (isSelected) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.1f),
+                                            shape = RoundedCornerShape(8.dp)
+                                        )
+                                        .clickable {
+                                            hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                            exoPlayer.setPlaybackSpeed(preset)
+                                        }
+                                        .padding(vertical = 8.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = if (preset == 1.0f) "Normal" else "${preset}x",
+                                        color = if (isSelected) Color.Black else Color.White.copy(alpha = 0.8f),
+                                        fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.Medium,
+                                        fontSize = 11.sp
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // SOUND EQUALIZER IN ADVANCED CONTROLS
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(
+                    text = "SOUND EQUALIZER",
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.primary,
+                    letterSpacing = 1.5.sp,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        val eqEnabled by viewModel.equalizerEnabled.collectAsState()
+                        val currentPreset by viewModel.currentEqualizerPreset.collectAsState()
+                        val isPlaying by viewModel.isPlaying.collectAsState()
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Tune,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Text(
+                                    text = "Sound Equalizer",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp,
+                                    color = Color.White
+                                )
+                            }
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                val isSwitchEnabled = eqEnabled && isPlaying
+                                Text(
+                                    text = if (isSwitchEnabled) "ON" else "OFF",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isSwitchEnabled) MaterialTheme.colorScheme.primary else Color.Gray
+                                )
+                                Switch(
+                                    checked = eqEnabled,
+                                    onCheckedChange = { if (isPlaying) viewModel.setEqualizerEnabled(it) },
+                                    enabled = isPlaying,
+                                    colors = SwitchDefaults.colors(
+                                        checkedThumbColor = MaterialTheme.colorScheme.primary,
+                                        checkedTrackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
+                                    ),
+                                    modifier = Modifier.graphicsLayer {
+                                        scaleX = 0.8f
+                                        scaleY = 0.8f
+                                    }
+                                )
+                            }
+                        }
+
                         Spacer(modifier = Modifier.height(6.dp))
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+
+                        Text(
+                            text = "Preset: $currentPreset",
+                            fontSize = 11.sp,
+                            color = Color.White.copy(alpha = 0.7f),
+                            fontWeight = FontWeight.Medium
+                        )
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        Button(
+                            onClick = {
+                                if (isPlaying) {
+                                    hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                                    showAdvancedControlsSheet = false
+                                    showEqualizerSheet = true
+                                }
+                            },
+                            enabled = isPlaying,
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Tune,
+                                    contentDescription = null,
+                                    tint = Color.Black,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Text(
+                                    text = "Customize Tuning Profile",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.Black
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // SECTION 2: AUDIO-ONLY & PIP MODES
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(
+                    text = "DEDICATED MODES",
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.primary,
+                    letterSpacing = 1.5.sp,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    // Audio-Only Mode Card
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(
+                                if (playAsAudioOnly) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                                else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)
+                            )
+                            .border(
+                                width = 1.2.dp,
+                                color = if (playAsAudioOnly) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.08f),
+                                shape = RoundedCornerShape(16.dp)
+                            )
+                            .clickable {
+                                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                                playAsAudioOnly = !playAsAudioOnly
+                            }
+                            .padding(12.dp)
+                    ) {
+                        Column {
+                            Icon(
+                                imageVector = Icons.Default.Headphones,
+                                contentDescription = null,
+                                tint = if (playAsAudioOnly) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.6f),
+                                modifier = Modifier.size(24.dp)
+                            )
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Text(
+                                text = "Audio-Only",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                color = Color.White
+                            )
+                            Text(
+                                text = "Background Play",
+                                fontSize = 10.sp,
+                                color = Color.White.copy(alpha = 0.5f),
+                                lineHeight = 12.sp
+                            )
+                        }
+                        if (playAsAudioOnly) {
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .size(8.dp)
+                                    .clip(CircleShape)
+                                    .background(Color.Green)
+                            )
+                        }
+                    }
+
+                    // Picture in Picture Mode Card
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(
+                                if (isPipActive) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                                else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)
+                            )
+                            .border(
+                                width = 1.2.dp,
+                                color = if (isPipActive) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.08f),
+                                shape = RoundedCornerShape(16.dp)
+                            )
+                            .clickable {
+                                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                                if (activeMediaItem.isVideo) {
+                                    val activity = context as? android.app.Activity
+                                    if (activity != null && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                                        try {
+                                            val builder = android.app.PictureInPictureParams.Builder()
+                                            activity.enterPictureInPictureMode(builder.build())
+                                            android.widget.Toast.makeText(context, "Entering Picture-in-Picture mode", android.widget.Toast.LENGTH_SHORT).show()
+                                        } catch (e: Exception) {
+                                            // Fallback to internal custom in-app pip
+                                            isPipActive = !isPipActive
+                                        }
+                                    } else {
+                                        isPipActive = !isPipActive
+                                    }
+                                } else {
+                                    android.widget.Toast.makeText(context, "Picture-in-Picture mode is only supported for video files", android.widget.Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                            .padding(12.dp)
+                    ) {
+                        Column {
+                            Icon(
+                                imageVector = Icons.Default.PictureInPicture,
+                                contentDescription = null,
+                                tint = if (isPipActive) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.6f),
+                                modifier = Modifier.size(24.dp)
+                            )
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Text(
+                                text = "Pop-Up Player",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                color = Color.White
+                            )
+                            Text(
+                                text = "Pic-in-Picture",
+                                fontSize = 10.sp,
+                                color = Color.White.copy(alpha = 0.5f),
+                                lineHeight = 12.sp
+                            )
+                        }
+                        if (isPipActive) {
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .size(8.dp)
+                                    .clip(CircleShape)
+                                    .background(Color.Green)
+                            )
+                        }
+                    }
+                }
+
+                // SECTION 3: JUMP TO TIME
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(
+                    text = "JUMP TO TIME",
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.primary,
+                    letterSpacing = 1.5.sp,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
                             OutlinedTextField(
                                 value = jumpInputText,
                                 onValueChange = { jumpInputText = it },
-                                placeholder = { Text("e.g. 01:30 or 90 seconds", fontSize = 11.sp) },
+                                placeholder = { Text("e.g. 01:30 or 90s", fontSize = 11.sp) },
                                 singleLine = true,
                                 modifier = Modifier.weight(1f),
-                                colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = MaterialTheme.colorScheme.primary)
+                                shape = RoundedCornerShape(12.dp),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = MaterialTheme.colorScheme.primary,
+                                    unfocusedBorderColor = Color.White.copy(alpha = 0.12f),
+                                    focusedContainerColor = Color.Black.copy(alpha = 0.2f),
+                                    unfocusedContainerColor = Color.Black.copy(alpha = 0.2f)
+                                )
                             )
-                            Button(
+                            CustomButton(
                                 onClick = {
                                     val parts = jumpInputText.split(":")
                                     val targetMs = if (parts.size == 2) {
@@ -1739,225 +2952,420 @@ fun PlayerScreen(
                                         jumpInputText = ""
                                         showAdvancedControlsSheet = false
                                     }
-                                }
+                                },
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
                             ) {
-                                Text("Go", fontSize = 12.sp)
+                                Text("Go", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.Black)
                             }
                         }
-                    }
-                }
-                Spacer(modifier = Modifier.height(8.dp))
 
-                // Audio Only / Pop-Up Toggles
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Card(modifier = Modifier.weight(1f), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))) {
-                        Column(modifier = Modifier.padding(12.dp)) {
-                            Text("Audio-Only", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text("Play Background", fontSize = 10.sp, modifier = Modifier.weight(1f))
-                                Switch(
-                                    checked = playAsAudioOnly,
-                                    onCheckedChange = { playAsAudioOnly = it },
-                                    modifier = Modifier.scale(0.8f)
-                                )
-                            }
-                        }
-                    }
+                        Spacer(modifier = Modifier.height(10.dp))
 
-                    Card(modifier = Modifier.weight(1f), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))) {
-                        Column(modifier = Modifier.padding(12.dp)) {
-                            Text("Pop-Up Player", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text("Picture-in-Pic", fontSize = 10.sp, modifier = Modifier.weight(1f))
-                                Switch(
-                                    checked = isPipActive,
-                                    onCheckedChange = {
-                                        isPipActive = it
-                                        if (it) {
-                                            android.widget.Toast.makeText(context, "Pop-Up player mini mode enabled", android.widget.Toast.LENGTH_SHORT).show()
+                        // Delta Preset Seek Buttons
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            listOf(-30, -10, 10, 30).forEach { seconds ->
+                                val label = if (seconds > 0) "+${seconds}s" else "${seconds}s"
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(Color.White.copy(alpha = 0.05f))
+                                        .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(8.dp))
+                                        .clickable {
+                                            hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                            val targetSeek = (exoPlayer.currentPosition + seconds * 1000L).coerceIn(0L, duration)
+                                            exoPlayer.seekTo(targetSeek)
+                                            currentPosition = targetSeek
+                                            android.widget.Toast.makeText(context, "Sought $label", android.widget.Toast.LENGTH_SHORT).show()
                                         }
-                                    },
-                                    modifier = Modifier.scale(0.8f)
-                                )
-                            }
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                // SECTION 2: SECONDARY CONTROLS (REPEAT, SHUFFLE, A-B, DELAY, AUDIO TRACKS)
-                Text("Modifiers & Loopers", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = MaterialTheme.colorScheme.primary.copy(alpha = 0.8f))
-                Spacer(modifier = Modifier.height(8.dp))
-
-                // Repeat / Shuffle Card
-                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)), shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                            Text("Shuffle Mode:", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                            Switch(
-                                checked = isShuffleEnabled,
-                                onCheckedChange = {
-                                    isShuffleEnabled = it
-                                    exoPlayer.shuffleModeEnabled = it
-                                }
-                            )
-                        }
-                        HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), color = Color.Gray.copy(alpha = 0.15f))
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                            Text("Repeat Mode:", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                            val label = when (repeatModeState) {
-                                0 -> "Off"
-                                1 -> "One (Loop Current)"
-                                else -> "All (Loop List)"
-                            }
-                            TextButton(onClick = {
-                                repeatModeState = (repeatModeState + 1) % 3
-                                exoPlayer.repeatMode = when (repeatModeState) {
-                                    0 -> Player.REPEAT_MODE_OFF
-                                    1 -> Player.REPEAT_MODE_ONE
-                                    else -> Player.REPEAT_MODE_ALL
-                                }
-                            }) {
-                                Text(label, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                            }
-                        }
-                    }
-                }
-                Spacer(modifier = Modifier.height(8.dp))
-
-                // A-B repeat Loop Card
-                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)), shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                            Text("A-B Repeat Loop:", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Button(
-                                    onClick = {
-                                        if (pointA == null) {
-                                            pointA = currentPosition
-                                        } else if (pointB == null) {
-                                            if (currentPosition > pointA!!) {
-                                                pointB = currentPosition
-                                                abRepeatEnabled = true
-                                            }
-                                        } else {
-                                            pointA = null
-                                            pointB = null
-                                            abRepeatEnabled = false
-                                        }
-                                    },
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = if (abRepeatEnabled) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.primary
-                                    )
+                                        .padding(vertical = 8.dp),
+                                    contentAlignment = Alignment.Center
                                 ) {
                                     Text(
-                                        text = when {
-                                            pointA == null -> "Mark [A]"
-                                            pointB == null -> "Mark [B]"
-                                            else -> "Loop [A-B] active ↺"
-                                        },
+                                        text = label,
+                                        color = Color.White.copy(alpha = 0.9f),
+                                        fontWeight = FontWeight.Bold,
                                         fontSize = 11.sp
                                     )
                                 }
+                            }
+                        }
+                    }
+                }
 
-                                if (pointA != null || pointB != null) {
-                                    IconButton(
-                                        onClick = {
-                                            pointA = null
-                                            pointB = null
-                                            abRepeatEnabled = false
+                // SECTION 4: A-B SEGMENT LOOP COCKPIT
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(
+                    text = "A-B SEGMENT LOOP",
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.primary,
+                    letterSpacing = 1.5.sp,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Loop Window",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                color = Color.White
+                            )
+
+                            if (abRepeatEnabled) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(6.dp)
+                                            .clip(CircleShape)
+                                            .background(Color.Green)
+                                    )
+                                    Text(
+                                        text = "LOOP ACTIVE",
+                                        fontWeight = FontWeight.Black,
+                                        fontSize = 9.sp,
+                                        color = Color.Green
+                                    )
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        // Point Displays
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            // Point A Box
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(Color.Black.copy(alpha = 0.15f))
+                                    .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(10.dp))
+                                    .padding(8.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Text("POINT A", fontSize = 9.sp, color = MaterialTheme.colorScheme.primary.copy(alpha = 0.8f), fontWeight = FontWeight.Bold)
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = if (pointA == null) "--:--" else formatPlayerDuration(pointA!!),
+                                        fontSize = 12.sp,
+                                        color = Color.White,
+                                        fontWeight = FontWeight.ExtraBold
+                                    )
+                                }
+                            }
+
+                            // Point B Box
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(Color.Black.copy(alpha = 0.15f))
+                                    .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(10.dp))
+                                    .padding(8.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Text("POINT B", fontSize = 9.sp, color = MaterialTheme.colorScheme.primary.copy(alpha = 0.8f), fontWeight = FontWeight.Bold)
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = if (pointB == null) "--:--" else formatPlayerDuration(pointB!!),
+                                        fontSize = 12.sp,
+                                        color = Color.White,
+                                        fontWeight = FontWeight.ExtraBold
+                                    )
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        // Tactile button sequence
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            CustomButton(
+                                onClick = {
+                                    hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                                    if (pointA == null) {
+                                        pointA = currentPosition
+                                        android.widget.Toast.makeText(context, "Point A set!", android.widget.Toast.LENGTH_SHORT).show()
+                                    } else if (pointB == null) {
+                                        if (currentPosition > pointA!!) {
+                                            pointB = currentPosition
+                                            abRepeatEnabled = true
+                                            android.widget.Toast.makeText(context, "Point B set! Looping active.", android.widget.Toast.LENGTH_SHORT).show()
+                                        } else {
+                                            android.widget.Toast.makeText(context, "Point B must be after Point A!", android.widget.Toast.LENGTH_SHORT).show()
                                         }
+                                    } else {
+                                        pointA = null
+                                        pointB = null
+                                        abRepeatEnabled = false
+                                        android.widget.Toast.makeText(context, "Loop cleared!", android.widget.Toast.LENGTH_SHORT).show()
+                                    }
+                                },
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (abRepeatEnabled) Color.Green else MaterialTheme.colorScheme.primary
+                                )
+                            ) {
+                                Text(
+                                    text = when {
+                                        pointA == null -> "Mark [A]"
+                                        pointB == null -> "Mark [B]"
+                                        else -> "Clear Loop"
+                                    },
+                                    color = Color.Black,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp
+                                )
+                            }
+
+                            if (pointA != null || pointB != null) {
+                                IconButton(
+                                    onClick = {
+                                        hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                                        pointA = null
+                                        pointB = null
+                                        abRepeatEnabled = false
+                                        android.widget.Toast.makeText(context, "Loop reset", android.widget.Toast.LENGTH_SHORT).show()
+                                    },
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(Color.White.copy(alpha = 0.05f))
+                                        .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(12.dp))
+                                        .size(40.dp)
+                                ) {
+                                    Icon(Icons.Default.Close, contentDescription = "Reset Loop", tint = Color.Red, modifier = Modifier.size(18.dp))
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // SECTION 5: AUDIO SYNC DELAY
+                Spacer(modifier = Modifier.height(16.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "AUDIO SYNC DELAY",
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.primary,
+                        letterSpacing = 1.5.sp
+                    )
+
+                    if (audioDelayMs != 0L) {
+                        Text(
+                            text = "RESET",
+                            color = Color.Red,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 10.sp,
+                            modifier = Modifier.clickable {
+                                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                audioDelayMs = 0L
+                            }
+                        )
+                    }
+                }
+
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Delay Offset",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                color = Color.White
+                            )
+                            Text(
+                                text = "${audioDelayMs}ms",
+                                color = if (audioDelayMs == 0L) Color.White.copy(alpha = 0.6f) else MaterialTheme.colorScheme.primary,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        // Custom Designed Delay Slider
+                        CustomSlider(
+                            value = audioDelayMs.toFloat(),
+                            onValueChange = { audioDelayMs = it.toLong() },
+                            valueRange = -1000f..1000f
+                        )
+                    }
+                }
+
+                // SECTION 6: MEDIA BOOKMARKS (FILMSTRIP PREVIEWS)
+                Spacer(modifier = Modifier.height(16.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "FRAME BOOKMARKS",
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.primary,
+                        letterSpacing = 1.5.sp
+                    )
+
+                    TextButton(
+                        onClick = {
+                            hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                            if (!bookmarks.contains(currentPosition)) {
+                                bookmarks = bookmarks + currentPosition
+                                android.widget.Toast.makeText(context, "Frame pinned!", android.widget.Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        contentPadding = PaddingValues(0.dp),
+                        modifier = Modifier.height(24.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Icon(Icons.Default.BookmarkAdd, contentDescription = null, modifier = Modifier.size(14.dp))
+                            Text("Pin Frame", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        if (bookmarks.isEmpty()) {
+                            Text(
+                                text = "No pinned moments yet. Tap 'Pin Frame' during playback to save precise frames.",
+                                fontSize = 11.sp,
+                                color = Color.White.copy(alpha = 0.45f),
+                                lineHeight = 15.sp
+                            )
+                        } else {
+                            // Scrollable list of frame bookmarks
+                            androidx.compose.foundation.lazy.LazyRow(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                items(bookmarks.size) { index ->
+                                    val bmk = bookmarks[index]
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(Color.Black.copy(alpha = 0.4f))
+                                            .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(8.dp))
+                                            .clickable {
+                                                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                                exoPlayer.seekTo(bmk)
+                                                currentPosition = bmk
+                                            }
+                                            .padding(horizontal = 10.dp, vertical = 6.dp)
                                     ) {
-                                        Icon(Icons.Default.Clear, contentDescription = "Clear loop", tint = Color.Red)
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        ) {
+                                            Icon(Icons.Default.Bookmark, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(12.dp))
+                                            Text(
+                                                text = formatPlayerDuration(bmk),
+                                                fontSize = 11.sp,
+                                                color = Color.White,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                            IconButton(
+                                                onClick = {
+                                                    hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                                    bookmarks = bookmarks.filter { it != bmk }
+                                                },
+                                                modifier = Modifier.size(16.dp)
+                                            ) {
+                                                Icon(Icons.Default.Close, contentDescription = "Delete", tint = Color.Red.copy(alpha = 0.8f), modifier = Modifier.size(10.dp))
+                                            }
+                                        }
                                     }
                                 }
                             }
                         }
                     }
                 }
-                Spacer(modifier = Modifier.height(8.dp))
 
-                // Delay / Audio Adjuster
-                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)), shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Audio Delay Adjuster:", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                            Text("${audioDelayMs}ms", color = MaterialTheme.colorScheme.secondary, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                        }
-                        Slider(
-                            value = audioDelayMs.toFloat(),
-                            onValueChange = { audioDelayMs = it.toLong() },
-                            valueRange = -1000f..1000f,
-                            colors = SliderDefaults.colors(thumbColor = MaterialTheme.colorScheme.secondary, activeTrackColor = MaterialTheme.colorScheme.secondary)
-                        )
-                    }
-                }
+                // SECTION 7: SAVE QUEUE TO PLAYLIST
                 Spacer(modifier = Modifier.height(16.dp))
+                Text(
+                    text = "SAVE CURRENT QUEUE",
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.primary,
+                    letterSpacing = 1.5.sp,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
 
-                // SECTION 3: BOOKMARKS & PLAYLISTS
-                Text("Bookmarks & Playlists", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = MaterialTheme.colorScheme.primary.copy(alpha = 0.8f))
-                Spacer(modifier = Modifier.height(8.dp))
-
-                // Bookmarks Manager Card
-                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)), shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                            Text("Media Bookmarks", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                            TextButton(onClick = {
-                                if (!bookmarks.contains(currentPosition)) {
-                                    bookmarks = bookmarks + currentPosition
-                                }
-                            }) {
-                                Icon(Icons.Default.BookmarkAdd, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("Pin Frame", fontSize = 12.sp)
-                            }
-                        }
-                        Spacer(modifier = Modifier.height(6.dp))
-                        if (bookmarks.isEmpty()) {
-                            Text("No bookmarks added yet", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f))
-                        } else {
-                            Row(modifier = Modifier.fillMaxWidth().height(36.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                bookmarks.forEach { bmk ->
-                                    AssistChip(
-                                        onClick = {
-                                            exoPlayer.seekTo(bmk)
-                                            currentPosition = bmk
-                                        },
-                                        label = { Text(formatPlayerDuration(bmk), fontSize = 10.sp) },
-                                        trailingIcon = {
-                                            Icon(
-                                                imageVector = Icons.Default.Close,
-                                                contentDescription = "Delete",
-                                                modifier = Modifier.size(12.dp).clickable {
-                                                    bookmarks = bookmarks.filter { it != bmk }
-                                                }
-                                            )
-                                        }
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-                Spacer(modifier = Modifier.height(8.dp))
-
-                // Save play queue as playlist Card
-                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)), shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        Text("Save Play Queue as Playlist", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
                             OutlinedTextField(
                                 value = playlistNameInput,
                                 onValueChange = { playlistNameInput = it },
                                 placeholder = { Text("Playlist Name...", fontSize = 11.sp) },
                                 singleLine = true,
                                 modifier = Modifier.weight(1f),
-                                colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = MaterialTheme.colorScheme.primary)
+                                shape = RoundedCornerShape(12.dp),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = MaterialTheme.colorScheme.primary,
+                                    unfocusedBorderColor = Color.White.copy(alpha = 0.12f),
+                                    focusedContainerColor = Color.Black.copy(alpha = 0.2f),
+                                    unfocusedContainerColor = Color.Black.copy(alpha = 0.2f)
+                                )
                             )
                             Button(
                                 onClick = {
@@ -1969,31 +3377,167 @@ fun PlayerScreen(
                                         playlistNameInput = ""
                                         showAdvancedControlsSheet = false
                                     }
-                                }
+                                },
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
                             ) {
-                                Text("Save", fontSize = 12.sp)
+                                Text("Save", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.Black)
                             }
                         }
                     }
                 }
+
+                // SECTION 8: SUBTITLE ENGINE
                 Spacer(modifier = Modifier.height(16.dp))
+                Text(
+                    text = "SUBTITLE ENGINE",
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.primary,
+                    letterSpacing = 1.5.sp,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
 
-                // SECTION 4: HELP, DETAILS & CHEATSHEETS
-                Text("System Info & Tips", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = MaterialTheme.colorScheme.primary.copy(alpha = 0.8f))
-                Spacer(modifier = Modifier.height(8.dp))
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(16.dp))
+                ) {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        // Subtitle Size Slider
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.FormatSize,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Text(
+                                text = "Font Size: ${prefs.subtitleSize.toInt()} sp",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp,
+                                color = Color.White
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(6.dp))
+                        CustomSlider(
+                            value = prefs.subtitleSize,
+                            onValueChange = { size ->
+                                viewModel.updateSubtitleCustomization(
+                                    background = prefs.subtitleBackground,
+                                    textColor = prefs.subtitleTextColor,
+                                    size = size,
+                                    fontStyle = prefs.subtitleFontStyle
+                                )
+                            },
+                            valueRange = 12f..32f,
+                            modifier = Modifier.fillMaxWidth()
+                        )
 
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        // Subtitle Opacity Slider
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Opacity,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Text(
+                                text = "Opacity: ${(prefs.subtitleOpacity * 100).toInt()}%",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp,
+                                color = Color.White
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(6.dp))
+                        CustomSlider(
+                            value = prefs.subtitleOpacity,
+                            onValueChange = { opacity ->
+                                viewModel.updateAdvancedSubtitleSettings(opacity = opacity, preset = "Custom")
+                            },
+                            valueRange = 0.1f..1.0f,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
+                        Spacer(modifier = Modifier.height(14.dp))
+
+                        // Quick Presets Flow
+                        Text(
+                            text = "Color Presets",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.8f)
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            listOf(
+                                "Default White" to "#FFFFFF",
+                                "Vivid Yellow" to "#FFFF00",
+                                "Neon Cyan" to "#00FFFF",
+                                "Lime Green" to "#00FF00"
+                            ).forEach { (presetName, hexColor) ->
+                                val isSelected = prefs.subtitleTextColor.uppercase() == hexColor.uppercase()
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(if (isSelected) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.08f))
+                                        .clickable {
+                                            viewModel.updateSubtitleCustomization(
+                                                background = prefs.subtitleBackground,
+                                                textColor = hexColor,
+                                                size = prefs.subtitleSize,
+                                                fontStyle = prefs.subtitleFontStyle
+                                            )
+                                        }
+                                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                                ) {
+                                    Text(
+                                        text = presetName,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (isSelected) Color.Black else Color.White
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // SECTION 9: UTILITIES
+                Spacer(modifier = Modifier.height(16.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     Button(
                         onClick = {
                             showVideoInfoOverlay = true
                             showAdvancedControlsSheet = false
                         },
+                        shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
                         modifier = Modifier.weight(1f)
                     ) {
                         Icon(Icons.Default.Info, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Video Details", fontSize = 12.sp)
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Video Details", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     }
 
                     Button(
@@ -2001,19 +3545,19 @@ fun PlayerScreen(
                             showTipsOverlay = true
                             showAdvancedControlsSheet = false
                         },
+                        shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
                         modifier = Modifier.weight(1f)
                     ) {
-                        Icon(Icons.Default.Help, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Gestures Help", fontSize = 12.sp)
+                        Icon(Icons.Default.Help, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color.Black)
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Gestures Help", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.Black)
                     }
                 }
                 Spacer(modifier = Modifier.height(24.dp))
             }
         }
     }
-
     // Sleep Timer Bottom Sheet
     if (showSleepTimerSheet) {
         ModalBottomSheet(
@@ -2074,6 +3618,7 @@ fun PlayerScreen(
         val eqEnabled by viewModel.equalizerEnabled.collectAsState()
         val eqBands by viewModel.equalizerBands.collectAsState()
         val currentPreset by viewModel.currentEqualizerPreset.collectAsState()
+        val isPlaying by viewModel.isPlaying.collectAsState()
 
         ModalBottomSheet(
             onDismissRequest = { showEqualizerSheet = false },
@@ -2100,10 +3645,12 @@ fun PlayerScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Text(if (eqEnabled) "ON" else "OFF", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = if (eqEnabled) MaterialTheme.colorScheme.primary else Color.Gray)
+                        val isSwitchEnabled = eqEnabled && isPlaying
+                        Text(if (isSwitchEnabled) "ON" else "OFF", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = if (isSwitchEnabled) MaterialTheme.colorScheme.primary else Color.Gray)
                         Switch(
                             checked = eqEnabled,
-                            onCheckedChange = { viewModel.setEqualizerEnabled(it) },
+                            onCheckedChange = { if (isPlaying) viewModel.setEqualizerEnabled(it) },
+                            enabled = isPlaying,
                             colors = SwitchDefaults.colors(
                                 checkedThumbColor = MaterialTheme.colorScheme.primary,
                                 checkedTrackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
@@ -2125,7 +3672,8 @@ fun PlayerScreen(
                         val isSelected = currentPreset == preset
                         FilterChip(
                             selected = isSelected,
-                            onClick = { viewModel.applyPreset(preset) },
+                            onClick = { if (isPlaying) viewModel.applyPreset(preset) },
+                            enabled = isPlaying,
                             label = { Text(preset, fontSize = 12.sp, fontWeight = FontWeight.SemiBold) },
                             colors = FilterChipDefaults.filterChipColors(
                                 selectedContainerColor = MaterialTheme.colorScheme.primary,
@@ -2141,7 +3689,7 @@ fun PlayerScreen(
                 Text("Custom Tuning", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.align(Alignment.Start))
                 Spacer(modifier = Modifier.height(12.dp))
                 
-                if (eqBands.isEmpty()) {
+                if (!isPlaying) {
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -2153,6 +3701,18 @@ fun PlayerScreen(
                             Spacer(modifier = Modifier.height(8.dp))
                             Text("Play audio to activate Equalizer", color = Color.Gray, fontSize = 14.sp)
                         }
+                    }
+                } else if (eqBands.isEmpty()) {
+                    LaunchedEffect(Unit) {
+                        viewModel.ensureDefaultBands()
+                    }
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(180.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
                     }
                 } else {
                     Row(
@@ -2172,11 +3732,12 @@ fun PlayerScreen(
                                 val maxDb = band.maxLevelMilliBel / 100f
                                 val currentDb = band.currentLevelMilliBel / 100f
                                 
+                                val sliderActive = eqEnabled && isPlaying
                                 Text(
                                     text = "${currentDb.roundToInt()}dB",
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.Bold,
-                                    color = if (eqEnabled) MaterialTheme.colorScheme.primary else Color.Gray
+                                    color = if (sliderActive) MaterialTheme.colorScheme.primary else Color.Gray
                                 )
                                 
                                 Box(
@@ -2185,28 +3746,17 @@ fun PlayerScreen(
                                         .width(36.dp),
                                     contentAlignment = Alignment.Center
                                 ) {
-                                    Slider(
+                                    CustomVerticalSlider(
                                         value = currentDb,
                                         onValueChange = { dbValue ->
-                                            if (eqEnabled) {
+                                            if (sliderActive) {
                                                 val mBel = (dbValue * 100).toInt().toShort()
                                                 viewModel.setEqualizerBandLevel(band.index, mBel)
                                             }
                                         },
                                         valueRange = minDb..maxDb,
-                                        modifier = Modifier
-                                            .graphicsLayer {
-                                                rotationZ = -90f
-                                                transformOrigin = androidx.compose.ui.graphics.TransformOrigin.Center
-                                            }
-                                            .width(140.dp)
-                                            .height(30.dp),
-                                        enabled = eqEnabled,
-                                        colors = SliderDefaults.colors(
-                                            thumbColor = MaterialTheme.colorScheme.primary,
-                                            activeTrackColor = MaterialTheme.colorScheme.primary,
-                                            inactiveTrackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f)
-                                        )
+                                        enabled = sliderActive,
+                                        modifier = Modifier.fillMaxHeight().width(24.dp)
                                     )
                                 }
                                 
@@ -2232,17 +3782,19 @@ fun PlayerScreen(
     }
 
     if (showAudioSubtitleSelectorSheet) {
+         val selectorSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
          ModalBottomSheet(
              onDismissRequest = { showAudioSubtitleSelectorSheet = false },
+             sheetState = selectorSheetState,
              containerColor = MaterialTheme.colorScheme.surface,
              shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
          ) {
              val configuration = androidx.compose.ui.platform.LocalConfiguration.current
              val isLandscape = configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
-             val currentTracks = exoPlayer.currentTracks
+             val currentTracks = remember(tracksUpdateTrigger) { exoPlayer.currentTracks }
 
              // 1. Parse Audio Tracks
-             val audioTracks = remember(currentTracks) {
+             val audioTracks = remember(currentTracks, tracksUpdateTrigger) {
                  val list = mutableListOf<Triple<Int, Int, String>>()
                  for (g in 0 until currentTracks.groups.size) {
                      val group = currentTracks.groups[g]
@@ -2258,7 +3810,7 @@ fun PlayerScreen(
              }
 
              // 2. Parse Subtitle Tracks
-             val subtitleTracks = remember(currentTracks) {
+             val subtitleTracks = remember(currentTracks, tracksUpdateTrigger) {
                  val list = mutableListOf<Triple<Int, Int, String>>()
                  for (g in 0 until currentTracks.groups.size) {
                      val group = currentTracks.groups[g]
@@ -2274,7 +3826,7 @@ fun PlayerScreen(
              }
 
              // 3. Parse Video Tracks (Qualities)
-             val videoTracks = remember(currentTracks) {
+             val videoTracks = remember(currentTracks, tracksUpdateTrigger) {
                  val list = mutableListOf<Triple<Int, Int, String>>()
                  for (g in 0 until currentTracks.groups.size) {
                      val group = currentTracks.groups[g]
@@ -2289,8 +3841,28 @@ fun PlayerScreen(
                  list
              }
 
+             // Local immediate states for instant UI rendering
+             var localSubtitlesDisabled by remember(tracksUpdateTrigger) {
+                 mutableStateOf(exoPlayer.trackSelectionParameters.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT))
+             }
+
+             var selectedAudioTrackId by remember(currentTracks, tracksUpdateTrigger) {
+                 val initiallySelected = audioTracks.find { (gIndex, tIndex, _) ->
+                     currentTracks.groups[gIndex].isTrackSelected(tIndex)
+                 }
+                 mutableStateOf(initiallySelected?.let { Pair(it.first, it.second) })
+             }
+
+             var selectedSubtitleTrackId by remember(currentTracks, tracksUpdateTrigger) {
+                 val initiallySelected = subtitleTracks.find { (gIndex, tIndex, _) ->
+                     currentTracks.groups[gIndex].isTrackSelected(tIndex)
+                 }
+                 mutableStateOf(initiallySelected?.let { Pair(it.first, it.second) })
+             }
+
              @Composable
              fun AudioColumnContent() {
+                 val trigger = tracksUpdateTrigger
                  Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                      Text(
                          text = "Audio Tracks",
@@ -2301,10 +3873,7 @@ fun PlayerScreen(
                      HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
 
                      Column(
-                         modifier = Modifier
-                             .heightIn(max = 200.dp)
-                             .verticalScroll(rememberScrollState())
-                             .fillMaxWidth(),
+                         modifier = Modifier.fillMaxWidth(),
                          verticalArrangement = Arrangement.spacedBy(4.dp)
                      ) {
                          if (audioTracks.isEmpty()) {
@@ -2317,6 +3886,7 @@ fun PlayerScreen(
                                      shape = RoundedCornerShape(8.dp),
                                      modifier = Modifier.fillMaxWidth().clickable {
                                          selectedMockAudioIndex = index
+                                         tracksUpdateTrigger++
                                          android.widget.Toast.makeText(context, "Switched to $label fallback stream", android.widget.Toast.LENGTH_SHORT).show()
                                      }
                                  ) {
@@ -2346,6 +3916,7 @@ fun PlayerScreen(
                                              .buildUpon()
                                              .setOverrideForType(TrackSelectionOverride(trackGroup, tIndex))
                                              .build()
+                                         tracksUpdateTrigger++
                                      }
                                  ) {
                                      Row(
@@ -2367,6 +3938,7 @@ fun PlayerScreen(
 
              @Composable
              fun SubtitlesColumnContent() {
+                 val trigger = tracksUpdateTrigger
                  Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                      Text(
                          text = "Subtitles",
@@ -2379,10 +3951,7 @@ fun PlayerScreen(
                      val isSubtitlesDisabled = exoPlayer.trackSelectionParameters.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)
 
                      Column(
-                         modifier = Modifier
-                             .heightIn(max = 200.dp)
-                             .verticalScroll(rememberScrollState())
-                             .fillMaxWidth(),
+                         modifier = Modifier.fillMaxWidth(),
                          verticalArrangement = Arrangement.spacedBy(4.dp)
                      ) {
                          if (subtitleTracks.isEmpty()) {
@@ -2395,6 +3964,7 @@ fun PlayerScreen(
                                      shape = RoundedCornerShape(8.dp),
                                      modifier = Modifier.fillMaxWidth().clickable {
                                          selectedMockSubtitleIndex = index
+                                         tracksUpdateTrigger++
                                          android.widget.Toast.makeText(context, "Subtitles: $label selected", android.widget.Toast.LENGTH_SHORT).show()
                                      }
                                  ) {
@@ -2420,6 +3990,7 @@ fun PlayerScreen(
                                          .buildUpon()
                                          .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
                                          .build()
+                                     tracksUpdateTrigger++
                                  }
                              ) {
                                  Row(
@@ -2447,6 +4018,7 @@ fun PlayerScreen(
                                              .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
                                              .setOverrideForType(TrackSelectionOverride(trackGroup, tIndex))
                                              .build()
+                                         tracksUpdateTrigger++
                                      }
                                  ) {
                                      Row(
@@ -2514,10 +4086,7 @@ fun PlayerScreen(
                      HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
 
                      Column(
-                         modifier = Modifier
-                             .heightIn(max = 200.dp)
-                             .verticalScroll(rememberScrollState())
-                             .fillMaxWidth(),
+                         modifier = Modifier.fillMaxWidth(),
                          verticalArrangement = Arrangement.spacedBy(4.dp)
                      ) {
                          if (videoTracks.isEmpty()) {
@@ -2583,6 +4152,7 @@ fun PlayerScreen(
                  modifier = Modifier
                      .fillMaxWidth()
                      .navigationBarsPadding()
+                     .verticalScroll(rememberScrollState()) // Parent is scrollable, preventing option cutoffs
                      .padding(horizontal = 24.dp, vertical = 12.dp)
              ) {
                  Spacer(modifier = Modifier.height(16.dp))
@@ -2606,7 +4176,7 @@ fun PlayerScreen(
                      }
                  } else {
                      Column(
-                         modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
+                         modifier = Modifier.fillMaxWidth(),
                          verticalArrangement = Arrangement.spacedBy(16.dp)
                      ) {
                          AudioColumnContent()
@@ -2643,10 +4213,11 @@ fun PlayerScreen(
                             .setMimeType(mimeType)
                             .setLanguage("en")
                             .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
+                            .setRoleFlags(C.ROLE_FLAG_SUBTITLE)
                             .build()
 
                         val newMediaItem = MediaItem.Builder()
-                            .setUri(mediaItem.uriString)
+                            .setUri(activeMediaItem.uriString)
                             .setSubtitleConfigurations(listOf(subtitleConfig))
                             .build()
 
@@ -2956,9 +4527,9 @@ fun PlayerScreen(
             title = { Text("Media Technical Details", fontWeight = FontWeight.Bold) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Title: ${mediaItem.title}", fontSize = 13.sp)
-                    Text("Artist: ${mediaItem.artist ?: "Unknown"}", fontSize = 13.sp)
-                    Text("Location: ${mediaItem.uriString}", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
+                    Text("Title: ${activeMediaItem.title}", fontSize = 13.sp)
+                    Text("Artist: ${activeMediaItem.artist ?: "Unknown"}", fontSize = 13.sp)
+                    Text("Location: ${activeMediaItem.uriString}", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
                     Text("Duration: ${formatPlayerDuration(duration)}", fontSize = 13.sp)
                     val tracks = exoPlayer.currentTracks
                     var audioCount = 0
@@ -3010,7 +4581,7 @@ fun PlayerScreen(
                 }
             },
             text = {
-                Text("Would you like to resume '${mediaItem.title}' from where you left off (${formatPlayerDuration(resumePosition)}), or start over from the beginning?")
+                Text("Would you like to resume '${activeMediaItem.title}' from where you left off (${formatPlayerDuration(resumePosition)}), or start over from the beginning?")
             },
             confirmButton = {
                 Button(
@@ -3080,6 +4651,8 @@ fun PlayerScreen(
 
 }
 
+}
+
 // Physical Vinyl disk view (Nordic cream styled)
 @Composable
 fun AudioVinylPlayer(
@@ -3134,37 +4707,13 @@ fun AudioVinylPlayer(
                         .background(MaterialTheme.colorScheme.primary),
                     contentAlignment = Alignment.Center
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.MusicNote,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onPrimary,
-                        modifier = Modifier.size(48.dp)
+                    MediaThumbnail(
+                        item = item,
+                        modifier = Modifier.fillMaxSize()
                     )
                 }
             }
         }
-
-        Spacer(modifier = Modifier.height(40.dp))
-
-        Text(
-            text = item.title,
-            color = MaterialTheme.colorScheme.primary,
-            fontSize = 22.sp,
-            fontWeight = FontWeight.ExtraBold,
-            textAlign = TextAlign.Center,
-            maxLines = 1,
-            modifier = Modifier.padding(horizontal = 24.dp)
-        )
-
-        Spacer(modifier = Modifier.height(6.dp))
-
-        Text(
-            text = item.artist ?: "Local File",
-            color = MaterialTheme.colorScheme.secondary,
-            fontSize = 14.sp,
-            fontWeight = FontWeight.Bold,
-            textAlign = TextAlign.Center
-        )
     }
 }
 
@@ -3193,7 +4742,7 @@ fun CustomAudioPlayerScreen(
     onSwitchToVideo: (() -> Unit)? = null,
     onBack: () -> Unit,
     onTogglePlay: () -> Unit,
-    onSeek: (Float) -> Unit,
+    onSeek: (Long) -> Unit,
     onPrev: () -> Unit,
     onNext: () -> Unit,
     onToggleShuffle: () -> Unit,
@@ -3201,284 +4750,502 @@ fun CustomAudioPlayerScreen(
     onOpenQueue: () -> Unit,
     onOpenSleepTimer: () -> Unit,
     onOpenEqualizer: () -> Unit,
-    onOpenInfo: () -> Unit
+    onOpenInfo: () -> Unit,
+    isSaved: Boolean,
+    onToggleFavorite: () -> Unit,
+    onOpenAdvancedControls: () -> Unit
 ) {
+    val hapticFeedback = androidx.compose.ui.platform.LocalHapticFeedback.current
     var isScrubbing by remember { mutableStateOf(false) }
     var scrubPosition by remember { mutableStateOf(0L) }
     val displayPosition = if (isScrubbing) scrubPosition else currentPosition
 
-    Column(
+    // Ambient background aura using primary & secondary color gradients
+    val ambientGradient = Brush.radialGradient(
+        colors = listOf(
+            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.22f),
+            MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.08f),
+            MaterialTheme.colorScheme.background
+        ),
+        radius = 1400f
+    )
+
+    Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
+            .background(ambientGradient)
             .statusBarsPadding()
             .navigationBarsPadding()
     ) {
-        // 1. Top Bar
-        Row(
+        Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+                .fillMaxSize()
+                .padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.SpaceBetween
         ) {
-            IconButton(
-                onClick = onBack,
-                modifier = Modifier
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-                    .testTag("player_back_button")
-            ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = "Back",
-                    tint = MaterialTheme.colorScheme.onSurface
-                )
-            }
-            
-            Text(
-                text = "NOW PLAYING",
-                fontWeight = FontWeight.ExtraBold,
-                fontSize = 13.sp,
-                letterSpacing = 1.5.sp,
-                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f)
-            )
-
-            IconButton(
-                onClick = onOpenInfo,
-                modifier = Modifier
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Info,
-                    contentDescription = "Media Information",
-                    tint = MaterialTheme.colorScheme.onSurface
-                )
-            }
-        }
-
-        // 2. Center Album Art / Vinyl
-        Box(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth(),
-            contentAlignment = Alignment.Center
-        ) {
-            AudioVinylPlayer(
-                item = mediaItem,
-                isPlaying = isPlaying
-            )
-
-            if (showSwitchToVideoBtn && onSwitchToVideo != null) {
-                Button(
-                    onClick = onSwitchToVideo,
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .padding(top = 16.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
-                    shape = RoundedCornerShape(24.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Movie,
-                        contentDescription = "Switch to Video",
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Switch to Video Mode", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                }
-            }
-        }
-
-        // 3. Audio Controls Panel at the bottom
-        Surface(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp))
-                .border(1.dp, MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f), RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp)),
-            color = MaterialTheme.colorScheme.surface,
-            tonalElevation = 4.dp
-        ) {
-            Column(
+            // 1. Sleek Floating Header
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 24.dp, vertical = 20.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
+                    .padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                // Track Info Details
-                Text(
-                    text = mediaItem.title,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.ExtraBold,
-                    textAlign = TextAlign.Center,
-                    maxLines = 1,
+                IconButton(
+                    onClick = {
+                        hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                        onBack()
+                    },
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .basicMarquee()
-                )
-                
-                Spacer(modifier = Modifier.height(4.dp))
-                
-                Text(
-                    text = mediaItem.displayArtist,
-                    color = MaterialTheme.colorScheme.secondary,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Medium,
-                    textAlign = TextAlign.Center,
-                    maxLines = 1,
-                    modifier = Modifier.padding(bottom = 16.dp)
-                )
-
-                // Progress Bar Timeline
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        .size(44.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
+                        .testTag("player_back_button")
                 ) {
-                    Text(
-                        text = formatPlayerDuration(displayPosition),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "Back",
+                        tint = MaterialTheme.colorScheme.onSurface
                     )
+                }
 
-                    SmoothSeekBar(
-                        position = displayPosition,
-                        duration = duration,
-                        isScrubbing = isScrubbing,
-                        onScrubStart = { isScrubbing = true },
-                        onScrubPositionChange = { pos -> scrubPosition = pos },
-                        onScrubEnd = { pos ->
-                            isScrubbing = false
-                            onSeek(if (duration > 0) pos.toFloat() / duration else 0f)
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        text = "NOW PLAYING",
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 11.sp,
+                        letterSpacing = 2.sp,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        text = "AERO PREMIUM DECK",
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                        letterSpacing = 1.sp
+                    )
+                }
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    IconButton(
+                        onClick = {
+                            hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                            onOpenAdvancedControls()
                         },
                         modifier = Modifier
-                            .weight(1f)
-                            .testTag("player_timeline_slider")
-                    )
-
-                    Text(
-                        text = formatPlayerDuration(duration),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                // Playback controls row (Shuffle, Prev, Play/Pause, Next, Repeat)
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    IconButton(onClick = onToggleShuffle) {
-                        Icon(
-                            imageVector = Icons.Default.Shuffle,
-                            contentDescription = "Shuffle",
-                            tint = if (isShuffleEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-                            modifier = Modifier.size(24.dp)
-                        )
-                    }
-
-                    IconButton(onClick = onPrev) {
-                        Icon(
-                            imageVector = Icons.Default.SkipPrevious,
-                            contentDescription = "Previous",
-                            tint = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.size(32.dp)
-                        )
-                    }
-
-                    // Large Audio-only Play/Pause FAB
-                    IconButton(
-                        onClick = onTogglePlay,
-                        modifier = Modifier
-                            .size(72.dp)
+                            .size(44.dp)
                             .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.primary)
+                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
                     ) {
                         Icon(
-                            imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                            contentDescription = "Play or Pause",
-                            tint = MaterialTheme.colorScheme.onPrimary,
-                            modifier = Modifier.size(36.dp)
+                            imageVector = Icons.Default.Tune,
+                            contentDescription = "Aero Deck Options",
+                            tint = MaterialTheme.colorScheme.onSurface
                         )
                     }
 
-                    IconButton(onClick = onNext) {
+                    IconButton(
+                        onClick = {
+                            hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                            onOpenInfo()
+                        },
+                        modifier = Modifier
+                            .size(44.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
+                    ) {
                         Icon(
-                            imageVector = Icons.Default.SkipNext,
-                            contentDescription = "Next",
-                            tint = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.size(32.dp)
+                            imageVector = Icons.Default.Info,
+                            contentDescription = "Media Information",
+                            tint = MaterialTheme.colorScheme.onSurface
                         )
                     }
+                }
+            }
 
-                    IconButton(onClick = onCycleRepeat) {
-                        val repeatIcon = when (repeatModeState) {
-                            1 -> Icons.Default.RepeatOne
-                            else -> Icons.Default.Repeat
+            // 2. Centered Floating Rotating Vinyl Disc with Breathing Aura
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+                contentAlignment = Alignment.Center
+            ) {
+                // Animated Breathing Glow ring when music is playing
+                val infiniteTransition = rememberInfiniteTransition(label = "pulse_glow")
+                val glowScale by infiniteTransition.animateFloat(
+                    initialValue = 1.0f,
+                    targetValue = if (isPlaying) 1.15f else 1.02f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(2200, easing = FastOutSlowInEasing),
+                        repeatMode = RepeatMode.Reverse
+                    ),
+                    label = "glow_scale"
+                )
+                val glowAlpha by infiniteTransition.animateFloat(
+                    initialValue = 0.15f,
+                    targetValue = if (isPlaying) 0.35f else 0.10f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(2200, easing = FastOutSlowInEasing),
+                        repeatMode = RepeatMode.Reverse
+                    ),
+                    label = "glow_alpha"
+                )
+
+                // Colored breathing glow aura
+                Box(
+                    modifier = Modifier
+                        .size(240.dp)
+                        .graphicsLayer {
+                            scaleX = glowScale
+                            scaleY = glowScale
+                            alpha = glowAlpha
                         }
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.4f), CircleShape)
+                        .blur(36.dp)
+                )
+
+                // Vinyl Player itself
+                AudioVinylPlayer(
+                    item = mediaItem,
+                    isPlaying = isPlaying,
+                    modifier = Modifier.size(280.dp)
+                )
+
+                if (showSwitchToVideoBtn && onSwitchToVideo != null) {
+                    Button(
+                        onClick = {
+                            hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                            onSwitchToVideo()
+                        },
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = 12.dp)
+                            .shadow(8.dp, CircleShape),
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                        shape = RoundedCornerShape(24.dp)
+                    ) {
                         Icon(
-                            imageVector = repeatIcon,
-                            contentDescription = "Repeat Mode",
-                            tint = if (repeatModeState > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-                            modifier = Modifier.size(24.dp)
+                            imageVector = Icons.Default.Movie,
+                            contentDescription = "Switch to Video",
+                            modifier = Modifier.size(16.dp)
                         )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Switch to Video Mode", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                     }
                 }
+            }
 
-                Spacer(modifier = Modifier.height(24.dp))
-
-                // Dedicated Quick Utility Row (Sleep Timer, EQ, Queue)
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceAround,
-                    verticalAlignment = Alignment.CenterVertically
+            // 3. Redesigned Floating Audio Deck Panel (Suspended Card Style)
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 8.dp)
+                    .shadow(24.dp, shape = RoundedCornerShape(32.dp), clip = false),
+                shape = RoundedCornerShape(32.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.90f)
+                ),
+                border = BorderStroke(1.2.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    // Sleep Timer
-                    IconButton(
-                        onClick = onOpenSleepTimer,
-                        modifier = Modifier
-                            .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
+                    // Track Title & Favorite Toggle
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Timer,
-                            contentDescription = "Sleep Timer",
-                            tint = if (sleepTimeLeftMinutes > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = mediaItem.title,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                maxLines = 1,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .basicMarquee()
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = mediaItem.displayArtist,
+                                color = MaterialTheme.colorScheme.secondary,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+
+                        val favScale by animateFloatAsState(
+                            targetValue = if (isSaved) 1.25f else 1.0f,
+                            animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium),
+                            label = "SaveScaleAudioRedesign"
+                        )
+
+                        IconButton(
+                            onClick = { onToggleFavorite() },
+                            modifier = Modifier
+                                .size(44.dp)
+                                .graphicsLayer {
+                                    scaleX = favScale
+                                    scaleY = favScale
+                                }
+                        ) {
+                            Icon(
+                                imageVector = if (isSaved) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                                contentDescription = "Save to Library",
+                                tint = if (isSaved) Color.Red else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Context-Aware Scrubbing / Dragging Tooltip Card (Fades in/out on drag)
+                    AnimatedVisibility(
+                        visible = isScrubbing,
+                        enter = fadeIn() + expandVertically(expandFrom = Alignment.Top),
+                        exit = fadeOut() + shrinkVertically(shrinkTowards = Alignment.Top)
+                    ) {
+                        val diffMs = scrubPosition - currentPosition
+                        val diffFormatted = if (diffMs >= 0) {
+                            "+${formatPlayerDuration(diffMs)}"
+                        } else {
+                            "-${formatPlayerDuration(Math.abs(diffMs))}"
+                        }
+                        
+                        Surface(
+                            color = MaterialTheme.colorScheme.primaryContainer,
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)),
+                            modifier = Modifier
+                                .padding(bottom = 12.dp)
+                                .shadow(4.dp, RoundedCornerShape(12.dp))
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    imageVector = if (diffMs >= 0) Icons.Default.FastForward else Icons.Default.FastRewind,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Text(
+                                    text = "Seek to ${formatPlayerDuration(scrubPosition)} ($diffFormatted)",
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.ExtraBold
+                                )
+                            }
+                        }
+                    }
+
+                    // Progress Timeline Seeker Row
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Text(
+                            text = formatPlayerDuration(displayPosition),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.width(44.dp)
+                        )
+
+                        SmoothSeekBar(
+                            position = displayPosition,
+                            duration = duration,
+                            isScrubbing = isScrubbing,
+                            onScrubStart = { isScrubbing = true },
+                            onScrubPositionChange = { pos -> scrubPosition = pos },
+                            onScrubEnd = { pos ->
+                                isScrubbing = false
+                                onSeek(pos)
+                            },
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("player_timeline_slider")
+                        )
+
+                        Text(
+                            text = formatPlayerDuration(duration),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.width(44.dp),
+                            textAlign = androidx.compose.ui.text.style.TextAlign.End
                         )
                     }
 
-                    // Equalizer
-                    IconButton(
-                        onClick = onOpenEqualizer,
-                        modifier = Modifier
-                            .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    // Media Playback Controls (Shuffle, Previous, Large Play FAB, Next, Repeat)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Waves,
-                            contentDescription = "Equalizer",
-                            tint = if (currentEqualizerPreset != "Normal") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        IconButton(onClick = {
+                            hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                            onToggleShuffle()
+                        }) {
+                            Icon(
+                                imageVector = Icons.Default.Shuffle,
+                                contentDescription = "Shuffle",
+                                tint = if (isShuffleEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+
+                        IconButton(onClick = {
+                            hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                            onPrev()
+                        }) {
+                            Icon(
+                                imageVector = Icons.Default.SkipPrevious,
+                                contentDescription = "Previous",
+                                tint = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.size(30.dp)
+                            )
+                        }
+
+                        // Elevated Rounded Play/Pause Floating Action Deck FAB
+                        Box(
+                            modifier = Modifier
+                                .size(64.dp)
+                                .shadow(8.dp, CircleShape)
+                                .clip(CircleShape)
+                                .background(
+                                    Brush.linearGradient(
+                                        colors = listOf(
+                                            MaterialTheme.colorScheme.primary,
+                                            MaterialTheme.colorScheme.secondary
+                                        )
+                                    )
+                                )
+                                .clickable {
+                                    hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                                    onTogglePlay()
+                                },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                contentDescription = "Play or Pause",
+                                tint = MaterialTheme.colorScheme.onPrimary,
+                                modifier = Modifier.size(32.dp)
+                            )
+                        }
+
+                        IconButton(onClick = {
+                            hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                            onNext()
+                        }) {
+                            Icon(
+                                imageVector = Icons.Default.SkipNext,
+                                contentDescription = "Next",
+                                tint = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.size(30.dp)
+                            )
+                        }
+
+                        IconButton(onClick = {
+                            hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                            onCycleRepeat()
+                        }) {
+                            val repeatIcon = when (repeatModeState) {
+                                1 -> Icons.Default.RepeatOne
+                                else -> Icons.Default.Repeat
+                            }
+                            Icon(
+                                imageVector = repeatIcon,
+                                contentDescription = "Repeat Mode",
+                                tint = if (repeatModeState > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
                     }
 
-                    // Play Queue
-                    IconButton(
-                        onClick = onOpenQueue,
+                    Spacer(modifier = Modifier.height(20.dp))
+
+                    // Dynamic Sub-Deck Quick Action Row (Sleep, Equalizer, Queue, Switch Subtitle Track)
+                    Row(
                         modifier = Modifier
-                            .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+                            .padding(vertical = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceAround,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.PlaylistPlay,
-                            contentDescription = "Play Queue",
-                            tint = MaterialTheme.colorScheme.primary
-                        )
+                        // Quick Sleep Timer
+                        IconButton(
+                            onClick = {
+                                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                onOpenSleepTimer()
+                            },
+                            modifier = Modifier
+                                .clip(CircleShape)
+                                .background(
+                                    if (sleepTimeLeftMinutes > 0) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                                    else Color.Transparent
+                                )
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Timer,
+                                contentDescription = "Sleep Timer",
+                                tint = if (sleepTimeLeftMinutes > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+
+                        // Equalizer Preset Status
+                        IconButton(
+                            onClick = {
+                                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                onOpenEqualizer()
+                            },
+                            modifier = Modifier
+                                .clip(CircleShape)
+                                .background(
+                                    if (currentEqualizerPreset != "Normal") MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                                    else Color.Transparent
+                                )
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Waves,
+                                contentDescription = "Equalizer",
+                                tint = if (currentEqualizerPreset != "Normal") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+
+                        // Play Queue Control
+                        IconButton(
+                            onClick = {
+                                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                onOpenQueue()
+                            }
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.PlaylistPlay,
+                                contentDescription = "Play Queue",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
                     }
                 }
             }
@@ -3486,7 +5253,7 @@ fun CustomAudioPlayerScreen(
     }
 }
 
-// Custom animated rounded high-performance seekbar
+// Custom animated rounded high-performance seekbar using native Material 3 Slider for robust dragging
 @Composable
 fun SmoothSeekBar(
     position: Long,
@@ -3497,117 +5264,54 @@ fun SmoothSeekBar(
     onScrubEnd: (Long) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val progress = if (duration > 0) position.toFloat() / duration.toFloat() else 0f
-    val safeProgress = progress.coerceIn(0f, 1f)
-    
-    val thumbRadius by animateDpAsState(
-        targetValue = if (isScrubbing) 10.dp else 6.dp,
-        animationSpec = spring(stiffness = Spring.StiffnessLow)
-    )
-    
-    val trackHeight by animateDpAsState(
-        targetValue = if (isScrubbing) 8.dp else 4.dp,
-        animationSpec = spring(stiffness = Spring.StiffnessMedium)
-    )
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val isDragged by interactionSource.collectIsDraggedAsState()
+    val isCurrentlyScrubbing = isPressed || isDragged
+
+    LaunchedEffect(isCurrentlyScrubbing) {
+        if (isCurrentlyScrubbing) {
+            onScrubStart()
+        }
+    }
+
+    // Local state to make scrubbing ultra-smooth
+    var localProgress by remember(position, duration) {
+        mutableStateOf(if (duration > 0) position.toFloat() / duration.toFloat() else 0f)
+    }
 
     val primaryColor = MaterialTheme.colorScheme.primary
-    val trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.15f)
+    val trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
+    val activeColor = if (isCurrentlyScrubbing) MaterialTheme.colorScheme.secondary else primaryColor
 
-    BoxWithConstraints(
+    Box(
         modifier = modifier
             .fillMaxWidth()
-            .height(32.dp)
-            .pointerInput(duration) {
-                detectTapGestures(
-                    onPress = { offset ->
-                        onScrubStart()
-                        val width = size.width
-                        if (width > 0 && duration > 0) {
-                            val newProgress = (offset.x / width).coerceIn(0f, 1f)
-                            val targetPos = (newProgress * duration).toLong()
-                            onScrubPositionChange(targetPos)
-                            onScrubEnd(targetPos)
-                        }
-                    }
-                )
-            }
-            .pointerInput(duration) {
-                detectDragGestures(
-                    onDragStart = { offset ->
-                        onScrubStart()
-                        val width = size.width
-                        if (width > 0 && duration > 0) {
-                            val newProgress = (offset.x / width).coerceIn(0f, 1f)
-                            onScrubPositionChange((newProgress * duration).toLong())
-                        }
-                    },
-                    onDragEnd = {
-                        onScrubEnd(position)
-                    },
-                    onDragCancel = {
-                        onScrubEnd(position)
-                    },
-                    onDrag = { change, dragAmount ->
-                        change.consume()
-                        val width = size.width
-                        val currentX = change.position.x
-                        if (width > 0 && duration > 0) {
-                            val newProgress = (currentX / width).coerceIn(0f, 1f)
-                            onScrubPositionChange((newProgress * duration).toLong())
-                        }
-                    }
-                )
-            },
+            .height(36.dp),
         contentAlignment = Alignment.Center
     ) {
-        val widthPx = constraints.maxWidth.toFloat()
-        
-        androidx.compose.foundation.Canvas(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(24.dp)
-        ) {
-            val h = trackHeight.toPx()
-            val r = thumbRadius.toPx()
-            val canvasWidth = size.width
-            val canvasHeight = size.height
-            val trackY = canvasHeight / 2f
-            
-            // Draw background track with rounded corners
-            drawRoundRect(
-                color = trackColor,
-                topLeft = androidx.compose.ui.geometry.Offset(0f, trackY - h / 2f),
-                size = androidx.compose.ui.geometry.Size(canvasWidth, h),
-                cornerRadius = androidx.compose.ui.geometry.CornerRadius(h / 2f, h / 2f)
-            )
-            
-            // Draw played progress track with rounded corners
-            val playedWidth = canvasWidth * safeProgress
-            if (playedWidth > 0f) {
-                drawRoundRect(
-                    color = primaryColor,
-                    topLeft = androidx.compose.ui.geometry.Offset(0f, trackY - h / 2f),
-                    size = androidx.compose.ui.geometry.Size(playedWidth, h),
-                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(h / 2f, h / 2f)
-                )
-            }
-            
-            // Draw the custom, animated rounded thumb
-            drawCircle(
-                color = primaryColor,
-                radius = r,
-                center = androidx.compose.ui.geometry.Offset(playedWidth, trackY)
-            )
-            
-            // Draw inner glow/halo when scrubbing
-            if (isScrubbing) {
-                drawCircle(
-                    color = primaryColor.copy(alpha = 0.25f),
-                    radius = r + 4.dp.toPx(),
-                    center = androidx.compose.ui.geometry.Offset(playedWidth, trackY)
-                )
-            }
-        }
+        Slider(
+            value = localProgress.coerceIn(0f, 1f),
+            onValueChange = { newValue ->
+                localProgress = newValue
+                if (duration > 0) {
+                    onScrubPositionChange((newValue * duration).toLong())
+                }
+            },
+            onValueChangeFinished = {
+                if (duration > 0) {
+                    onScrubEnd((localProgress * duration).toLong())
+                }
+            },
+            valueRange = 0f..1f,
+            interactionSource = interactionSource,
+            colors = SliderDefaults.colors(
+                thumbColor = activeColor,
+                activeTrackColor = activeColor,
+                inactiveTrackColor = trackColor
+            ),
+            modifier = Modifier.fillMaxWidth()
+        )
     }
 }
 
@@ -3617,60 +5321,117 @@ fun SwipeToUnlock(
     modifier: Modifier = Modifier
 ) {
     var swipeOffset by remember { mutableStateOf(0f) }
-    val maxSwipeDistance = 180.dp
+    val maxSwipeDistance = 200.dp
     val density = androidx.compose.ui.platform.LocalDensity.current
     val maxSwipeDistancePx = with(density) { maxSwipeDistance.toPx() }
-    
+    val hapticFeedback = androidx.compose.ui.platform.LocalHapticFeedback.current
+
     val animatedOffset by animateFloatAsState(
         targetValue = swipeOffset,
-        animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessLow),
+        animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMedium),
         label = "SwipeOffset"
     )
 
+    // Calculate swipe fraction (0f to 1f)
+    val swipeFraction = (swipeOffset / maxSwipeDistancePx).coerceIn(0f, 1f)
+
+    // Floating Glassmorphic bar
     Box(
         modifier = modifier
             .width(280.dp)
-            .height(56.dp)
-            .padding(4.dp), // Removed background and border as requested by user
+            .height(64.dp)
+            .clip(CircleShape)
+            .background(Color.Black.copy(alpha = 0.7f))
+            .border(1.5.dp, Color.White.copy(alpha = 0.12f), CircleShape)
+            .pointerInput(Unit) {
+                detectHorizontalDragGestures(
+                    onDragEnd = {
+                        if (swipeOffset >= maxSwipeDistancePx * 0.85f) {
+                            hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                            onUnlock()
+                        }
+                        swipeOffset = 0f
+                    },
+                    onDragCancel = {
+                        swipeOffset = 0f
+                    },
+                    onHorizontalDrag = { change, dragAmount ->
+                        change.consume()
+                        val prevOffset = swipeOffset
+                        swipeOffset = (swipeOffset + dragAmount).coerceIn(0f, maxSwipeDistancePx)
+                        // Subtle haptic tick as we cross progress thresholds
+                        if ((prevOffset / maxSwipeDistancePx * 10).toInt() != (swipeOffset / maxSwipeDistancePx * 10).toInt()) {
+                            hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                        }
+                    }
+                )
+            }
+            .padding(6.dp),
         contentAlignment = Alignment.CenterStart
     ) {
+        // Shimmering / Pulsating instruction text that fades as you swipe
+        val infiniteTransition = rememberInfiniteTransition(label = "shimmer")
+        val textAlpha by infiniteTransition.animateFloat(
+            initialValue = 0.4f,
+            targetValue = 0.9f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(1200, easing = FastOutSlowInEasing),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "textAlpha"
+        )
+
         Text(
-            text = "Slide handle to unlock",
-            color = Color.White.copy(alpha = 0.6f),
+            text = "Slide to Unlock",
+            color = Color.White.copy(alpha = textAlpha * (1f - swipeFraction)),
             fontSize = 13.sp,
             fontWeight = FontWeight.Bold,
             modifier = Modifier.align(Alignment.Center)
         )
 
+        // The active handle track indicator (optional background fill behind handle)
+        Box(
+            modifier = Modifier
+                .fillMaxHeight()
+                .width(with(density) { (animatedOffset + 48.dp.toPx()).toDp() })
+                .clip(CircleShape)
+                .background(
+                    androidx.compose.ui.graphics.Brush.horizontalGradient(
+                        colors = listOf(
+                            Color.Red.copy(alpha = 0.15f),
+                            Color.Red.copy(alpha = 0.45f)
+                        )
+                    )
+                )
+        )
+
+        // Floating Handle
         Box(
             modifier = Modifier
                 .offset { IntOffset(animatedOffset.roundToInt(), 0) }
-                .size(48.dp)
-                .background(MaterialTheme.colorScheme.primary, CircleShape)
-                .pointerInput(Unit) {
-                    detectHorizontalDragGestures(
-                        onDragEnd = {
-                            if (swipeOffset >= maxSwipeDistancePx * 0.85f) {
-                                onUnlock()
-                            }
-                            swipeOffset = 0f
-                        },
-                        onDragCancel = {
-                            swipeOffset = 0f
-                        },
-                        onHorizontalDrag = { change, dragAmount ->
-                            change.consume()
-                            swipeOffset = (swipeOffset + dragAmount).coerceIn(0f, maxSwipeDistancePx)
-                        }
+                .size(52.dp)
+                .clip(CircleShape)
+                .background(
+                    androidx.compose.ui.graphics.Brush.radialGradient(
+                        colors = listOf(
+                            Color.White,
+                            Color.White.copy(alpha = 0.9f)
+                        )
                     )
-                },
+                ),
             contentAlignment = Alignment.Center
         ) {
             Icon(
-                imageVector = Icons.Default.LockOpen,
+                imageVector = if (swipeFraction >= 0.8f) Icons.Default.LockOpen else Icons.Default.Lock,
                 contentDescription = "Unlock handle",
-                tint = Color.White,
-                modifier = Modifier.size(24.dp)
+                tint = Color.Black,
+                modifier = Modifier
+                    .size(24.dp)
+                    .graphicsLayer {
+                        rotationZ = swipeFraction * 15f
+                        scaleX = 1f + (swipeFraction * 0.15f)
+                        scaleY = 1f + (swipeFraction * 0.15f)
+                    }
             )
         }
     }
@@ -3698,6 +5459,7 @@ fun buildMediaItemWithSubtitles(uriString: String, context: android.content.Cont
                         .setLanguage(lang)
                         .setLabel(lang)
                         .setSelectionFlags(androidx.media3.common.C.SELECTION_FLAG_DEFAULT)
+                        .setRoleFlags(androidx.media3.common.C.ROLE_FLAG_SUBTITLE)
                         .build()
                     list.add(config)
                 }
@@ -3746,6 +5508,231 @@ fun PlayerRightSideDrawer(
             ) {
                 content()
             }
+        }
+    }
+}
+
+@Composable
+fun CustomSlider(
+    value: Float,
+    onValueChange: (Float) -> Unit,
+    valueRange: ClosedFloatingPointRange<Float>,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    onValueChangeFinished: (() -> Unit)? = null
+) {
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    BoxWithConstraints(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(32.dp)
+            .pointerInput(enabled, valueRange) {
+                if (!enabled) return@pointerInput
+                val width = size.width
+                if (width <= 0) return@pointerInput
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    val ratio = (down.position.x / width).coerceIn(0f, 1f)
+                    val newValue = valueRange.start + ratio * (valueRange.endInclusive - valueRange.start)
+                    onValueChange(newValue)
+                    
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val anyPressed = event.changes.any { it.pressed }
+                        if (!anyPressed) {
+                            onValueChangeFinished?.invoke()
+                            break
+                        }
+                        
+                        val change = event.changes.firstOrNull { it.pressed }
+                        if (change != null) {
+                            val x = change.position.x
+                            val newRatio = (x / width).coerceIn(0f, 1f)
+                            val draggedValue = valueRange.start + newRatio * (valueRange.endInclusive - valueRange.start)
+                            onValueChange(draggedValue)
+                            change.consume()
+                        }
+                    }
+                }
+            }
+    ) {
+        val width = constraints.maxWidth.toFloat()
+        val normalizedValue = if (valueRange.endInclusive == valueRange.start) 0f 
+                              else ((value - valueRange.start) / (valueRange.endInclusive - valueRange.start)).coerceIn(0f, 1f)
+        
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.CenterStart
+        ) {
+            // Track background
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(6.dp)
+                    .clip(CircleShape)
+                    .background(Color.White.copy(alpha = 0.12f))
+            )
+            
+            // Active track with a bright premium gradient
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(normalizedValue)
+                    .height(6.dp)
+                    .clip(CircleShape)
+                    .background(
+                        Brush.horizontalGradient(
+                            colors = listOf(
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.6f),
+                                MaterialTheme.colorScheme.primary
+                            )
+                        )
+                    )
+            )
+            
+            // Thumb / Handle
+            val thumbOffset = with(density) { (normalizedValue * width).toDp() - 8.dp }
+            Box(
+                modifier = Modifier
+                    .offset(x = thumbOffset.coerceAtLeast(0.dp))
+                    .size(16.dp)
+                    .clip(CircleShape)
+                    .background(Color.White)
+                    .border(2.dp, MaterialTheme.colorScheme.primary, CircleShape)
+            )
+        }
+    }
+}
+
+@Composable
+fun CustomVerticalSlider(
+    value: Float,
+    onValueChange: (Float) -> Unit,
+    valueRange: ClosedFloatingPointRange<Float>,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true
+) {
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    BoxWithConstraints(
+        modifier = modifier
+            .fillMaxHeight()
+            .width(32.dp)
+            .pointerInput(enabled, valueRange) {
+                if (!enabled) return@pointerInput
+                detectTapGestures(
+                    onPress = { offset ->
+                        val ratio = (1f - (offset.y / size.height)).coerceIn(0f, 1f)
+                        val newValue = valueRange.start + ratio * (valueRange.endInclusive - valueRange.start)
+                        onValueChange(newValue)
+                    }
+                )
+            }
+            .pointerInput(enabled, valueRange) {
+                if (!enabled) return@pointerInput
+                detectDragGestures { change, dragAmount ->
+                    change.consume()
+                    val ratio = (1f - (change.position.y / size.height)).coerceIn(0f, 1f)
+                    val newValue = valueRange.start + ratio * (valueRange.endInclusive - valueRange.start)
+                    onValueChange(newValue)
+                }
+            }
+    ) {
+        val height = constraints.maxHeight.toFloat()
+        val normalizedValue = if (valueRange.endInclusive == valueRange.start) 0f 
+                              else ((value - valueRange.start) / (valueRange.endInclusive - valueRange.start)).coerceIn(0f, 1f)
+        
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.BottomCenter
+        ) {
+            // Track background
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .width(6.dp)
+                    .clip(CircleShape)
+                    .background(Color.White.copy(alpha = 0.12f))
+            )
+            
+            // Active track with a vertical gradient
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight(normalizedValue)
+                    .width(6.dp)
+                    .clip(CircleShape)
+                    .background(
+                        Brush.verticalGradient(
+                            colors = listOf(
+                                MaterialTheme.colorScheme.primary,
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)
+                            )
+                        )
+                    )
+            )
+            
+            // Thumb / Handle
+            val thumbOffset = with(density) { ((1f - normalizedValue) * height).toDp() - 8.dp }
+            Box(
+                modifier = Modifier
+                    .offset(y = thumbOffset.coerceAtLeast(0.dp))
+                    .size(16.dp)
+                    .clip(CircleShape)
+                    .background(Color.White)
+                    .border(2.dp, MaterialTheme.colorScheme.primary, CircleShape)
+            )
+        }
+    }
+}
+
+@Composable
+fun CustomButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    colors: ButtonColors = ButtonDefaults.buttonColors(),
+    shape: androidx.compose.ui.graphics.Shape = RoundedCornerShape(12.dp),
+    content: @Composable RowScope.() -> Unit
+) {
+    val hapticFeedback = androidx.compose.ui.platform.LocalHapticFeedback.current
+    var isPressed by remember { mutableStateOf(false) }
+    val scale by animateFloatAsState(
+        targetValue = if (isPressed) 0.95f else 1.0f,
+        animationSpec = spring(stiffness = Spring.StiffnessHigh),
+        label = "ButtonScale"
+    )
+    
+    Box(
+        modifier = modifier
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
+            .clip(shape)
+            .background(if (enabled) colors.containerColor else colors.disabledContainerColor)
+            .pointerInput(enabled) {
+                if (!enabled) return@pointerInput
+                detectTapGestures(
+                    onPress = {
+                        isPressed = true
+                        try {
+                            awaitRelease()
+                        } finally {
+                            isPressed = false
+                        }
+                    },
+                    onTap = {
+                        hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                        onClick()
+                    }
+                )
+            }
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Row(
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            content()
         }
     }
 }

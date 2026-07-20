@@ -87,7 +87,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.ui.viewmodel.MainViewModel
+import com.example.ui.viewmodel.*
 import androidx.activity.compose.BackHandler
 
 // --- SEAMLESS SCHEMAS AND DATA CLASSES ---
@@ -186,6 +186,7 @@ fun SettingsScreen(
     }
 
     Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             TopAppBar(
                 title = {
@@ -209,7 +210,12 @@ fun SettingsScreen(
                     ) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
-                }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.background,
+                    titleContentColor = MaterialTheme.colorScheme.primary,
+                    navigationIconContentColor = MaterialTheme.colorScheme.primary
+                )
             )
         }
     ) { innerPadding ->
@@ -1349,6 +1355,226 @@ fun FolderSettingsScreen(
 
                         HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
 
+                        // subtitlePreset setting row
+                        var showSubtitlePresetMenu by remember { mutableStateOf(false) }
+                        ListItem(
+                            headlineContent = { Text("Subtitle Preset", fontWeight = FontWeight.SemiBold) },
+                            supportingContent = { Text(prefs.subtitlePreset) },
+                            leadingContent = { Icon(Icons.Default.Style, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
+                            trailingContent = {
+                                Box {
+                                    TextButton(onClick = { showSubtitlePresetMenu = true }) {
+                                        Text("Change")
+                                        Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                                    }
+                                    DropdownMenu(expanded = showSubtitlePresetMenu, onDismissRequest = { showSubtitlePresetMenu = false }) {
+                                        listOf(
+                                            "Custom",
+                                            "White on Black",
+                                            "Yellow on Black",
+                                            "White Outline",
+                                            "Yellow Outline",
+                                            "Soft Shadow"
+                                        ).forEach { preset ->
+                                            DropdownMenuItem(
+                                                text = { Text(preset) },
+                                                onClick = {
+                                                    viewModel.applySubtitlePreset(preset)
+                                                    showSubtitlePresetMenu = false
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
+                            },
+                            modifier = Modifier.clickable { showSubtitlePresetMenu = true }
+                        )
+
+                        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+
+                        // subtitleEncoding setting row
+                        var showSubtitleEncodingMenu by remember { mutableStateOf(false) }
+                        ListItem(
+                            headlineContent = { Text("Subtitle Encoding", fontWeight = FontWeight.SemiBold) },
+                            supportingContent = { Text("Format: ${prefs.subtitleEncoding}") },
+                            leadingContent = { Icon(Icons.Default.Code, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
+                            trailingContent = {
+                                Box {
+                                    TextButton(onClick = { showSubtitleEncodingMenu = true }) {
+                                        Text("Change")
+                                        Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                                    }
+                                    DropdownMenu(expanded = showSubtitleEncodingMenu, onDismissRequest = { showSubtitleEncodingMenu = false }) {
+                                        listOf("UTF-8", "ISO-8859-1", "Windows-1252", "UTF-16", "US-ASCII", "Big5", "GBK", "Shift_JIS", "EUC-KR").forEach { enc ->
+                                            DropdownMenuItem(
+                                                text = { Text(enc) },
+                                                onClick = {
+                                                    viewModel.updateAdvancedSubtitleSettings(encoding = enc)
+                                                    showSubtitleEncodingMenu = false
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
+                            },
+                            modifier = Modifier.clickable { showSubtitleEncodingMenu = true }
+                        )
+
+                        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+
+                        // subtitleShadowColor setting row
+                        var showShadowColorMenu by remember { mutableStateOf(false) }
+                        ListItem(
+                            headlineContent = { Text("Shadow Color", fontWeight = FontWeight.SemiBold) },
+                            supportingContent = { Text(prefs.subtitleShadowColor) },
+                            leadingContent = { Icon(Icons.Default.SettingsBrightness, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
+                            trailingContent = {
+                                Box {
+                                    TextButton(onClick = { showShadowColorMenu = true }) {
+                                        Text("Change")
+                                        Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                                    }
+                                    DropdownMenu(expanded = showShadowColorMenu, onDismissRequest = { showShadowColorMenu = false }) {
+                                        listOf(
+                                            "#00000000" to "None (Transparent)",
+                                            "#FF000000" to "Black",
+                                            "#80000000" to "Gray",
+                                            "#FFFF0000" to "Red",
+                                            "#FF0000FF" to "Blue"
+                                        ).forEach { (hex, name) ->
+                                            DropdownMenuItem(
+                                                text = { Text(name) },
+                                                onClick = {
+                                                    viewModel.updateAdvancedSubtitleSettings(shadowColor = hex, preset = "Custom")
+                                                    showShadowColorMenu = false
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
+                            },
+                            modifier = Modifier.clickable { showShadowColorMenu = true }
+                        )
+
+                        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+
+                        // subtitleShadowRadius setting row
+                        ListItem(
+                            headlineContent = { Text("Shadow Radius (${prefs.subtitleShadowRadius.toInt()} px)", fontWeight = FontWeight.SemiBold) },
+                            supportingContent = {
+                                Slider(
+                                    value = prefs.subtitleShadowRadius,
+                                    onValueChange = { viewModel.updateAdvancedSubtitleSettings(shadowRadius = it, preset = "Custom") },
+                                    valueRange = 0f..10f,
+                                    steps = 10,
+                                    modifier = Modifier.fillMaxWidth().padding(end = 16.dp)
+                                )
+                            },
+                            leadingContent = { Icon(Icons.Default.BlurOn, contentDescription = null, tint = MaterialTheme.colorScheme.primary) }
+                        )
+
+                        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+
+                        // subtitleShadowOpacity setting row
+                        ListItem(
+                            headlineContent = { Text("Shadow Opacity (${(prefs.subtitleShadowOpacity * 100).toInt()}%)", fontWeight = FontWeight.SemiBold) },
+                            supportingContent = {
+                                Slider(
+                                    value = prefs.subtitleShadowOpacity,
+                                    onValueChange = { viewModel.updateAdvancedSubtitleSettings(shadowOpacity = it, preset = "Custom") },
+                                    valueRange = 0f..1f,
+                                    modifier = Modifier.fillMaxWidth().padding(end = 16.dp)
+                                )
+                            },
+                            leadingContent = { Icon(Icons.Default.Opacity, contentDescription = null, tint = MaterialTheme.colorScheme.primary) }
+                        )
+
+                        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+
+                        // subtitleOutlineColor setting row
+                        var showOutlineColorMenu by remember { mutableStateOf(false) }
+                        ListItem(
+                            headlineContent = { Text("Outline Color", fontWeight = FontWeight.SemiBold) },
+                            supportingContent = { Text(prefs.subtitleOutlineColor) },
+                            leadingContent = { Icon(Icons.Default.BorderColor, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
+                            trailingContent = {
+                                Box {
+                                    TextButton(onClick = { showOutlineColorMenu = true }) {
+                                        Text("Change")
+                                        Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                                    }
+                                    DropdownMenu(expanded = showOutlineColorMenu, onDismissRequest = { showOutlineColorMenu = false }) {
+                                        listOf(
+                                            "#00000000" to "None (Transparent)",
+                                            "#FF000000" to "Black",
+                                            "#FFFFFFFF" to "White",
+                                            "#FFFF0000" to "Red",
+                                            "#FF0000FF" to "Blue"
+                                        ).forEach { (hex, name) ->
+                                            DropdownMenuItem(
+                                                text = { Text(name) },
+                                                onClick = {
+                                                    viewModel.updateAdvancedSubtitleSettings(outlineColor = hex, preset = "Custom")
+                                                    showOutlineColorMenu = false
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
+                            },
+                            modifier = Modifier.clickable { showOutlineColorMenu = true }
+                        )
+
+                        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+
+                        // subtitleOutlineWidth setting row
+                        ListItem(
+                            headlineContent = { Text("Outline Width (${String.format("%.1f", prefs.subtitleOutlineWidth)} px)", fontWeight = FontWeight.SemiBold) },
+                            supportingContent = {
+                                Slider(
+                                    value = prefs.subtitleOutlineWidth,
+                                    onValueChange = { viewModel.updateAdvancedSubtitleSettings(outlineWidth = it, preset = "Custom") },
+                                    valueRange = 0f..8f,
+                                    modifier = Modifier.fillMaxWidth().padding(end = 16.dp)
+                                )
+                            },
+                            leadingContent = { Icon(Icons.Default.LineWeight, contentDescription = null, tint = MaterialTheme.colorScheme.primary) }
+                        )
+
+                        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+
+                        // subtitleOutlineOpacity setting row
+                        ListItem(
+                            headlineContent = { Text("Outline Opacity (${(prefs.subtitleOutlineOpacity * 100).toInt()}%)", fontWeight = FontWeight.SemiBold) },
+                            supportingContent = {
+                                Slider(
+                                    value = prefs.subtitleOutlineOpacity,
+                                    onValueChange = { viewModel.updateAdvancedSubtitleSettings(outlineOpacity = it, preset = "Custom") },
+                                    valueRange = 0f..1f,
+                                    modifier = Modifier.fillMaxWidth().padding(end = 16.dp)
+                                )
+                            },
+                            leadingContent = { Icon(Icons.Default.Opacity, contentDescription = null, tint = MaterialTheme.colorScheme.primary) }
+                        )
+
+                        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+
+                        // subtitleOpacity setting row
+                        ListItem(
+                            headlineContent = { Text("Subtitle Text Opacity (${(prefs.subtitleOpacity * 100).toInt()}%)", fontWeight = FontWeight.SemiBold) },
+                            supportingContent = {
+                                Slider(
+                                    value = prefs.subtitleOpacity,
+                                    onValueChange = { viewModel.updateAdvancedSubtitleSettings(opacity = it, preset = "Custom") },
+                                    valueRange = 0.1f..1.0f,
+                                    modifier = Modifier.fillMaxWidth().padding(end = 16.dp)
+                                )
+                            },
+                            leadingContent = { Icon(Icons.Default.Visibility, contentDescription = null, tint = MaterialTheme.colorScheme.primary) }
+                        )
+
+                        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+
                         // Subtitle Live Preview block
                         Column(
                             modifier = Modifier
@@ -1394,13 +1620,54 @@ fun FolderSettingsScreen(
                                     Text(
                                         text = "Aero-Player renders beautiful subtitles in sync.",
                                         color = try {
-                                            Color(android.graphics.Color.parseColor(prefs.subtitleTextColor))
+                                            val baseColor = android.graphics.Color.parseColor(prefs.subtitleTextColor)
+                                            val alpha = (prefs.subtitleOpacity * 255).toInt().coerceIn(0, 255)
+                                            Color((baseColor and 0x00FFFFFF) or (alpha shl 24))
                                         } catch (e: Exception) {
                                             Color.White
                                         },
                                         fontSize = prefs.subtitleSize.sp,
                                         fontWeight = if (prefs.subtitleFontStyle == "Bold") FontWeight.Bold else FontWeight.Normal,
-                                        style = if (prefs.subtitleFontStyle == "Italic") MaterialTheme.typography.bodyMedium.copy(fontStyle = androidx.compose.ui.text.font.FontStyle.Italic) else MaterialTheme.typography.bodyMedium,
+                                        style = if (prefs.subtitleFontStyle == "Italic") {
+                                            MaterialTheme.typography.bodyMedium.copy(
+                                                fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
+                                                shadow = if (prefs.subtitleShadowColor != "#00000000" && prefs.subtitleShadowColor.isNotEmpty()) {
+                                                    val sColor = try {
+                                                        val baseColor = android.graphics.Color.parseColor(prefs.subtitleShadowColor)
+                                                        val sAlpha = (prefs.subtitleShadowOpacity * 255).toInt().coerceIn(0, 255)
+                                                        Color((baseColor and 0x00FFFFFF) or (sAlpha shl 24))
+                                                    } catch (e: Exception) {
+                                                        Color.Black
+                                                    }
+                                                    androidx.compose.ui.graphics.Shadow(
+                                                        color = sColor,
+                                                        offset = androidx.compose.ui.geometry.Offset(1.5f, 1.5f),
+                                                        blurRadius = prefs.subtitleShadowRadius
+                                                    )
+                                                } else {
+                                                    androidx.compose.ui.graphics.Shadow.None
+                                                }
+                                            )
+                                        } else {
+                                            MaterialTheme.typography.bodyMedium.copy(
+                                                shadow = if (prefs.subtitleShadowColor != "#00000000" && prefs.subtitleShadowColor.isNotEmpty()) {
+                                                    val sColor = try {
+                                                        val baseColor = android.graphics.Color.parseColor(prefs.subtitleShadowColor)
+                                                        val sAlpha = (prefs.subtitleShadowOpacity * 255).toInt().coerceIn(0, 255)
+                                                        Color((baseColor and 0x00FFFFFF) or (sAlpha shl 24))
+                                                    } catch (e: Exception) {
+                                                        Color.Black
+                                                    }
+                                                    androidx.compose.ui.graphics.Shadow(
+                                                        color = sColor,
+                                                        offset = androidx.compose.ui.geometry.Offset(1.5f, 1.5f),
+                                                        blurRadius = prefs.subtitleShadowRadius
+                                                    )
+                                                } else {
+                                                    androidx.compose.ui.graphics.Shadow.None
+                                                }
+                                            )
+                                        },
                                         textAlign = TextAlign.Center
                                     )
                                 }

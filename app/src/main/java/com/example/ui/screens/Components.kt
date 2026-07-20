@@ -20,6 +20,11 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.painter.Painter
+import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.gestures.detectTapGestures
 import com.example.data.database.MediaEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -105,3 +110,48 @@ private fun getThumbnailFallback(context: android.content.Context, uri: Uri, pat
         } catch (e: Exception) {}
     }
 }
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun TooltipIconButton(
+    onClick: () -> Unit,
+    tooltip: String,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    colors: IconButtonColors = IconButtonDefaults.iconButtonColors(),
+    content: @Composable () -> Unit
+) {
+    if (tooltip.isEmpty()) {
+        IconButton(
+            onClick = onClick,
+            modifier = modifier,
+            enabled = enabled,
+            colors = colors,
+            content = content
+        )
+    } else {
+        val state = rememberTooltipState()
+        TooltipBox(
+            positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
+            tooltip = {
+                PlainTooltip {
+                    Text(tooltip)
+                }
+            },
+            state = state,
+            modifier = Modifier
+        ) {
+            IconButton(
+                onClick = onClick,
+                modifier = modifier,
+                enabled = enabled,
+                colors = colors,
+                content = content
+            )
+        }
+    }
+}
+
+
+
+

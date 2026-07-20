@@ -174,6 +174,19 @@ class MediaRepository(private val mediaDao: MediaDao) {
         // Seeding preloaded/online content so users can play and download from web
         val preloadedItems = listOf(
             MediaEntity(
+                uriString = "android.resource://com.example/raw/sample_track",
+                title = "Aero Premium Beats (Offline Demo)",
+                artist = "Aero Collective",
+                album = "Aero Showcase",
+                duration = 372000,
+                size = 8945228,
+                dateAdded = System.currentTimeMillis() / 1000,
+                isVideo = false,
+                path = "android.resource://com.example/raw/sample_track",
+                mimeType = "audio/mp3",
+                genre = "Audio"
+            ),
+            MediaEntity(
                 uriString = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
                 title = "Big Buck Bunny (H.264 / 1080p)",
                 artist = "Blender Studio",
@@ -236,6 +249,8 @@ class MediaRepository(private val mediaDao: MediaDao) {
 class HistoryRepository(private val historyDao: HistoryDao) {
 
     fun getHistoryFlow(): Flow<List<HistoryEntity>> = historyDao.getHistoryFlow()
+
+    suspend fun getHistoryByUri(uriString: String): HistoryEntity? = historyDao.getHistoryByUri(uriString)
 
     suspend fun addHistory(
         uriString: String,

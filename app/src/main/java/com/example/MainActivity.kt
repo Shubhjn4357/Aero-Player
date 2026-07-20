@@ -32,7 +32,7 @@ import com.example.ui.screens.PlayerScreen
 import com.example.ui.screens.SettingsScreen
 import com.example.ui.screens.OnboardingScreen
 import com.example.ui.theme.MyApplicationTheme
-import com.example.ui.viewmodel.MainViewModel
+import com.example.ui.viewmodel.*
 import com.google.accompanist.permissions.*
 import androidx.compose.animation.*
 import androidx.compose.animation.core.tween
@@ -67,6 +67,39 @@ class MainActivity : ComponentActivity() {
             mainViewModel.isInPipMode.value = isInPictureInPictureMode
         }
     }
+
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        if (::mainViewModel.isInitialized) {
+            val prefs = mainViewModel.preferencesState.value
+            val currentItem = mainViewModel.currentPlayingItem.value
+            val isPlaying = try { mainViewModel.exoPlayer.isPlaying } catch (e: Exception) { false }
+            if (currentItem != null && currentItem.isVideo && isPlaying && prefs.backgroundMode == "LAUNCH_PIP_MODE") {
+                enterPictureInPictureModeCompat()
+            }
+        }
+    }
+
+    private fun enterPictureInPictureModeCompat() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val builder = PictureInPictureParams.Builder()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                builder.setAutoEnterEnabled(true)
+            }
+            try {
+                enterPictureInPictureMode(builder.build())
+            } catch (e: Exception) {
+                android.util.Log.e("MainActivity", "Failed to enter Picture-in-Picture: ${e.message}")
+            }
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            @Suppress("DEPRECATION")
+            try {
+                enterPictureInPictureMode()
+            } catch (e: Exception) {
+                android.util.Log.e("MainActivity", "Failed to enter Picture-in-Picture: ${e.message}")
+            }
+        }
+    }
 }
 
 @OptIn(ExperimentalPermissionsApi::class)
@@ -96,7 +129,7 @@ fun PermissionAndNavigationContainer(viewModel: MainViewModel) {
                 // Safe delay to ensure Activity/Window is fully ready
                 kotlinx.coroutines.delay(500)
                 permissionState.launchMultiplePermissionRequest()
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 android.util.Log.e("MainActivity", "Permission request error: ${e.message}")
             }
         }
@@ -118,7 +151,7 @@ fun PermissionAndNavigationContainer(viewModel: MainViewModel) {
     val getOrientationFromPreference = { pref: String ->
         when (pref) {
             "Portrait" -> ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-            "Landscape" -> ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+            "Landscape" -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
             "Reverse Portrait" -> ActivityInfo.SCREEN_ORIENTATION_REVERSE_PORTRAIT
             "Reverse Landscape" -> ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE
             else -> ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
@@ -162,11 +195,20 @@ fun PermissionAndNavigationContainer(viewModel: MainViewModel) {
                     )
                 }
                 "Player" -> {
-                    LaunchedEffect(prefs.rotationLock, defaultOrientation) {
-                        if (prefs.rotationLock) {
-                            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LOCKED
+                    LaunchedEffect(prefs.rotationLock, defaultOrientation, currentPlayingItem) {
+                        val isAudio = currentPlayingItem?.isVideo == false
+                        if (isAudio) {
+                            if (prefs.rotationLock) {
+                                activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                            } else {
+                                activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR
+                            }
                         } else {
-                            activity?.requestedOrientation = getOrientationFromPreference(defaultOrientation)
+                            if (prefs.rotationLock) {
+                                activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LOCKED
+                            } else {
+                                activity?.requestedOrientation = getOrientationFromPreference(defaultOrientation)
+                            }
                         }
                     }
 
