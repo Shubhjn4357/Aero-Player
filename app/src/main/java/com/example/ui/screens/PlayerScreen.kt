@@ -114,7 +114,7 @@ fun PlayerScreen(
     var playAsAudioOnly by remember { mutableStateOf(viewModel.audioOnlyPlaybackRequested) }
 
     // Session-based screen orientation override (not stored persistently)
-    var sessionOrientation by remember(prefs.defaultOrientation) {
+    var sessionOrientation by remember {
         mutableStateOf(
             when (prefs.defaultOrientation) {
                 "Portrait" -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
@@ -127,7 +127,7 @@ fun PlayerScreen(
     }
 
     // Apply orientation changes dynamically
-    LaunchedEffect(sessionOrientation, prefs.rotationLock, activeMediaItem, playAsAudioOnly) {
+    LaunchedEffect(sessionOrientation, prefs.rotationLock, activeMediaItem.isVideo, playAsAudioOnly) {
         val isAudio = !activeMediaItem.isVideo || playAsAudioOnly
         val activity = context as? android.app.Activity
         if (activity != null) {
@@ -153,7 +153,7 @@ fun PlayerScreen(
     }
 
     // Restore default orientation and manage immersive system UI on player screen lifecycle
-    DisposableEffect(activeMediaItem, playAsAudioOnly) {
+    DisposableEffect(playAsAudioOnly) {
         val isAudio = !activeMediaItem.isVideo || playAsAudioOnly
         val activity = context as? android.app.Activity
         val window = activity?.window

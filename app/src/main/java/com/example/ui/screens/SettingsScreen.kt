@@ -1,65 +1,6 @@
 package com.example.ui.screens
 
-/*
- * ======================================================================================
- * ARCHITECTURAL SPECIFICATION: SCALABLE NESTED PREFERENCES (Group > Folder > Setting)
- * ======================================================================================
- *
- * This implementation refactors flat preference controls into a multi-tier nested 
- * navigation system using a local State Stack in Compose. All state definitions, 
- * schemas, file directories, and variables are mapped strictly via camelCase conventions.
- *
- * SCHEMA MATRIX & DIRECTORY MAPPING:
- * 
- * Group A: User Interface (File Path: ui/)
- * └── Folder: Theme Engine (ui/theme/)
- *     ├── appThemeEngine             -> prefs.themeMode ("System", "Light", "Dark")
- *     └── material3DynamicColors     -> prefs.useDynamicColor (Boolean)
- * └── Folder: Layout Options (ui/layout/)
- *     ├── mediaListDisplayStyle      -> prefs.listStyle ("Grid", "List")
- *     └── groupWiseFolderStyle       -> prefs.useGroupWiseFolderStyle (Boolean)
- *
- * Group B: Playback Pipeline (File Path: playback/)
- * └── Folder: Player Controls (playback/controls/)
- *     ├── doubleTapSeekDuration      -> prefs.doubleTapSeekSeconds (5, 10, 15, 20, 30)
- *     ├── videoScreenOrientation     -> prefs.defaultOrientation ("SYSTEM_DEFAULT", "LANDSCAPE", "SENSOR_BASED")
- *     └── playerRotationLock         -> prefs.rotationLock (Boolean)
- * └── Folder: Core Processing (playback/core/)
- *     ├── hardwareAcceleration       -> prefs.hwAcceleration ("DISABLED_SOFTWARE", "DECODING_ONLY", "FULL_HARDWARE")
- *     ├── backgroundPlaybackPip      -> prefs.backgroundMode ("STOP_PLAYBACK", "PLAY_BACKGROUND_AUDIO", "LAUNCH_PIP_MODE")
- *     ├── resumePlaybackBehavior     -> prefs.resumePlaybackBehavior ("Ask Every Time", "Always Resume", "Always Start from Beginning")
- *     ├── perVideoPlaybackSettings   -> prefs.usePerVideoSettings (Boolean)
- *     └── saveVolumeBrightnessLevel  -> prefs.saveVolumeBrightnessBehavior ("None", "Global", "Individual")
- *
- * Group C: Video Assets (File Path: assets/)
- * └── Folder: Subtitle System (assets/subtitles/)
- *     ├── defaultSubtitleLanguage    -> prefs.defaultSubtitleLanguage ("English", "Spanish", etc.)
- *     ├── subtitleTextColor          -> prefs.subtitleTextColor (Hex Code)
- *     ├── subtitleBackground         -> prefs.subtitleBackground (Hex Code with Alpha)
- *     ├── subtitleTextSize           -> prefs.subtitleSize (Float in sp)
- *     └── subtitleFontStyle          -> prefs.subtitleFontStyle ("Normal", "Bold", "Italic")
- *
- * Group D: Data & Privacy (File Path: dataPrivacy/)
- * └── Folder: Network Restrictions (dataPrivacy/network/)
- *     └── meteredNetworkPolicy       -> prefs.meteredNetworkAction ("WARN_BEFORE_STREAMING", "BLOCK_STREAMING", "ALLOW_STREAMING")
- * └── Folder: Logging Engine (dataPrivacy/logging/)
- *     ├── playbackHistoryTracker     -> prefs.playHistoryEnabled (Boolean)
- *     └── queueHistoryCache          -> prefs.saveVideoQueueHistory & prefs.saveAudioQueueHistory (Boolean)
- * └── Folder: Storage Management (dataPrivacy/storage/)
- *     ├── mediaLibraryFolders        -> Favorite Folder List Custom Settings
- *     ├── autoRescanOnLaunch         -> prefs.autoScanEnabled (Boolean)
- *     ├── resetMediaDatabaseCache    -> Trigger Scanner Rebuild Action
- *     └── wipePlaybackProgressCache  -> Clear Playback Progress History Action
- *
- * Group E: Application Info (File Path: appInfo/)
- * └── Folder: Legal Legalities (appInfo/legal/)
- *     ├── privacyPolicy              -> Launch dynamic EULA terms dialog
- *     ├── termsAndConditions         -> Launch standard service usage dialog
- *     └── changelog                  -> Launch capabilities increment log dialog
- *
- * ======================================================================================
- */
-
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -68,7 +9,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
@@ -84,58 +24,21 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.ui.viewmodel.*
-import androidx.activity.compose.BackHandler
 
-// --- SEAMLESS SCHEMAS AND DATA CLASSES ---
-
-enum class SettingGroup(
-    val id: String,
+enum class NativeSettingsCategory(
     val title: String,
-    val description: String,
+    val subtitle: String,
     val icon: ImageVector
 ) {
-    userInterface("userInterface", "User Interface", "Themes, accent colors, and custom library displays", Icons.Default.Palette),
-    playbackPipeline("playbackPipeline", "Playback Pipeline", "Hardware decoding, seek times, and background audio", Icons.Default.PlayArrow),
-    videoAssets("videoAssets", "Video Assets", "Subtitles language, text color, sizes, and fonts", Icons.Default.Subtitles),
-    dataPrivacy("dataPrivacy", "Data & Privacy", "Network warning thresholds, storage directories, and database cache", Icons.Default.Security),
-    appInfo("appInfo", "Application Info", "Software EULA agreements, terms of use, and dynamic capability log", Icons.Default.Info)
-}
-
-enum class SettingFolder(
-    val id: String,
-    val group: SettingGroup,
-    val title: String,
-    val description: String,
-    val icon: ImageVector
-) {
-    // Group A: User Interface (File Path: ui/)
-    themeEngine("themeEngine", SettingGroup.userInterface, "Theme Engine", "Manage dark/light transitions and dynamic colors", Icons.Default.Brush),
-    layoutOptions("layoutOptions", SettingGroup.userInterface, "Layout Options", "Adjust visual listing metrics and folder grouping", Icons.Default.Dashboard),
-
-    // Group B: Playback Pipeline (File Path: playback/)
-    playerControls("playerControls", SettingGroup.playbackPipeline, "Player Controls", "Configure jump intervals, rotation locks, and tilt orientations", Icons.Default.Settings),
-    coreProcessing("coreProcessing", SettingGroup.playbackPipeline, "Core Processing", "Decoders, background media delivery, and resume behaviors", Icons.Default.Tune),
-
-    // Group C: Video Assets (File Path: assets/)
-    subtitleSystem("subtitleSystem", SettingGroup.videoAssets, "Subtitle System", "Adjust default language tracks, colors, and sizing scales", Icons.Default.Subtitles),
-
-    // Group D: Data & Privacy (File Path: dataPrivacy/)
-    networkRestrictions("networkRestrictions", SettingGroup.dataPrivacy, "Network Restrictions", "Handle metered network warnings and connection rules", Icons.Default.Wifi),
-    loggingEngine("loggingEngine", SettingGroup.dataPrivacy, "Logging Engine", "Toggle playback history and audio/video queue cache tracking", Icons.Default.History),
-    storageManagement("storageManagement", SettingGroup.dataPrivacy, "Storage Management", "Erase indices, customize folder scopes, and scan files", Icons.Default.Storage),
-
-    // Group E: Application Info (File Path: appInfo/)
-    legalLegalities("legalLegalities", SettingGroup.appInfo, "Legal Legalities", "Review system privacy terms, EULA, and release logs", Icons.Default.Description)
-}
-
-sealed class SettingsView {
-    object Root : SettingsView()
-    data class Group(val group: SettingGroup) : SettingsView()
-    data class Folder(val folder: SettingFolder) : SettingsView()
+    DISPLAY("Display & Theme", "App theme, dynamic colors, and media list layout", Icons.Default.Palette),
+    PLAYBACK("Playback Engine", "Hardware acceleration, seek intervals, orientation, and PiP mode", Icons.Default.PlayCircle),
+    SUBTITLES("Subtitles & Captions", "Language, font size, text colors, encodings, and shadow effects", Icons.Default.Subtitles),
+    STORAGE("Storage & Scanner", "Library folders, all files permission, and database index rebuild", Icons.Default.Storage),
+    DATA_PRIVACY("Data & Privacy", "Metered network alerts and playback history tracking", Icons.Default.Security),
+    ABOUT("About & App Info", "Version diagnostic tools, system info, EULA, and release notes", Icons.Default.Info)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -147,13 +50,18 @@ fun SettingsScreen(
     val prefs by viewModel.preferencesState.collectAsState()
     val context = LocalContext.current
 
+    // Navigation & View state controllers
+    var selectedCategory by remember { mutableStateOf<NativeSettingsCategory?>(null) }
+    var searchQuery by remember { mutableStateOf("") }
+    var showAboutScreen by remember { mutableStateOf(false) }
+
     // Dialog state controllers
     var showFolderManagerDialog by remember { mutableStateOf(false) }
     var showPrivacyPolicyDialog by remember { mutableStateOf(false) }
     var showTermsDialog by remember { mutableStateOf(false) }
     var showChangelogDialog by remember { mutableStateOf(false) }
 
-    // Dropdown open controllers for atomic states
+    // Dropdown menu state controllers
     var showThemeMenu by remember { mutableStateOf(false) }
     var showStyleMenu by remember { mutableStateOf(false) }
     var showOrientationMenu by remember { mutableStateOf(false) }
@@ -167,22 +75,33 @@ fun SettingsScreen(
     var showSubtitleBgMenu by remember { mutableStateOf(false) }
     var showSubtitleSizeMenu by remember { mutableStateOf(false) }
     var showSubtitleFontMenu by remember { mutableStateOf(false) }
+    var showSubtitlePresetMenu by remember { mutableStateOf(false) }
+    var showSubtitleEncodingMenu by remember { mutableStateOf(false) }
+    var showShadowColorMenu by remember { mutableStateOf(false) }
+    var showOutlineColorMenu by remember { mutableStateOf(false) }
     var showNetworkMenu by remember { mutableStateOf(false) }
-
-    // Backstack navigation manager for nested folder routing
-    val screenStack = remember { mutableStateListOf<SettingsView>(SettingsView.Root) }
 
     BackHandler {
         when {
+            showAboutScreen -> showAboutScreen = false
             showFolderManagerDialog -> showFolderManagerDialog = false
             showPrivacyPolicyDialog -> showPrivacyPolicyDialog = false
             showTermsDialog -> showTermsDialog = false
             showChangelogDialog -> showChangelogDialog = false
-            screenStack.size > 1 -> {
-                screenStack.removeAt(screenStack.lastIndex)
-            }
+            searchQuery.isNotEmpty() -> searchQuery = ""
+            selectedCategory != null -> selectedCategory = null
             else -> onBack()
         }
+    }
+
+    if (showAboutScreen) {
+        AboutScreen(
+            onBack = { showAboutScreen = false },
+            showPrivacy = { showPrivacyPolicyDialog = true },
+            showTerms = { showTermsDialog = true },
+            showChangelog = { showChangelogDialog = true }
+        )
+        return
     }
 
     Scaffold(
@@ -190,18 +109,18 @@ fun SettingsScreen(
         topBar = {
             TopAppBar(
                 title = {
-                    val titleText = when (val last = screenStack.last()) {
-                        is SettingsView.Root -> "Aero-Player Preferences"
-                        is SettingsView.Group -> last.group.title
-                        is SettingsView.Folder -> last.folder.title
-                    }
-                    Text(titleText, fontWeight = FontWeight.ExtraBold)
+                    Text(
+                        text = selectedCategory?.title ?: "Settings",
+                        fontWeight = FontWeight.Bold
+                    )
                 },
                 navigationIcon = {
                     IconButton(
                         onClick = {
-                            if (screenStack.size > 1) {
-                                screenStack.removeAt(screenStack.lastIndex)
+                            if (searchQuery.isNotEmpty()) {
+                                searchQuery = ""
+                            } else if (selectedCategory != null) {
+                                selectedCategory = null
                             } else {
                                 onBack()
                             }
@@ -211,10 +130,19 @@ fun SettingsScreen(
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 },
+                actions = {
+                    if (selectedCategory != null || searchQuery.isNotEmpty()) {
+                        IconButton(onClick = {
+                            selectedCategory = null
+                            searchQuery = ""
+                        }) {
+                            Icon(Icons.Default.Home, contentDescription = "Home Settings")
+                        }
+                    }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.background,
-                    titleContentColor = MaterialTheme.colorScheme.primary,
-                    navigationIconContentColor = MaterialTheme.colorScheme.primary
+                    titleContentColor = MaterialTheme.colorScheme.onBackground
                 )
             )
         }
@@ -225,147 +153,149 @@ fun SettingsScreen(
                 .padding(innerPadding)
                 .padding(horizontal = 16.dp)
         ) {
-            // --- Elegant Breadcrumb Trail Navigation ---
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
+            // Search Bar at Top of Settings
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = { searchQuery = it },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(vertical = 12.dp)
-                    .horizontalScroll(rememberScrollState())
-            ) {
-                Text(
-                    text = "Home",
-                    fontSize = 13.sp,
-                    fontWeight = if (screenStack.last() is SettingsView.Root) FontWeight.Bold else FontWeight.Normal,
-                    color = if (screenStack.last() is SettingsView.Root) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(4.dp))
-                        .clickable {
-                            while (screenStack.size > 1) {
-                                screenStack.removeAt(screenStack.lastIndex)
-                            }
+                    .padding(vertical = 8.dp),
+                placeholder = { Text("Search settings...") },
+                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                trailingIcon = {
+                    if (searchQuery.isNotEmpty()) {
+                        IconButton(onClick = { searchQuery = "" }) {
+                            Icon(Icons.Default.Clear, contentDescription = "Clear search")
                         }
-                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                    }
+                },
+                singleLine = true,
+                shape = RoundedCornerShape(16.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+                    focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
                 )
-
-                if (screenStack.size > 1) {
-                    Icon(
-                        Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                        contentDescription = null,
-                        modifier = Modifier.size(14.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-                    )
-                    val activeGroup = when (val last = screenStack.last()) {
-                        is SettingsView.Group -> last.group
-                        is SettingsView.Folder -> last.folder.group
-                        else -> null
-                    }
-                    if (activeGroup != null) {
-                        Text(
-                            text = activeGroup.title,
-                            fontSize = 13.sp,
-                            fontWeight = if (screenStack.last() is SettingsView.Group) FontWeight.Bold else FontWeight.Normal,
-                            color = if (screenStack.last() is SettingsView.Group) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(4.dp))
-                                .clickable {
-                                    while (screenStack.size > 2) {
-                                        screenStack.removeAt(screenStack.lastIndex)
-                                    }
-                                    if (screenStack.last() !is SettingsView.Group) {
-                                        screenStack.add(SettingsView.Group(activeGroup))
-                                    }
-                                }
-                                .padding(horizontal = 6.dp, vertical = 2.dp)
-                        )
-                    }
-                }
-
-                if (screenStack.size > 2) {
-                    val last = screenStack.last()
-                    if (last is SettingsView.Folder) {
-                        Icon(
-                            Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                            contentDescription = null,
-                            modifier = Modifier.size(14.dp),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-                        )
-                        Text(
-                            text = last.folder.title,
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                        )
-                    }
-                }
-            }
+            )
 
             Spacer(modifier = Modifier.height(4.dp))
 
-            // Scrollable Content Pane based on Backstack Routing
-            Box(
+            Column(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f)
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
-                when (val currentScreen = screenStack.last()) {
-                    is SettingsView.Root -> {
-                        RootSettingsScreen(
-                            onSelectGroup = { screenStack.add(SettingsView.Group(it)) }
-                        )
-                    }
-                    is SettingsView.Group -> {
-                        GroupSettingsScreen(
-                            group = currentScreen.group,
-                            onSelectFolder = { screenStack.add(SettingsView.Folder(it)) }
-                        )
-                    }
-                    is SettingsView.Folder -> {
-                        FolderSettingsScreen(
-                            folder = currentScreen.folder,
-                            viewModel = viewModel,
-                            prefs = prefs,
-                            showFolderManager = { showFolderManagerDialog = true },
-                            showPrivacy = { showPrivacyPolicyDialog = true },
-                            showTerms = { showTermsDialog = true },
-                            showChangelog = { showChangelogDialog = true },
-                            showThemeMenu = showThemeMenu,
-                            onChangeThemeMenu = { showThemeMenu = it },
-                            showStyleMenu = showStyleMenu,
-                            onChangeStyleMenu = { showStyleMenu = it },
-                            showOrientationMenu = showOrientationMenu,
-                            onChangeOrientationMenu = { showOrientationMenu = it },
-                            showSeekSecondsMenu = showSeekSecondsMenu,
-                            onChangeSeekSecondsMenu = { showSeekSecondsMenu = it },
-                            showHwMenu = showHwMenu,
-                            onChangeHwMenu = { showHwMenu = it },
-                            showBgModeMenu = showBgModeMenu,
-                            onChangeBgModeMenu = { showBgModeMenu = it },
-                            showResumeMenu = showResumeMenu,
-                            onChangeResumeMenu = { showResumeMenu = it },
-                            showSaveVolBrightMenu = showSaveVolBrightMenu,
-                            onChangeSaveVolBrightMenu = { showSaveVolBrightMenu = it },
-                            showSubtitleLangMenu = showSubtitleLangMenu,
-                            onChangeSubtitleLangMenu = { showSubtitleLangMenu = it },
-                            showSubtitleColorMenu = showSubtitleColorMenu,
-                            onChangeSubtitleColorMenu = { showSubtitleColorMenu = it },
-                            showSubtitleBgMenu = showSubtitleBgMenu,
-                            onChangeSubtitleBgMenu = { showSubtitleBgMenu = it },
-                            showSubtitleSizeMenu = showSubtitleSizeMenu,
-                            onChangeSubtitleSizeMenu = { showSubtitleSizeMenu = it },
-                            showSubtitleFontMenu = showSubtitleFontMenu,
-                            onChangeSubtitleFontMenu = { showSubtitleFontMenu = it },
-                            showNetworkMenu = showNetworkMenu,
-                            onChangeNetworkMenu = { showNetworkMenu = it }
-                        )
+                if (searchQuery.isNotBlank()) {
+                    // Search Mode
+                    SearchResultsView(
+                        query = searchQuery,
+                        viewModel = viewModel,
+                        prefs = prefs,
+                        onOpenFolderManager = { showFolderManagerDialog = true },
+                        onOpenAbout = { showAboutScreen = true },
+                        onOpenPrivacy = { showPrivacyPolicyDialog = true },
+                        onOpenTerms = { showTermsDialog = true },
+                        onOpenChangelog = { showChangelogDialog = true }
+                    )
+                } else if (selectedCategory == null) {
+                    // Top-Level Categories View (Native Android Preference Tree)
+                    NativeSettingsCategoryOverview(
+                        onSelectCategory = { category ->
+                            if (category == NativeSettingsCategory.ABOUT) {
+                                showAboutScreen = true
+                            } else {
+                                selectedCategory = category
+                            }
+                        }
+                    )
+                } else {
+                    // Category Detail View
+                    when (selectedCategory) {
+                        NativeSettingsCategory.DISPLAY -> {
+                            DisplaySettingsGroup(
+                                viewModel = viewModel,
+                                prefs = prefs,
+                                showThemeMenu = showThemeMenu,
+                                onChangeThemeMenu = { showThemeMenu = it },
+                                showStyleMenu = showStyleMenu,
+                                onChangeStyleMenu = { showStyleMenu = it }
+                            )
+                        }
+                        NativeSettingsCategory.PLAYBACK -> {
+                            PlaybackSettingsGroup(
+                                viewModel = viewModel,
+                                prefs = prefs,
+                                showSeekSecondsMenu = showSeekSecondsMenu,
+                                onChangeSeekSecondsMenu = { showSeekSecondsMenu = it },
+                                showOrientationMenu = showOrientationMenu,
+                                onChangeOrientationMenu = { showOrientationMenu = it },
+                                showHwMenu = showHwMenu,
+                                onChangeHwMenu = { showHwMenu = it },
+                                showBgModeMenu = showBgModeMenu,
+                                onChangeBgModeMenu = { showBgModeMenu = it },
+                                showResumeMenu = showResumeMenu,
+                                onChangeResumeMenu = { showResumeMenu = it },
+                                showSaveVolBrightMenu = showSaveVolBrightMenu,
+                                onChangeSaveVolBrightMenu = { showSaveVolBrightMenu = it }
+                            )
+                        }
+                        NativeSettingsCategory.SUBTITLES -> {
+                            SubtitleSettingsGroup(
+                                viewModel = viewModel,
+                                prefs = prefs,
+                                showSubtitleLangMenu = showSubtitleLangMenu,
+                                onChangeSubtitleLangMenu = { showSubtitleLangMenu = it },
+                                showSubtitleColorMenu = showSubtitleColorMenu,
+                                onChangeSubtitleColorMenu = { showSubtitleColorMenu = it },
+                                showSubtitleBgMenu = showSubtitleBgMenu,
+                                onChangeSubtitleBgMenu = { showSubtitleBgMenu = it },
+                                showSubtitleSizeMenu = showSubtitleSizeMenu,
+                                onChangeSubtitleSizeMenu = { showSubtitleSizeMenu = it },
+                                showSubtitleFontMenu = showSubtitleFontMenu,
+                                onChangeSubtitleFontMenu = { showSubtitleFontMenu = it },
+                                showSubtitlePresetMenu = showSubtitlePresetMenu,
+                                onChangeSubtitlePresetMenu = { showSubtitlePresetMenu = it },
+                                showSubtitleEncodingMenu = showSubtitleEncodingMenu,
+                                onChangeSubtitleEncodingMenu = { showSubtitleEncodingMenu = it },
+                                showShadowColorMenu = showShadowColorMenu,
+                                onChangeShadowColorMenu = { showShadowColorMenu = it },
+                                showOutlineColorMenu = showOutlineColorMenu,
+                                onChangeOutlineColorMenu = { showOutlineColorMenu = it }
+                            )
+                        }
+                        NativeSettingsCategory.STORAGE -> {
+                            StorageSettingsGroup(
+                                viewModel = viewModel,
+                                prefs = prefs,
+                                showFolderManager = { showFolderManagerDialog = true }
+                            )
+                        }
+                        NativeSettingsCategory.DATA_PRIVACY -> {
+                            DataPrivacySettingsGroup(
+                                viewModel = viewModel,
+                                prefs = prefs,
+                                showNetworkMenu = showNetworkMenu,
+                                onChangeNetworkMenu = { showNetworkMenu = it }
+                            )
+                        }
+                        NativeSettingsCategory.ABOUT -> {
+                            AboutSettingsGroup(
+                                showAbout = { showAboutScreen = true },
+                                showPrivacy = { showPrivacyPolicyDialog = true },
+                                showTerms = { showTermsDialog = true },
+                                showChangelog = { showChangelogDialog = true }
+                            )
+                        }
+                        else -> {}
                     }
                 }
+
+                Spacer(modifier = Modifier.height(24.dp))
             }
         }
     }
 
-    // --- Dynamic Support Dialogs Integration with High Style Fidelity ---
+    // --- SUPPORT DIALOGS ---
 
     // 1. Library Storage Folders Dialog
     if (showFolderManagerDialog) {
@@ -397,7 +327,7 @@ fun SettingsScreen(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(
-                        "Verify or add explicit storage folders scanned by the Aero-Player engine. Active background threads monitor these channels for new media elements:",
+                        "Verify or add explicit storage folders scanned by the Aero Player engine. Active background threads monitor these channels for new media elements:",
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -500,21 +430,21 @@ fun SettingsScreen(
                 ) {
                     Text("Last updated: July 2026", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                     Text(
-                        "Welcome to Aero-Player, a local-first offline media application. This policy details how our system processes files, credentials, and logs:",
+                        "Welcome to Aero Player, a local-first offline media application. This policy details how our system processes files, credentials, and logs:",
                         fontSize = 12.sp
                     )
                     Text(
-                        "1. Local Storage Access:\nAero-Player requests READ_EXTERNAL_STORAGE or media-specific storage permissions exclusively to locate and build indices of local video/audio files. File scan profiles never leave your physical device and are completely contained inside Room database files.",
+                        "1. Local Storage Access:\nAero Player requests READ_EXTERNAL_STORAGE or media-specific storage permissions exclusively to locate and build indices of local video/audio files. File scan profiles never leave your physical device.",
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Text(
-                        "2. Media Metrics Tracking:\nIf 'Playback History Tracker' is active, playback elapsed seconds are logged locally to help with resuming media and dashboard widgets. You can toggle this off in settings at any point.",
+                        "2. Media Metrics Tracking:\nIf 'Playback History Tracker' is active, playback elapsed seconds are logged locally to help with resuming media. You can toggle this off in settings at any point.",
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Text(
-                        "3. Zero Network Interception:\nAero-Player runs in sandboxed spaces and does not transmit tracking coordinates, logs, metadata, or play history to cloud storage networks. All analytics remain strictly localized.",
+                        "3. Zero Network Interception:\nAero Player runs in sandboxed spaces and does not transmit tracking coordinates or play history to cloud networks. All analytics remain strictly localized.",
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -552,17 +482,12 @@ fun SettingsScreen(
                         fontSize = 12.sp
                     )
                     Text(
-                        "1. License Scope:\nWe grant you a personal, non-transferable, non-exclusive license to use the Aero-Player binary to play standard multimedia file formats for personal convenience.",
+                        "1. License Scope:\nWe grant you a personal, non-transferable, non-exclusive license to use the Aero Player binary to play standard multimedia file formats for personal convenience.",
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Text(
-                        "2. Absolute Codec Limitation:\nDecoding capabilities are powered by Android MediaCodec drivers and standard ExoPlayer configurations. We make no warranty that all arbitrary video bitstream profiles (including obscure formats or corrupted headers) will render perfectly.",
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Text(
-                        "3. Liability Disclaimer:\nAero-Player processes physical disk files. We accept zero liability for storage failures, media file corruption, or permission conflicts that result in operating system index errors.",
+                        "2. Codec Capabilities:\nDecoding capabilities are powered by Android MediaCodec drivers and standard Media3/ExoPlayer configurations with bundled FFmpeg extensions.",
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -583,7 +508,7 @@ fun SettingsScreen(
             title = {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Icon(Icons.Default.NewReleases, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                    Text("Aero-Player Changelog", fontWeight = FontWeight.Bold)
+                    Text("Aero Player Changelog", fontWeight = FontWeight.Bold)
                 }
             },
             text = {
@@ -594,219 +519,207 @@ fun SettingsScreen(
                         .heightIn(max = 300.dp)
                         .verticalScroll(rememberScrollState())
                 ) {
-                    Text("Version 1.2.0 - Stabilized Scan Pipelines", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
+                    Text("Version 1.5.0 - Native UI & Decoders", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
                     Text(
-                        "- Added absolute storage folder configuration tree.\n" +
-                        "- Optimized ExoPlayer background audio handover.\n" +
-                        "- Implemented on-demand .srt subtitle web lookup scraper.\n" +
-                        "- Stabilized multi-thread Room DB transactions.",
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text("Version 1.1.0 - Advanced Player HUD", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                    Text(
-                        "- Deployed side control drawers with full DSP Equalizer control.\n" +
-                        "- Integrated A-B Loop markers and custom playlist serialization.\n" +
-                        "- Added double-tap to seek with dynamic bubble feedback.\n" +
-                        "- Enabled fluid swipe-based HUD brightness/volume adjusters.",
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text("Version 1.0.0 - Core Launch", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                    Text(
-                        "- Core ExoPlayer pipeline integration.\n" +
-                        "- Dynamic Material 3 theme and view switching engines.\n" +
-                        "- Local media catalog scanners.",
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        "- Native Android Settings Tree Structure with instant search.\n" +
+                        "- Redesigned About page with system diagnostics & hardware info.\n" +
+                        "- Integrated Jellyfin Media3 FFmpeg software decoder extension.\n" +
+                        "- Support for Dolby AC3 / EAC-3 multi-channel audio tracks.\n" +
+                        "- Advanced subtitle encodings, custom shadows, and live preview.",
+                        fontSize = 12.sp
                     )
                 }
             },
             confirmButton = {
                 Button(onClick = { showChangelogDialog = false }) {
-                    Text("Awesome")
+                    Text("Close")
                 }
             }
         )
     }
 }
 
-// --- SUB-SCREEN RENDERING PANELS ---
-
+// --- CATEGORIES OVERVIEW (Native Android Settings Style) ---
 @Composable
-fun RootSettingsScreen(
-    onSelectGroup: (SettingGroup) -> Unit
+private fun NativeSettingsCategoryOverview(
+    onSelectCategory: (NativeSettingsCategory) -> Unit
 ) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
-        Text(
-            text = "SYSTEM PREFERENCES",
-            fontWeight = FontWeight.ExtraBold,
-            color = MaterialTheme.colorScheme.primary,
-            fontSize = 12.sp,
-            letterSpacing = 1.sp,
-            modifier = Modifier.padding(top = 8.dp)
-        )
+    Text(
+        text = "PREFERENCE CATEGORIES",
+        fontSize = 11.sp,
+        fontWeight = FontWeight.Bold,
+        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+        color = MaterialTheme.colorScheme.primary,
+        letterSpacing = 1.sp,
+        modifier = Modifier.padding(top = 8.dp)
+    )
 
-        SettingGroup.values().forEach { group ->
-            Card(
-                onClick = { onSelectGroup(group) },
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)),
-                shape = RoundedCornerShape(16.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("group_card_${group.id}")
-            ) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)),
+        shape = RoundedCornerShape(20.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column {
+            NativeSettingsCategory.values().forEachIndexed { index, category ->
                 ListItem(
-                    headlineContent = { Text(group.title, fontWeight = FontWeight.Bold, fontSize = 16.sp) },
-                    supportingContent = { Text(group.description, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)) },
+                    headlineContent = {
+                        Text(category.title, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                    },
+                    supportingContent = {
+                        Text(category.subtitle, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    },
                     leadingContent = {
-                        Box(
-                            modifier = Modifier
-                                .size(40.dp)
-                                .clip(CircleShape)
-                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.1f)),
-                            contentAlignment = Alignment.Center
+                        Surface(
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f),
+                            modifier = Modifier.size(40.dp)
                         ) {
-                            Icon(group.icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    category.icon,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
                         }
                     },
                     trailingContent = {
                         Icon(
                             Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                            contentDescription = "Open group",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                            contentDescription = "Navigate",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     },
-                    colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                    modifier = Modifier.clickable { onSelectCategory(category) }
                 )
+                if (index < NativeSettingsCategory.values().size - 1) {
+                    HorizontalDivider(
+                        modifier = Modifier.padding(start = 68.dp, end = 16.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)
+                    )
+                }
             }
         }
+    }
+}
 
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 24.dp, bottom = 16.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                text = "Made By Shubh jain",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                textAlign = TextAlign.Center
+// --- CATEGORY DISPLAY SETTINGS ---
+@Composable
+private fun DisplaySettingsGroup(
+    viewModel: MainViewModel,
+    prefs: com.example.data.database.PreferenceEntity,
+    showThemeMenu: Boolean,
+    onChangeThemeMenu: (Boolean) -> Unit,
+    showStyleMenu: Boolean,
+    onChangeStyleMenu: (Boolean) -> Unit
+) {
+    Text("DISPLAY & INTERFACE", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary, letterSpacing = 1.sp)
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)),
+        shape = RoundedCornerShape(20.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column {
+            // Theme Engine
+            ListItem(
+                headlineContent = { Text("App Theme Engine", fontWeight = FontWeight.SemiBold) },
+                supportingContent = { Text("Selected Theme: ${prefs.themeMode}") },
+                leadingContent = { SettingsIconBadge(Icons.Default.Palette) },
+                trailingContent = {
+                    Box {
+                        TextButton(onClick = { onChangeThemeMenu(true) }) {
+                            Text(prefs.themeMode)
+                            Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                        }
+                        DropdownMenu(expanded = showThemeMenu, onDismissRequest = { onChangeThemeMenu(false) }) {
+                            listOf("System", "Light", "Dark").forEach { theme ->
+                                DropdownMenuItem(
+                                    text = { Text(theme) },
+                                    onClick = {
+                                        viewModel.updateTheme(theme)
+                                        onChangeThemeMenu(false)
+                                    }
+                                )
+                            }
+                        }
+                    }
+                },
+                modifier = Modifier.clickable { onChangeThemeMenu(true) }
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(start = 68.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+
+            // Dynamic Colors
+            ListItem(
+                headlineContent = { Text("Material 3 Style (Dynamic Colors)", fontWeight = FontWeight.SemiBold) },
+                supportingContent = { Text("Use system dynamic accent colors on Android 12+") },
+                leadingContent = { SettingsIconBadge(Icons.Default.ColorLens) },
+                trailingContent = {
+                    Switch(
+                        checked = prefs.useDynamicColor,
+                        onCheckedChange = { viewModel.updateDynamicColor(it) }
+                    )
+                }
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(start = 68.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+
+            // List Style
+            ListItem(
+                headlineContent = { Text("Media List Display Style", fontWeight = FontWeight.SemiBold) },
+                supportingContent = { Text("Selected Layout: ${prefs.listStyle}") },
+                leadingContent = { SettingsIconBadge(Icons.Default.GridView) },
+                trailingContent = {
+                    Box {
+                        TextButton(onClick = { onChangeStyleMenu(true) }) {
+                            Text(prefs.listStyle)
+                            Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                        }
+                        DropdownMenu(expanded = showStyleMenu, onDismissRequest = { onChangeStyleMenu(false) }) {
+                            listOf("List", "Grid").forEach { style ->
+                                DropdownMenuItem(
+                                    text = { Text(style) },
+                                    onClick = {
+                                        viewModel.updateListStyle(style)
+                                        onChangeStyleMenu(false)
+                                    }
+                                )
+                            }
+                        }
+                    }
+                },
+                modifier = Modifier.clickable { onChangeStyleMenu(true) }
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(start = 68.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+
+            // Folder Grouping
+            ListItem(
+                headlineContent = { Text("Group-wise Folder Style", fontWeight = FontWeight.SemiBold) },
+                supportingContent = { Text("Organize media folders in structural groups") },
+                leadingContent = { SettingsIconBadge(Icons.Default.Folder) },
+                trailingContent = {
+                    Switch(
+                        checked = prefs.useGroupWiseFolderStyle,
+                        onCheckedChange = { viewModel.updateGroupWiseFolderStyle(it) }
+                    )
+                }
             )
         }
     }
 }
 
+// --- CATEGORY PLAYBACK SETTINGS ---
 @Composable
-fun GroupSettingsScreen(
-    group: SettingGroup,
-    onSelectFolder: (SettingFolder) -> Unit
-) {
-    val folders = remember(group) {
-        SettingFolder.values().filter { it.group == group }
-    }
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
-        // Explanatory Group Hero Banner
-        Card(
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.05f)),
-            shape = RoundedCornerShape(16.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Row(
-                modifier = Modifier.padding(16.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                Icon(
-                    group.icon,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(36.dp)
-                )
-                Column {
-                    Text(group.title, fontWeight = FontWeight.Bold, fontSize = 18.sp, color = MaterialTheme.colorScheme.primary)
-                    Text(group.description, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
-        }
-
-        Text(
-            text = "FOLDERS",
-            fontWeight = FontWeight.ExtraBold,
-            color = MaterialTheme.colorScheme.primary,
-            fontSize = 11.sp,
-            letterSpacing = 1.sp
-        )
-
-        folders.forEach { folder ->
-            Card(
-                onClick = { onSelectFolder(folder) },
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)),
-                shape = RoundedCornerShape(16.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("folder_card_${folder.id}")
-            ) {
-                ListItem(
-                    headlineContent = { Text(folder.title, fontWeight = FontWeight.Bold, fontSize = 15.sp) },
-                    supportingContent = { Text(folder.description, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)) },
-                    leadingContent = {
-                        Box(
-                            modifier = Modifier
-                                .size(36.dp)
-                                .clip(CircleShape)
-                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(folder.icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
-                        }
-                    },
-                    trailingContent = {
-                        Icon(
-                            Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                            contentDescription = "Open folder",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                        )
-                    },
-                    colors = ListItemDefaults.colors(containerColor = Color.Transparent)
-                )
-            }
-        }
-    }
-}
-
-@Composable
-fun FolderSettingsScreen(
-    folder: SettingFolder,
+private fun PlaybackSettingsGroup(
     viewModel: MainViewModel,
     prefs: com.example.data.database.PreferenceEntity,
-    showFolderManager: () -> Unit,
-    showPrivacy: () -> Unit,
-    showTerms: () -> Unit,
-    showChangelog: () -> Unit,
-    // Unified Dropdown State Providers
-    showThemeMenu: Boolean,
-    onChangeThemeMenu: (Boolean) -> Unit,
-    showStyleMenu: Boolean,
-    onChangeStyleMenu: (Boolean) -> Unit,
-    showOrientationMenu: Boolean,
-    onChangeOrientationMenu: (Boolean) -> Unit,
     showSeekSecondsMenu: Boolean,
     onChangeSeekSecondsMenu: (Boolean) -> Unit,
+    showOrientationMenu: Boolean,
+    onChangeOrientationMenu: (Boolean) -> Unit,
     showHwMenu: Boolean,
     onChangeHwMenu: (Boolean) -> Unit,
     showBgModeMenu: Boolean,
@@ -814,7 +727,248 @@ fun FolderSettingsScreen(
     showResumeMenu: Boolean,
     onChangeResumeMenu: (Boolean) -> Unit,
     showSaveVolBrightMenu: Boolean,
-    onChangeSaveVolBrightMenu: (Boolean) -> Unit,
+    onChangeSaveVolBrightMenu: (Boolean) -> Unit
+) {
+    Text("PLAYBACK ENGINE & CONTROLS", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary, letterSpacing = 1.sp)
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)),
+        shape = RoundedCornerShape(20.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column {
+            // Hardware Acceleration
+            ListItem(
+                headlineContent = { Text("Hardware Acceleration", fontWeight = FontWeight.SemiBold) },
+                supportingContent = { Text("Decoder Mode: ${prefs.hwAcceleration}") },
+                leadingContent = { SettingsIconBadge(Icons.Default.Hardware) },
+                trailingContent = {
+                    Box {
+                        TextButton(onClick = { onChangeHwMenu(true) }) {
+                            Text(prefs.hwAcceleration)
+                            Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                        }
+                        DropdownMenu(expanded = showHwMenu, onDismissRequest = { onChangeHwMenu(false) }) {
+                            listOf("DISABLED_SOFTWARE", "DECODING_ONLY", "FULL_HARDWARE").forEach { mode ->
+                                DropdownMenuItem(
+                                    text = { Text(mode) },
+                                    onClick = {
+                                        viewModel.updateHwAcceleration(mode)
+                                        onChangeHwMenu(false)
+                                    }
+                                )
+                            }
+                        }
+                    }
+                },
+                modifier = Modifier.clickable { onChangeHwMenu(true) }
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(start = 68.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+
+            // Double Tap Seek
+            ListItem(
+                headlineContent = { Text("Double-Tap Seek Duration", fontWeight = FontWeight.SemiBold) },
+                supportingContent = { Text("${prefs.doubleTapSeekSeconds} seconds jump") },
+                leadingContent = { SettingsIconBadge(Icons.Default.Gesture) },
+                trailingContent = {
+                    Box {
+                        TextButton(onClick = { onChangeSeekSecondsMenu(true) }) {
+                            Text("${prefs.doubleTapSeekSeconds}s")
+                            Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                        }
+                        DropdownMenu(expanded = showSeekSecondsMenu, onDismissRequest = { onChangeSeekSecondsMenu(false) }) {
+                            listOf(5, 10, 15, 20, 30).forEach { seconds ->
+                                DropdownMenuItem(
+                                    text = { Text("$seconds seconds") },
+                                    onClick = {
+                                        viewModel.updateDoubleTapSeekSeconds(seconds)
+                                        onChangeSeekSecondsMenu(false)
+                                    }
+                                )
+                            }
+                        }
+                    }
+                },
+                modifier = Modifier.clickable { onChangeSeekSecondsMenu(true) }
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(start = 68.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+
+            // Screen Orientation
+            ListItem(
+                headlineContent = { Text("Video Screen Orientation", fontWeight = FontWeight.SemiBold) },
+                supportingContent = { Text("Constraint: ${prefs.defaultOrientation}") },
+                leadingContent = { SettingsIconBadge(Icons.Default.ScreenRotation) },
+                trailingContent = {
+                    Box {
+                        TextButton(onClick = { onChangeOrientationMenu(true) }) {
+                            Text(prefs.defaultOrientation)
+                            Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                        }
+                        DropdownMenu(expanded = showOrientationMenu, onDismissRequest = { onChangeOrientationMenu(false) }) {
+                            listOf("System Auto", "Portrait", "Landscape", "Reverse Portrait", "Reverse Landscape").forEach { orient ->
+                                DropdownMenuItem(
+                                    text = { Text(orient) },
+                                    onClick = {
+                                        viewModel.updateDefaultOrientation(orient)
+                                        onChangeOrientationMenu(false)
+                                    }
+                                )
+                            }
+                        }
+                    }
+                },
+                modifier = Modifier.clickable { onChangeOrientationMenu(true) }
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(start = 68.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+
+            // Rotation Lock
+            ListItem(
+                headlineContent = { Text("Player Rotation Lock", fontWeight = FontWeight.SemiBold) },
+                supportingContent = { Text("Lock player orientation on entry") },
+                leadingContent = { SettingsIconBadge(Icons.Default.ScreenLockRotation) },
+                trailingContent = {
+                    Switch(
+                        checked = prefs.rotationLock,
+                        onCheckedChange = { viewModel.toggleRotationLock(it) }
+                    )
+                }
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(start = 68.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+
+            // Background Playback / PiP
+            ListItem(
+                headlineContent = { Text("Background Playback / PiP", fontWeight = FontWeight.SemiBold) },
+                supportingContent = {
+                    val label = when (prefs.backgroundMode) {
+                        "STOP_PLAYBACK" -> "Stop Playback"
+                        "PLAY_BACKGROUND_AUDIO" -> "Play Background Audio"
+                        "LAUNCH_PIP_MODE" -> "Launch PiP Mode"
+                        else -> prefs.backgroundMode
+                    }
+                    Text("Action: $label")
+                },
+                leadingContent = { SettingsIconBadge(Icons.Default.PictureInPicture) },
+                trailingContent = {
+                    Box {
+                        TextButton(onClick = { onChangeBgModeMenu(true) }) {
+                            Text("Change")
+                            Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                        }
+                        DropdownMenu(expanded = showBgModeMenu, onDismissRequest = { onChangeBgModeMenu(false) }) {
+                            listOf(
+                                "STOP_PLAYBACK" to "Stop Playback",
+                                "PLAY_BACKGROUND_AUDIO" to "Play Background Audio",
+                                "LAUNCH_PIP_MODE" to "Launch PiP Mode"
+                            ).forEach { (mode, label) ->
+                                DropdownMenuItem(
+                                    text = { Text(label) },
+                                    onClick = {
+                                        viewModel.updateBackgroundMode(mode)
+                                        onChangeBgModeMenu(false)
+                                    }
+                                )
+                            }
+                        }
+                    }
+                },
+                modifier = Modifier.clickable { onChangeBgModeMenu(true) }
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(start = 68.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+
+            // Resume Playback Behavior
+            ListItem(
+                headlineContent = { Text("Resume Playback Behavior", fontWeight = FontWeight.SemiBold) },
+                supportingContent = { Text("When re-opening media: ${prefs.resumePlaybackBehavior}") },
+                leadingContent = { SettingsIconBadge(Icons.Default.Restore) },
+                trailingContent = {
+                    Box {
+                        TextButton(onClick = { onChangeResumeMenu(true) }) {
+                            Text("Change")
+                            Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                        }
+                        DropdownMenu(expanded = showResumeMenu, onDismissRequest = { onChangeResumeMenu(false) }) {
+                            listOf("Ask Every Time", "Always Resume", "Always Start from Beginning").forEach { behavior ->
+                                DropdownMenuItem(
+                                    text = { Text(behavior) },
+                                    onClick = {
+                                        viewModel.updateResumePlaybackBehavior(behavior)
+                                        onChangeResumeMenu(false)
+                                    }
+                                )
+                            }
+                        }
+                    }
+                },
+                modifier = Modifier.clickable { onChangeResumeMenu(true) }
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(start = 68.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+
+            // Per-Video Playback Memory
+            ListItem(
+                headlineContent = { Text("Per-Video Playback Settings", fontWeight = FontWeight.SemiBold) },
+                supportingContent = { Text("Track individual speeds, zooms, and volumes") },
+                leadingContent = { SettingsIconBadge(Icons.Default.Tune) },
+                trailingContent = {
+                    Switch(
+                        checked = prefs.usePerVideoSettings,
+                        onCheckedChange = { viewModel.toggleUsePerVideoSettings(it) }
+                    )
+                }
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(start = 68.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+
+            // Save Volume & Brightness Level
+            ListItem(
+                headlineContent = { Text("Save Volume & Brightness Level", fontWeight = FontWeight.SemiBold) },
+                supportingContent = {
+                    Text(when (prefs.saveVolumeBrightnessBehavior) {
+                        "Global" -> "Global levels"
+                        "Individual" -> "Individual levels per video"
+                        else -> "Do not save levels"
+                    })
+                },
+                leadingContent = { SettingsIconBadge(Icons.Default.VolumeUp) },
+                trailingContent = {
+                    Box {
+                        TextButton(onClick = { onChangeSaveVolBrightMenu(true) }) {
+                            Text("Change")
+                            Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                        }
+                        DropdownMenu(expanded = showSaveVolBrightMenu, onDismissRequest = { onChangeSaveVolBrightMenu(false) }) {
+                            listOf(
+                                "None" to "Do not save levels",
+                                "Global" to "Global levels",
+                                "Individual" to "Individual levels per video"
+                            ).forEach { (valStr, labelStr) ->
+                                DropdownMenuItem(
+                                    text = { Text(labelStr) },
+                                    onClick = {
+                                        viewModel.updateSaveVolumeBrightnessBehavior(valStr)
+                                        onChangeSaveVolBrightMenu(false)
+                                    }
+                                )
+                            }
+                        }
+                    }
+                },
+                modifier = Modifier.clickable { onChangeSaveVolBrightMenu(true) }
+            )
+        }
+    }
+}
+
+// --- CATEGORY SUBTITLES SETTINGS ---
+@Composable
+private fun SubtitleSettingsGroup(
+    viewModel: MainViewModel,
+    prefs: com.example.data.database.PreferenceEntity,
     showSubtitleLangMenu: Boolean,
     onChangeSubtitleLangMenu: (Boolean) -> Unit,
     showSubtitleColorMenu: Boolean,
@@ -825,1057 +979,631 @@ fun FolderSettingsScreen(
     onChangeSubtitleSizeMenu: (Boolean) -> Unit,
     showSubtitleFontMenu: Boolean,
     onChangeSubtitleFontMenu: (Boolean) -> Unit,
-    showNetworkMenu: Boolean,
-    onChangeNetworkMenu: (Boolean) -> Unit
+    showSubtitlePresetMenu: Boolean,
+    onChangeSubtitlePresetMenu: (Boolean) -> Unit,
+    showSubtitleEncodingMenu: Boolean,
+    onChangeSubtitleEncodingMenu: (Boolean) -> Unit,
+    showShadowColorMenu: Boolean,
+    onChangeShadowColorMenu: (Boolean) -> Unit,
+    showOutlineColorMenu: Boolean,
+    onChangeOutlineColorMenu: (Boolean) -> Unit
 ) {
-    val context = LocalContext.current
+    Text("SUBTITLES & CAPTIONS", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary, letterSpacing = 1.sp)
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)),
+        shape = RoundedCornerShape(20.dp),
+        modifier = Modifier.fillMaxWidth()
     ) {
-        Text(
-            text = "${folder.title.uppercase()} PREFERENCES",
-            fontWeight = FontWeight.ExtraBold,
-            color = MaterialTheme.colorScheme.primary,
-            fontSize = 11.sp,
-            letterSpacing = 1.sp,
-            modifier = Modifier.padding(top = 8.dp)
-        )
-
-        Card(
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)),
-            shape = RoundedCornerShape(20.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column {
-                when (folder) {
-                    SettingFolder.themeEngine -> {
-                        // appThemeEngine setting row
-                        ListItem(
-                            headlineContent = { Text("App Theme Engine", fontWeight = FontWeight.SemiBold) },
-                            supportingContent = { Text("Selected Theme: ${prefs.themeMode}") },
-                            leadingContent = { Icon(Icons.Default.Palette, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
-                            trailingContent = {
-                                Box {
-                                    TextButton(onClick = { onChangeThemeMenu(true) }) {
-                                        Text("Change")
-                                        Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+        Column {
+            // Language
+            ListItem(
+                headlineContent = { Text("Default Subtitle Language", fontWeight = FontWeight.SemiBold) },
+                supportingContent = { Text("Selected language: ${prefs.defaultSubtitleLanguage}") },
+                leadingContent = { SettingsIconBadge(Icons.Default.Language) },
+                trailingContent = {
+                    Box {
+                        TextButton(onClick = { onChangeSubtitleLangMenu(true) }) {
+                            Text(prefs.defaultSubtitleLanguage)
+                            Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                        }
+                        DropdownMenu(expanded = showSubtitleLangMenu, onDismissRequest = { onChangeSubtitleLangMenu(false) }) {
+                            listOf("English", "Hindi", "Spanish", "French", "German", "Japanese", "Chinese", "Russian", "Arabic", "Portuguese", "Bengali").forEach { lang ->
+                                DropdownMenuItem(
+                                    text = { Text(lang) },
+                                    onClick = {
+                                        viewModel.updateSubtitleLanguage(lang)
+                                        onChangeSubtitleLangMenu(false)
                                     }
-                                    DropdownMenu(expanded = showThemeMenu, onDismissRequest = { onChangeThemeMenu(false) }) {
-                                        listOf("System", "Light", "Dark").forEach { theme ->
-                                            DropdownMenuItem(
-                                                text = { Text(theme) },
-                                                onClick = {
-                                                    viewModel.updateTheme(theme)
-                                                    onChangeThemeMenu(false)
-                                                }
-                                            )
-                                        }
-                                    }
-                                }
-                            },
-                            modifier = Modifier.clickable { onChangeThemeMenu(true) }
-                        )
-
-                        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-
-                        // material3DynamicColors setting row
-                        ListItem(
-                            headlineContent = { Text("Material 3 Style (Dynamic Colors)", fontWeight = FontWeight.SemiBold) },
-                            supportingContent = { Text("Use system dynamic accent colors on Android 12+") },
-                            leadingContent = { Icon(Icons.Default.ColorLens, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
-                            trailingContent = {
-                                Switch(
-                                    checked = prefs.useDynamicColor,
-                                    onCheckedChange = { viewModel.updateDynamicColor(it) }
                                 )
-                            }
-                        )
-                    }
-
-                    SettingFolder.layoutOptions -> {
-                        // mediaListDisplayStyle setting row
-                        ListItem(
-                            headlineContent = { Text("Media List Display Style", fontWeight = FontWeight.SemiBold) },
-                            supportingContent = { Text("Selected Layout: ${prefs.listStyle}") },
-                            leadingContent = { Icon(Icons.Default.GridView, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
-                            trailingContent = {
-                                Box {
-                                    TextButton(onClick = { onChangeStyleMenu(true) }) {
-                                        Text("Change")
-                                        Icon(Icons.Default.ArrowDropDown, contentDescription = null)
-                                    }
-                                    DropdownMenu(expanded = showStyleMenu, onDismissRequest = { onChangeStyleMenu(false) }) {
-                                        listOf("List", "Grid").forEach { style ->
-                                            DropdownMenuItem(
-                                                text = { Text(style) },
-                                                onClick = {
-                                                    viewModel.updateListStyle(style)
-                                                    onChangeStyleMenu(false)
-                                                }
-                                            )
-                                        }
-                                    }
-                                }
-                            },
-                            modifier = Modifier.clickable { onChangeStyleMenu(true) }
-                        )
-
-                        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-
-                        // groupWiseFolderStyle setting row
-                        ListItem(
-                            headlineContent = { Text("Group-wise Folder Style", fontWeight = FontWeight.SemiBold) },
-                            supportingContent = { Text("Organize media folders in structural groups") },
-                            leadingContent = { Icon(Icons.Default.Folder, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
-                            trailingContent = {
-                                Switch(
-                                    checked = prefs.useGroupWiseFolderStyle,
-                                    onCheckedChange = { viewModel.updateGroupWiseFolderStyle(it) }
-                                )
-                            }
-                        )
-                    }
-
-                    SettingFolder.playerControls -> {
-                        // doubleTapSeekDuration setting row
-                        ListItem(
-                            headlineContent = { Text("Double-Tap Seek Duration", fontWeight = FontWeight.SemiBold) },
-                            supportingContent = { Text("Jump distance: ${prefs.doubleTapSeekSeconds} seconds") },
-                            leadingContent = { Icon(Icons.Default.Gesture, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
-                            trailingContent = {
-                                Box {
-                                    TextButton(onClick = { onChangeSeekSecondsMenu(true) }) {
-                                        Text("Change")
-                                        Icon(Icons.Default.ArrowDropDown, contentDescription = null)
-                                    }
-                                    DropdownMenu(expanded = showSeekSecondsMenu, onDismissRequest = { onChangeSeekSecondsMenu(false) }) {
-                                        listOf(5, 10, 15, 20, 30).forEach { seconds ->
-                                            DropdownMenuItem(
-                                                text = { Text("$seconds seconds") },
-                                                onClick = {
-                                                    viewModel.updateDoubleTapSeekSeconds(seconds)
-                                                    onChangeSeekSecondsMenu(false)
-                                                }
-                                            )
-                                        }
-                                    }
-                                }
-                            },
-                            modifier = Modifier.clickable { onChangeSeekSecondsMenu(true) }
-                        )
-
-                        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-
-                        // videoScreenOrientation setting row
-                        ListItem(
-                            headlineContent = { Text("Video Screen Orientation", fontWeight = FontWeight.SemiBold) },
-                            supportingContent = { Text("Constraint: ${prefs.defaultOrientation}") },
-                            leadingContent = { Icon(Icons.Default.ScreenRotation, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
-                            trailingContent = {
-                                Box {
-                                    TextButton(onClick = { onChangeOrientationMenu(true) }) {
-                                        Text("Change")
-                                        Icon(Icons.Default.ArrowDropDown, contentDescription = null)
-                                    }
-                                    DropdownMenu(expanded = showOrientationMenu, onDismissRequest = { onChangeOrientationMenu(false) }) {
-                                        listOf("System Auto", "Portrait", "Landscape", "Reverse Portrait", "Reverse Landscape").forEach { orient ->
-                                            DropdownMenuItem(
-                                                text = { Text(orient) },
-                                                onClick = {
-                                                    viewModel.updateDefaultOrientation(orient)
-                                                    onChangeOrientationMenu(false)
-                                                }
-                                            )
-                                        }
-                                    }
-                                }
-                            },
-                            modifier = Modifier.clickable { onChangeOrientationMenu(true) }
-                        )
-
-                        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-
-                        // playerRotationLock setting row
-                        ListItem(
-                            headlineContent = { Text("Player Rotation Lock", fontWeight = FontWeight.SemiBold) },
-                            supportingContent = { Text("Lock video player rotation on screen entry") },
-                            leadingContent = { Icon(Icons.Default.ScreenLockRotation, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
-                            trailingContent = {
-                                Switch(
-                                    checked = prefs.rotationLock,
-                                    onCheckedChange = { viewModel.toggleRotationLock(it) }
-                                )
-                            }
-                        )
-                    }
-
-                    SettingFolder.coreProcessing -> {
-                        // hardwareAcceleration setting row
-                        ListItem(
-                            headlineContent = { Text("Hardware Acceleration", fontWeight = FontWeight.SemiBold) },
-                            supportingContent = { Text("Current Mode: ${prefs.hwAcceleration}") },
-                            leadingContent = { Icon(Icons.Default.Hardware, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
-                            trailingContent = {
-                                Box {
-                                    TextButton(onClick = { onChangeHwMenu(true) }) {
-                                        Text("Change")
-                                        Icon(Icons.Default.ArrowDropDown, contentDescription = null)
-                                    }
-                                    DropdownMenu(expanded = showHwMenu, onDismissRequest = { onChangeHwMenu(false) }) {
-                                        listOf("DISABLED_SOFTWARE", "DECODING_ONLY", "FULL_HARDWARE").forEach { mode ->
-                                            DropdownMenuItem(
-                                                text = { Text(mode) },
-                                                onClick = {
-                                                    viewModel.updateHwAcceleration(mode)
-                                                    onChangeHwMenu(false)
-                                                }
-                                            )
-                                        }
-                                    }
-                                }
-                            },
-                            modifier = Modifier.clickable { onChangeHwMenu(true) }
-                        )
-
-                        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-
-                        // backgroundPlaybackPip setting row
-                        ListItem(
-                            headlineContent = { Text("Background Playback / PiP", fontWeight = FontWeight.SemiBold) },
-                            supportingContent = {
-                                val label = when (prefs.backgroundMode) {
-                                    "STOP_PLAYBACK" -> "Stop Playback"
-                                    "PLAY_BACKGROUND_AUDIO" -> "Play Background Audio"
-                                    "LAUNCH_PIP_MODE" -> "Launch PiP Mode"
-                                    else -> prefs.backgroundMode
-                                }
-                                Text("Action: $label")
-                            },
-                            leadingContent = { Icon(Icons.Default.PictureInPicture, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
-                            trailingContent = {
-                                Box {
-                                    TextButton(onClick = { onChangeBgModeMenu(true) }) {
-                                        Text("Change")
-                                        Icon(Icons.Default.ArrowDropDown, contentDescription = null)
-                                    }
-                                    DropdownMenu(expanded = showBgModeMenu, onDismissRequest = { onChangeBgModeMenu(false) }) {
-                                        listOf(
-                                            "STOP_PLAYBACK" to "Stop Playback",
-                                            "PLAY_BACKGROUND_AUDIO" to "Play Background Audio",
-                                            "LAUNCH_PIP_MODE" to "Launch PiP Mode"
-                                        ).forEach { (mode, label) ->
-                                            DropdownMenuItem(
-                                                text = { Text(label) },
-                                                onClick = {
-                                                    viewModel.updateBackgroundMode(mode)
-                                                    onChangeBgModeMenu(false)
-                                                }
-                                            )
-                                        }
-                                    }
-                                }
-                            },
-                            modifier = Modifier.clickable { onChangeBgModeMenu(true) }
-                        )
-
-                        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-
-                        // resumePlaybackBehavior setting row
-                        ListItem(
-                            headlineContent = { Text("Resume Playback Behavior", fontWeight = FontWeight.SemiBold) },
-                            supportingContent = { Text("When opening partially played files: ${prefs.resumePlaybackBehavior}") },
-                            leadingContent = { Icon(Icons.Default.Restore, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
-                            trailingContent = {
-                                Box {
-                                    TextButton(onClick = { onChangeResumeMenu(true) }) {
-                                        Text("Change")
-                                        Icon(Icons.Default.ArrowDropDown, contentDescription = null)
-                                    }
-                                    DropdownMenu(expanded = showResumeMenu, onDismissRequest = { onChangeResumeMenu(false) }) {
-                                        listOf("Ask Every Time", "Always Resume", "Always Start from Beginning").forEach { behavior ->
-                                            DropdownMenuItem(
-                                                text = { Text(behavior) },
-                                                onClick = {
-                                                    viewModel.updateResumePlaybackBehavior(behavior)
-                                                    onChangeResumeMenu(false)
-                                                }
-                                            )
-                                        }
-                                    }
-                                }
-                            },
-                            modifier = Modifier.clickable { onChangeResumeMenu(true) }
-                        )
-
-                        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-
-                        // perVideoPlaybackSettings setting row
-                        ListItem(
-                            headlineContent = { Text("Per-Video Playback Settings", fontWeight = FontWeight.SemiBold) },
-                            supportingContent = { Text("Track individual file speeds, zooms, and audio volumes") },
-                            leadingContent = { Icon(Icons.Default.Tune, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
-                            trailingContent = {
-                                Switch(
-                                    checked = prefs.usePerVideoSettings,
-                                    onCheckedChange = { viewModel.toggleUsePerVideoSettings(it) }
-                                )
-                            }
-                        )
-
-                        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-
-                        // saveVolumeBrightnessLevel setting row
-                        ListItem(
-                            headlineContent = { Text("Save Volume & Brightness Level", fontWeight = FontWeight.SemiBold) },
-                            supportingContent = { Text("Behavior: ${when (prefs.saveVolumeBrightnessBehavior) {
-                                "Global" -> "Global levels"
-                                "Individual" -> "Individual levels per video"
-                                else -> "Do not save levels"
-                            }}") },
-                            leadingContent = { Icon(Icons.Default.VolumeUp, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
-                            trailingContent = {
-                                Box {
-                                    TextButton(onClick = { onChangeSaveVolBrightMenu(true) }) {
-                                        Text("Change")
-                                        Icon(Icons.Default.ArrowDropDown, contentDescription = null)
-                                    }
-                                    DropdownMenu(
-                                        expanded = showSaveVolBrightMenu,
-                                        onDismissRequest = { onChangeSaveVolBrightMenu(false) }
-                                    ) {
-                                        listOf(
-                                            "None" to "Do not save levels",
-                                            "Global" to "Global levels",
-                                            "Individual" to "Individual levels per video"
-                                        ).forEach { (valStr, labelStr) ->
-                                            DropdownMenuItem(
-                                                text = { Text(labelStr) },
-                                                onClick = {
-                                                    viewModel.updateSaveVolumeBrightnessBehavior(valStr)
-                                                    onChangeSaveVolBrightMenu(false)
-                                                }
-                                            )
-                                        }
-                                    }
-                                }
-                            },
-                            modifier = Modifier.clickable { onChangeSaveVolBrightMenu(true) }
-                        )
-                    }
-
-                    SettingFolder.subtitleSystem -> {
-                        // defaultSubtitleLanguage setting row
-                        ListItem(
-                            headlineContent = { Text("Default Subtitle Language", fontWeight = FontWeight.SemiBold) },
-                            supportingContent = { Text("Selected language: ${prefs.defaultSubtitleLanguage}") },
-                            leadingContent = { Icon(Icons.Default.Language, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
-                            trailingContent = {
-                                Box {
-                                    TextButton(onClick = { onChangeSubtitleLangMenu(true) }) {
-                                        Text("Change")
-                                        Icon(Icons.Default.ArrowDropDown, contentDescription = null)
-                                    }
-                                    DropdownMenu(expanded = showSubtitleLangMenu, onDismissRequest = { onChangeSubtitleLangMenu(false) }) {
-                                        listOf("English", "Hindi", "Spanish", "French", "German", "Japanese", "Chinese", "Russian", "Arabic", "Portuguese", "Bengali").forEach { lang ->
-                                            DropdownMenuItem(
-                                                text = { Text(lang) },
-                                                onClick = {
-                                                    viewModel.updateSubtitleLanguage(lang)
-                                                    onChangeSubtitleLangMenu(false)
-                                                }
-                                            )
-                                        }
-                                    }
-                                }
-                            },
-                            modifier = Modifier.clickable { onChangeSubtitleLangMenu(true) }
-                        )
-
-                        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-
-                        // subtitleTextColor setting row
-                        ListItem(
-                            headlineContent = { Text("Subtitle Text Color", fontWeight = FontWeight.SemiBold) },
-                            supportingContent = { Text("Hex value: ${prefs.subtitleTextColor}") },
-                            leadingContent = { Icon(Icons.Default.ColorLens, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
-                            trailingContent = {
-                                Box {
-                                    TextButton(onClick = { onChangeSubtitleColorMenu(true) }) {
-                                        Text("Change")
-                                        Icon(Icons.Default.ArrowDropDown, contentDescription = null)
-                                    }
-                                    DropdownMenu(expanded = showSubtitleColorMenu, onDismissRequest = { onChangeSubtitleColorMenu(false) }) {
-                                        listOf(
-                                            "#FFFFFF" to "White",
-                                            "#FFFF00" to "Yellow",
-                                            "#00FF00" to "Green",
-                                            "#00FFFF" to "Cyan",
-                                            "#FF00FF" to "Magenta",
-                                            "#FF3333" to "Soft Red",
-                                            "#000000" to "Black"
-                                        ).forEach { (hex, name) ->
-                                            DropdownMenuItem(
-                                                text = { Text(name) },
-                                                onClick = {
-                                                    viewModel.updateSubtitleCustomization(
-                                                        background = prefs.subtitleBackground,
-                                                        textColor = hex,
-                                                        size = prefs.subtitleSize,
-                                                        fontStyle = prefs.subtitleFontStyle
-                                                    )
-                                                    onChangeSubtitleColorMenu(false)
-                                                }
-                                            )
-                                        }
-                                    }
-                                }
-                            },
-                            modifier = Modifier.clickable { onChangeSubtitleColorMenu(true) }
-                        )
-
-                        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-
-                        // subtitleBackground setting row
-                        ListItem(
-                            headlineContent = { Text("Subtitle Background", fontWeight = FontWeight.SemiBold) },
-                            supportingContent = {
-                                val bgLabel = when (prefs.subtitleBackground) {
-                                    "#00000000" -> "Transparent (Default)"
-                                    "#80000000" -> "Semi-Transparent Black"
-                                    "#FF000000" -> "Solid Black"
-                                    "#80333333" -> "Semi-Transparent Dark Gray"
-                                    else -> prefs.subtitleBackground
-                                }
-                                Text(bgLabel)
-                            },
-                            leadingContent = { Icon(Icons.Default.Texture, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
-                            trailingContent = {
-                                Box {
-                                    TextButton(onClick = { onChangeSubtitleBgMenu(true) }) {
-                                        Text("Change")
-                                        Icon(Icons.Default.ArrowDropDown, contentDescription = null)
-                                    }
-                                    DropdownMenu(expanded = showSubtitleBgMenu, onDismissRequest = { onChangeSubtitleBgMenu(false) }) {
-                                        listOf(
-                                            "#00000000" to "Transparent",
-                                            "#80000000" to "Semi-Transparent Black",
-                                            "#FF000000" to "Solid Black",
-                                            "#80333333" to "Semi-Transparent Dark Gray"
-                                        ).forEach { (hex, name) ->
-                                            DropdownMenuItem(
-                                                text = { Text(name) },
-                                                onClick = {
-                                                    viewModel.updateSubtitleCustomization(
-                                                        background = hex,
-                                                        textColor = prefs.subtitleTextColor,
-                                                        size = prefs.subtitleSize,
-                                                        fontStyle = prefs.subtitleFontStyle
-                                                    )
-                                                    onChangeSubtitleBgMenu(false)
-                                                }
-                                            )
-                                        }
-                                    }
-                                }
-                            },
-                            modifier = Modifier.clickable { onChangeSubtitleBgMenu(true) }
-                        )
-
-                        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-
-                        // subtitleTextSize setting row
-                        ListItem(
-                            headlineContent = { Text("Subtitle Text Size", fontWeight = FontWeight.SemiBold) },
-                            supportingContent = { Text("${prefs.subtitleSize.toInt()} sp") },
-                            leadingContent = { Icon(Icons.Default.FormatSize, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
-                            trailingContent = {
-                                Box {
-                                    TextButton(onClick = { onChangeSubtitleSizeMenu(true) }) {
-                                        Text("Change")
-                                        Icon(Icons.Default.ArrowDropDown, contentDescription = null)
-                                    }
-                                    DropdownMenu(expanded = showSubtitleSizeMenu, onDismissRequest = { onChangeSubtitleSizeMenu(false) }) {
-                                        listOf(12f, 14f, 16f, 18f, 20f, 24f).forEach { sz ->
-                                            DropdownMenuItem(
-                                                text = { Text("${sz.toInt()} sp") },
-                                                onClick = {
-                                                    viewModel.updateSubtitleCustomization(
-                                                        background = prefs.subtitleBackground,
-                                                        textColor = prefs.subtitleTextColor,
-                                                        size = sz,
-                                                        fontStyle = prefs.subtitleFontStyle
-                                                    )
-                                                    onChangeSubtitleSizeMenu(false)
-                                                }
-                                            )
-                                        }
-                                    }
-                                }
-                            },
-                            modifier = Modifier.clickable { onChangeSubtitleSizeMenu(true) }
-                        )
-
-                        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-
-                        // subtitleFontStyle setting row
-                        ListItem(
-                            headlineContent = { Text("Subtitle Font Style", fontWeight = FontWeight.SemiBold) },
-                            supportingContent = { Text(prefs.subtitleFontStyle) },
-                            leadingContent = { Icon(Icons.Default.FormatItalic, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
-                            trailingContent = {
-                                Box {
-                                    TextButton(onClick = { onChangeSubtitleFontMenu(true) }) {
-                                        Text("Change")
-                                        Icon(Icons.Default.ArrowDropDown, contentDescription = null)
-                                    }
-                                    DropdownMenu(expanded = showSubtitleFontMenu, onDismissRequest = { onChangeSubtitleFontMenu(false) }) {
-                                        listOf("Normal", "Bold", "Italic").forEach { style ->
-                                            DropdownMenuItem(
-                                                text = { Text(style) },
-                                                onClick = {
-                                                    viewModel.updateSubtitleCustomization(
-                                                        background = prefs.subtitleBackground,
-                                                        textColor = prefs.subtitleTextColor,
-                                                        size = prefs.subtitleSize,
-                                                        fontStyle = style
-                                                    )
-                                                    onChangeSubtitleFontMenu(false)
-                                                }
-                                            )
-                                        }
-                                    }
-                                }
-                            },
-                            modifier = Modifier.clickable { onChangeSubtitleFontMenu(true) }
-                        )
-
-                        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-
-                        // subtitlePreset setting row
-                        var showSubtitlePresetMenu by remember { mutableStateOf(false) }
-                        ListItem(
-                            headlineContent = { Text("Subtitle Preset", fontWeight = FontWeight.SemiBold) },
-                            supportingContent = { Text(prefs.subtitlePreset) },
-                            leadingContent = { Icon(Icons.Default.Style, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
-                            trailingContent = {
-                                Box {
-                                    TextButton(onClick = { showSubtitlePresetMenu = true }) {
-                                        Text("Change")
-                                        Icon(Icons.Default.ArrowDropDown, contentDescription = null)
-                                    }
-                                    DropdownMenu(expanded = showSubtitlePresetMenu, onDismissRequest = { showSubtitlePresetMenu = false }) {
-                                        listOf(
-                                            "Custom",
-                                            "White on Black",
-                                            "Yellow on Black",
-                                            "White Outline",
-                                            "Yellow Outline",
-                                            "Soft Shadow"
-                                        ).forEach { preset ->
-                                            DropdownMenuItem(
-                                                text = { Text(preset) },
-                                                onClick = {
-                                                    viewModel.applySubtitlePreset(preset)
-                                                    showSubtitlePresetMenu = false
-                                                }
-                                            )
-                                        }
-                                    }
-                                }
-                            },
-                            modifier = Modifier.clickable { showSubtitlePresetMenu = true }
-                        )
-
-                        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-
-                        // subtitleEncoding setting row
-                        var showSubtitleEncodingMenu by remember { mutableStateOf(false) }
-                        ListItem(
-                            headlineContent = { Text("Subtitle Encoding", fontWeight = FontWeight.SemiBold) },
-                            supportingContent = { Text("Format: ${prefs.subtitleEncoding}") },
-                            leadingContent = { Icon(Icons.Default.Code, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
-                            trailingContent = {
-                                Box {
-                                    TextButton(onClick = { showSubtitleEncodingMenu = true }) {
-                                        Text("Change")
-                                        Icon(Icons.Default.ArrowDropDown, contentDescription = null)
-                                    }
-                                    DropdownMenu(expanded = showSubtitleEncodingMenu, onDismissRequest = { showSubtitleEncodingMenu = false }) {
-                                        listOf("UTF-8", "ISO-8859-1", "Windows-1252", "UTF-16", "US-ASCII", "Big5", "GBK", "Shift_JIS", "EUC-KR").forEach { enc ->
-                                            DropdownMenuItem(
-                                                text = { Text(enc) },
-                                                onClick = {
-                                                    viewModel.updateAdvancedSubtitleSettings(encoding = enc)
-                                                    showSubtitleEncodingMenu = false
-                                                }
-                                            )
-                                        }
-                                    }
-                                }
-                            },
-                            modifier = Modifier.clickable { showSubtitleEncodingMenu = true }
-                        )
-
-                        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-
-                        // subtitleShadowColor setting row
-                        var showShadowColorMenu by remember { mutableStateOf(false) }
-                        ListItem(
-                            headlineContent = { Text("Shadow Color", fontWeight = FontWeight.SemiBold) },
-                            supportingContent = { Text(prefs.subtitleShadowColor) },
-                            leadingContent = { Icon(Icons.Default.SettingsBrightness, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
-                            trailingContent = {
-                                Box {
-                                    TextButton(onClick = { showShadowColorMenu = true }) {
-                                        Text("Change")
-                                        Icon(Icons.Default.ArrowDropDown, contentDescription = null)
-                                    }
-                                    DropdownMenu(expanded = showShadowColorMenu, onDismissRequest = { showShadowColorMenu = false }) {
-                                        listOf(
-                                            "#00000000" to "None (Transparent)",
-                                            "#FF000000" to "Black",
-                                            "#80000000" to "Gray",
-                                            "#FFFF0000" to "Red",
-                                            "#FF0000FF" to "Blue"
-                                        ).forEach { (hex, name) ->
-                                            DropdownMenuItem(
-                                                text = { Text(name) },
-                                                onClick = {
-                                                    viewModel.updateAdvancedSubtitleSettings(shadowColor = hex, preset = "Custom")
-                                                    showShadowColorMenu = false
-                                                }
-                                            )
-                                        }
-                                    }
-                                }
-                            },
-                            modifier = Modifier.clickable { showShadowColorMenu = true }
-                        )
-
-                        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-
-                        // subtitleShadowRadius setting row
-                        ListItem(
-                            headlineContent = { Text("Shadow Radius (${prefs.subtitleShadowRadius.toInt()} px)", fontWeight = FontWeight.SemiBold) },
-                            supportingContent = {
-                                Slider(
-                                    value = prefs.subtitleShadowRadius,
-                                    onValueChange = { viewModel.updateAdvancedSubtitleSettings(shadowRadius = it, preset = "Custom") },
-                                    valueRange = 0f..10f,
-                                    steps = 10,
-                                    modifier = Modifier.fillMaxWidth().padding(end = 16.dp)
-                                )
-                            },
-                            leadingContent = { Icon(Icons.Default.BlurOn, contentDescription = null, tint = MaterialTheme.colorScheme.primary) }
-                        )
-
-                        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-
-                        // subtitleShadowOpacity setting row
-                        ListItem(
-                            headlineContent = { Text("Shadow Opacity (${(prefs.subtitleShadowOpacity * 100).toInt()}%)", fontWeight = FontWeight.SemiBold) },
-                            supportingContent = {
-                                Slider(
-                                    value = prefs.subtitleShadowOpacity,
-                                    onValueChange = { viewModel.updateAdvancedSubtitleSettings(shadowOpacity = it, preset = "Custom") },
-                                    valueRange = 0f..1f,
-                                    modifier = Modifier.fillMaxWidth().padding(end = 16.dp)
-                                )
-                            },
-                            leadingContent = { Icon(Icons.Default.Opacity, contentDescription = null, tint = MaterialTheme.colorScheme.primary) }
-                        )
-
-                        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-
-                        // subtitleOutlineColor setting row
-                        var showOutlineColorMenu by remember { mutableStateOf(false) }
-                        ListItem(
-                            headlineContent = { Text("Outline Color", fontWeight = FontWeight.SemiBold) },
-                            supportingContent = { Text(prefs.subtitleOutlineColor) },
-                            leadingContent = { Icon(Icons.Default.BorderColor, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
-                            trailingContent = {
-                                Box {
-                                    TextButton(onClick = { showOutlineColorMenu = true }) {
-                                        Text("Change")
-                                        Icon(Icons.Default.ArrowDropDown, contentDescription = null)
-                                    }
-                                    DropdownMenu(expanded = showOutlineColorMenu, onDismissRequest = { showOutlineColorMenu = false }) {
-                                        listOf(
-                                            "#00000000" to "None (Transparent)",
-                                            "#FF000000" to "Black",
-                                            "#FFFFFFFF" to "White",
-                                            "#FFFF0000" to "Red",
-                                            "#FF0000FF" to "Blue"
-                                        ).forEach { (hex, name) ->
-                                            DropdownMenuItem(
-                                                text = { Text(name) },
-                                                onClick = {
-                                                    viewModel.updateAdvancedSubtitleSettings(outlineColor = hex, preset = "Custom")
-                                                    showOutlineColorMenu = false
-                                                }
-                                            )
-                                        }
-                                    }
-                                }
-                            },
-                            modifier = Modifier.clickable { showOutlineColorMenu = true }
-                        )
-
-                        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-
-                        // subtitleOutlineWidth setting row
-                        ListItem(
-                            headlineContent = { Text("Outline Width (${String.format("%.1f", prefs.subtitleOutlineWidth)} px)", fontWeight = FontWeight.SemiBold) },
-                            supportingContent = {
-                                Slider(
-                                    value = prefs.subtitleOutlineWidth,
-                                    onValueChange = { viewModel.updateAdvancedSubtitleSettings(outlineWidth = it, preset = "Custom") },
-                                    valueRange = 0f..8f,
-                                    modifier = Modifier.fillMaxWidth().padding(end = 16.dp)
-                                )
-                            },
-                            leadingContent = { Icon(Icons.Default.LineWeight, contentDescription = null, tint = MaterialTheme.colorScheme.primary) }
-                        )
-
-                        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-
-                        // subtitleOutlineOpacity setting row
-                        ListItem(
-                            headlineContent = { Text("Outline Opacity (${(prefs.subtitleOutlineOpacity * 100).toInt()}%)", fontWeight = FontWeight.SemiBold) },
-                            supportingContent = {
-                                Slider(
-                                    value = prefs.subtitleOutlineOpacity,
-                                    onValueChange = { viewModel.updateAdvancedSubtitleSettings(outlineOpacity = it, preset = "Custom") },
-                                    valueRange = 0f..1f,
-                                    modifier = Modifier.fillMaxWidth().padding(end = 16.dp)
-                                )
-                            },
-                            leadingContent = { Icon(Icons.Default.Opacity, contentDescription = null, tint = MaterialTheme.colorScheme.primary) }
-                        )
-
-                        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-
-                        // subtitleOpacity setting row
-                        ListItem(
-                            headlineContent = { Text("Subtitle Text Opacity (${(prefs.subtitleOpacity * 100).toInt()}%)", fontWeight = FontWeight.SemiBold) },
-                            supportingContent = {
-                                Slider(
-                                    value = prefs.subtitleOpacity,
-                                    onValueChange = { viewModel.updateAdvancedSubtitleSettings(opacity = it, preset = "Custom") },
-                                    valueRange = 0.1f..1.0f,
-                                    modifier = Modifier.fillMaxWidth().padding(end = 16.dp)
-                                )
-                            },
-                            leadingContent = { Icon(Icons.Default.Visibility, contentDescription = null, tint = MaterialTheme.colorScheme.primary) }
-                        )
-
-                        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-
-                        // Subtitle Live Preview block
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(16.dp)
-                        ) {
-                            Text(
-                                text = "LIVE SUBTITLE PREVIEW",
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.secondary,
-                                modifier = Modifier.padding(bottom = 8.dp)
-                            )
-
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(100.dp)
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .background(Color(0xFF151515)),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = "[Mock Video Scene Preview]",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = Color.Gray.copy(alpha = 0.4f)
-                                )
-
-                                Box(
-                                    modifier = Modifier
-                                        .align(Alignment.BottomCenter)
-                                        .padding(bottom = 12.dp, start = 16.dp, end = 16.dp)
-                                        .clip(RoundedCornerShape(4.dp))
-                                        .background(
-                                            try {
-                                                Color(android.graphics.Color.parseColor(prefs.subtitleBackground))
-                                            } catch (e: Exception) {
-                                                Color.Transparent
-                                            }
-                                        )
-                                        .padding(horizontal = 8.dp, vertical = 4.dp)
-                                ) {
-                                    Text(
-                                        text = "Aero-Player renders beautiful subtitles in sync.",
-                                        color = try {
-                                            val baseColor = android.graphics.Color.parseColor(prefs.subtitleTextColor)
-                                            val alpha = (prefs.subtitleOpacity * 255).toInt().coerceIn(0, 255)
-                                            Color((baseColor and 0x00FFFFFF) or (alpha shl 24))
-                                        } catch (e: Exception) {
-                                            Color.White
-                                        },
-                                        fontSize = prefs.subtitleSize.sp,
-                                        fontWeight = if (prefs.subtitleFontStyle == "Bold") FontWeight.Bold else FontWeight.Normal,
-                                        style = if (prefs.subtitleFontStyle == "Italic") {
-                                            MaterialTheme.typography.bodyMedium.copy(
-                                                fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
-                                                shadow = if (prefs.subtitleShadowColor != "#00000000" && prefs.subtitleShadowColor.isNotEmpty()) {
-                                                    val sColor = try {
-                                                        val baseColor = android.graphics.Color.parseColor(prefs.subtitleShadowColor)
-                                                        val sAlpha = (prefs.subtitleShadowOpacity * 255).toInt().coerceIn(0, 255)
-                                                        Color((baseColor and 0x00FFFFFF) or (sAlpha shl 24))
-                                                    } catch (e: Exception) {
-                                                        Color.Black
-                                                    }
-                                                    androidx.compose.ui.graphics.Shadow(
-                                                        color = sColor,
-                                                        offset = androidx.compose.ui.geometry.Offset(1.5f, 1.5f),
-                                                        blurRadius = prefs.subtitleShadowRadius
-                                                    )
-                                                } else {
-                                                    androidx.compose.ui.graphics.Shadow.None
-                                                }
-                                            )
-                                        } else {
-                                            MaterialTheme.typography.bodyMedium.copy(
-                                                shadow = if (prefs.subtitleShadowColor != "#00000000" && prefs.subtitleShadowColor.isNotEmpty()) {
-                                                    val sColor = try {
-                                                        val baseColor = android.graphics.Color.parseColor(prefs.subtitleShadowColor)
-                                                        val sAlpha = (prefs.subtitleShadowOpacity * 255).toInt().coerceIn(0, 255)
-                                                        Color((baseColor and 0x00FFFFFF) or (sAlpha shl 24))
-                                                    } catch (e: Exception) {
-                                                        Color.Black
-                                                    }
-                                                    androidx.compose.ui.graphics.Shadow(
-                                                        color = sColor,
-                                                        offset = androidx.compose.ui.geometry.Offset(1.5f, 1.5f),
-                                                        blurRadius = prefs.subtitleShadowRadius
-                                                    )
-                                                } else {
-                                                    androidx.compose.ui.graphics.Shadow.None
-                                                }
-                                            )
-                                        },
-                                        textAlign = TextAlign.Center
-                                    )
-                                }
                             }
                         }
                     }
+                },
+                modifier = Modifier.clickable { onChangeSubtitleLangMenu(true) }
+            )
 
-                    SettingFolder.networkRestrictions -> {
-                        // meteredNetworkPolicy setting row
-                        ListItem(
-                            headlineContent = { Text("Metered Network Policy", fontWeight = FontWeight.SemiBold) },
-                            supportingContent = { Text("Data stream action: ${prefs.meteredNetworkAction}") },
-                            leadingContent = { Icon(Icons.Default.Wifi, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
-                            trailingContent = {
-                                Box {
-                                    TextButton(onClick = { onChangeNetworkMenu(true) }) {
-                                        Text("Change")
-                                        Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+            HorizontalDivider(modifier = Modifier.padding(start = 68.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+
+            // Preset
+            ListItem(
+                headlineContent = { Text("Subtitle Preset", fontWeight = FontWeight.SemiBold) },
+                supportingContent = { Text("Preset: ${prefs.subtitlePreset}") },
+                leadingContent = { SettingsIconBadge(Icons.Default.Style) },
+                trailingContent = {
+                    Box {
+                        TextButton(onClick = { onChangeSubtitlePresetMenu(true) }) {
+                            Text(prefs.subtitlePreset)
+                            Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                        }
+                        DropdownMenu(expanded = showSubtitlePresetMenu, onDismissRequest = { onChangeSubtitlePresetMenu(false) }) {
+                            listOf("Custom", "White on Black", "Yellow on Black", "White Outline", "Yellow Outline", "Soft Shadow").forEach { preset ->
+                                DropdownMenuItem(
+                                    text = { Text(preset) },
+                                    onClick = {
+                                        viewModel.applySubtitlePreset(preset)
+                                        onChangeSubtitlePresetMenu(false)
                                     }
-                                    DropdownMenu(expanded = showNetworkMenu, onDismissRequest = { onChangeNetworkMenu(false) }) {
-                                        listOf("WARN_BEFORE_STREAMING", "BLOCK_STREAMING", "ALLOW_STREAMING").forEach { action ->
-                                            DropdownMenuItem(
-                                                text = { Text(action) },
-                                                onClick = {
-                                                    viewModel.updateMeteredNetworkAction(action)
-                                                    onChangeNetworkMenu(false)
-                                                }
-                                            )
-                                        }
-                                    }
-                                }
-                            },
-                            modifier = Modifier.clickable { onChangeNetworkMenu(true) }
-                        )
+                                )
+                            }
+                        }
                     }
+                },
+                modifier = Modifier.clickable { onChangeSubtitlePresetMenu(true) }
+            )
 
-                    SettingFolder.loggingEngine -> {
-                        // playbackHistoryTracker setting row
-                        ListItem(
-                            headlineContent = { Text("Playback History Tracker", fontWeight = FontWeight.SemiBold) },
-                            supportingContent = { Text("Log file progression events to database cache") },
-                            leadingContent = { Icon(Icons.Default.History, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
-                            trailingContent = {
-                                Switch(
-                                    checked = prefs.playHistoryEnabled,
-                                    onCheckedChange = { viewModel.togglePlayHistoryEnabled(it) }
-                                )
-                            }
-                        )
+            HorizontalDivider(modifier = Modifier.padding(start = 68.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
 
-                        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-
-                        // queueHistoryCache setting row (Video and Audio queue persistence tracking)
-                        ListItem(
-                            headlineContent = { Text("Save Video Queue History", fontWeight = FontWeight.SemiBold) },
-                            supportingContent = { Text("Remember active video list track positions") },
-                            leadingContent = { Icon(Icons.Default.Queue, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
-                            trailingContent = {
-                                Switch(
-                                    checked = prefs.saveVideoQueueHistory,
-                                    onCheckedChange = { viewModel.toggleSaveVideoQueueHistory(it) }
-                                )
-                            }
-                        )
-
-                        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-
-                        ListItem(
-                            headlineContent = { Text("Save Audio Queue History", fontWeight = FontWeight.SemiBold) },
-                            supportingContent = { Text("Remember active audio play queue across reboots") },
-                            leadingContent = { Icon(Icons.Default.QueueMusic, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
-                            trailingContent = {
-                                Switch(
-                                    checked = prefs.saveAudioQueueHistory,
-                                    onCheckedChange = { viewModel.toggleSaveAudioQueueHistory(it) }
-                                )
-                            }
-                        )
-                    }
-
-                    SettingFolder.storageManagement -> {
-                        // mediaLibraryFolders dialog launcher setting row
-                        ListItem(
-                            headlineContent = { Text("Media Library Folders", fontWeight = FontWeight.SemiBold) },
-                            supportingContent = { Text("Configure and verify scanned directory system paths") },
-                            leadingContent = { Icon(Icons.Default.FolderOpen, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
-                            trailingContent = {
-                                Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Manage", tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                            },
-                            modifier = Modifier.clickable { showFolderManager() }
-                        )
-
-                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
-                            val isAllFilesAllowed = android.os.Environment.isExternalStorageManager()
-                            val settingContext = LocalContext.current
-                            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-
-                            ListItem(
-                                headlineContent = { Text("Bypass Deletion Prompts", fontWeight = FontWeight.SemiBold) },
-                                supportingContent = { Text(if (isAllFilesAllowed) "All Files Access granted (direct deletion active)" else "Grant All Files Access to delete files without prompt") },
-                                leadingContent = { Icon(Icons.Default.Security, contentDescription = null, tint = if (isAllFilesAllowed) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error) },
-                                trailingContent = {
-                                    Button(
-                                        onClick = {
-                                            try {
-                                                val intent = android.content.Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
-                                                    data = android.net.Uri.parse("package:${settingContext.packageName}")
-                                                }
-                                                settingContext.startActivity(intent)
-                                            } catch (e: Exception) {
-                                                val intent = android.content.Intent(android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
-                                                settingContext.startActivity(intent)
-                                            }
-                                        },
-                                        colors = ButtonDefaults.buttonColors(
-                                            containerColor = if (isAllFilesAllowed) MaterialTheme.colorScheme.primary.copy(alpha = 0.5f) else MaterialTheme.colorScheme.primary
+            // Subtitle Text Color
+            ListItem(
+                headlineContent = { Text("Subtitle Text Color", fontWeight = FontWeight.SemiBold) },
+                supportingContent = { Text("Hex: ${prefs.subtitleTextColor}") },
+                leadingContent = { SettingsIconBadge(Icons.Default.ColorLens) },
+                trailingContent = {
+                    Box {
+                        TextButton(onClick = { onChangeSubtitleColorMenu(true) }) {
+                            Text("Change")
+                            Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                        }
+                        DropdownMenu(expanded = showSubtitleColorMenu, onDismissRequest = { onChangeSubtitleColorMenu(false) }) {
+                            listOf(
+                                "#FFFFFF" to "White",
+                                "#FFFF00" to "Yellow",
+                                "#00FF00" to "Green",
+                                "#00FFFF" to "Cyan",
+                                "#FF00FF" to "Magenta",
+                                "#FF3333" to "Soft Red",
+                                "#000000" to "Black"
+                            ).forEach { (hex, name) ->
+                                DropdownMenuItem(
+                                    text = { Text(name) },
+                                    onClick = {
+                                        viewModel.updateSubtitleCustomization(
+                                            background = prefs.subtitleBackground,
+                                            textColor = hex,
+                                            size = prefs.subtitleSize,
+                                            fontStyle = prefs.subtitleFontStyle
                                         )
-                                    ) {
-                                        Text(if (isAllFilesAllowed) "Granted" else "Grant")
+                                        onChangeSubtitleColorMenu(false)
                                     }
+                                )
+                            }
+                        }
+                    }
+                },
+                modifier = Modifier.clickable { onChangeSubtitleColorMenu(true) }
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(start = 68.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+
+            // Subtitle Text Size
+            ListItem(
+                headlineContent = { Text("Subtitle Text Size", fontWeight = FontWeight.SemiBold) },
+                supportingContent = { Text("${prefs.subtitleSize.toInt()} sp") },
+                leadingContent = { SettingsIconBadge(Icons.Default.FormatSize) },
+                trailingContent = {
+                    Box {
+                        TextButton(onClick = { onChangeSubtitleSizeMenu(true) }) {
+                            Text("${prefs.subtitleSize.toInt()} sp")
+                            Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                        }
+                        DropdownMenu(expanded = showSubtitleSizeMenu, onDismissRequest = { onChangeSubtitleSizeMenu(false) }) {
+                            listOf(12f, 14f, 16f, 18f, 20f, 24f).forEach { sz ->
+                                DropdownMenuItem(
+                                    text = { Text("${sz.toInt()} sp") },
+                                    onClick = {
+                                        viewModel.updateSubtitleCustomization(
+                                            background = prefs.subtitleBackground,
+                                            textColor = prefs.subtitleTextColor,
+                                            size = sz,
+                                            fontStyle = prefs.subtitleFontStyle
+                                        )
+                                        onChangeSubtitleSizeMenu(false)
+                                    }
+                                )
+                            }
+                        }
+                    }
+                },
+                modifier = Modifier.clickable { onChangeSubtitleSizeMenu(true) }
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(start = 68.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+
+            // Subtitle Encoding
+            ListItem(
+                headlineContent = { Text("Subtitle File Encoding", fontWeight = FontWeight.SemiBold) },
+                supportingContent = { Text("Encoding format: ${prefs.subtitleEncoding}") },
+                leadingContent = { SettingsIconBadge(Icons.Default.Code) },
+                trailingContent = {
+                    Box {
+                        TextButton(onClick = { onChangeSubtitleEncodingMenu(true) }) {
+                            Text(prefs.subtitleEncoding)
+                            Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                        }
+                        DropdownMenu(expanded = showSubtitleEncodingMenu, onDismissRequest = { onChangeSubtitleEncodingMenu(false) }) {
+                            listOf("UTF-8", "ISO-8859-1", "Windows-1252", "UTF-16", "US-ASCII", "Big5", "GBK", "Shift_JIS", "EUC-KR").forEach { enc ->
+                                DropdownMenuItem(
+                                    text = { Text(enc) },
+                                    onClick = {
+                                        viewModel.updateAdvancedSubtitleSettings(encoding = enc)
+                                        onChangeSubtitleEncodingMenu(false)
+                                    }
+                                )
+                            }
+                        }
+                    }
+                },
+                modifier = Modifier.clickable { onChangeSubtitleEncodingMenu(true) }
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(start = 68.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+
+            // Subtitle Live Preview Box
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp)
+            ) {
+                Text(
+                    text = "LIVE SUBTITLE PREVIEW",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(100.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color(0xFF151515)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "[ Video Frame Background Preview ]",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.Gray.copy(alpha = 0.4f)
+                    )
+
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = 12.dp, start = 16.dp, end = 16.dp)
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(
+                                try {
+                                    Color(android.graphics.Color.parseColor(prefs.subtitleBackground))
+                                } catch (e: Exception) {
+                                    Color.Transparent
                                 }
                             )
-                        }
-
-                        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-
-                        // autoRescanOnLaunch setting row
-                        ListItem(
-                            headlineContent = { Text("Auto-Rescan on Launch", fontWeight = FontWeight.SemiBold) },
-                            supportingContent = { Text("Rescan file system structures during initialization stage") },
-                            leadingContent = { Icon(Icons.Default.Sync, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
-                            trailingContent = {
-                                Switch(
-                                    checked = prefs.autoScanEnabled,
-                                    onCheckedChange = { viewModel.toggleAutoScan(it) }
-                                )
-                            }
-                        )
-
-                        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-
-                        // resetMediaDatabaseCache action setting row
-                        ListItem(
-                            headlineContent = { Text("Reset Media Database Cache", fontWeight = FontWeight.SemiBold) },
-                            supportingContent = { Text("Clear catalog data and query device storage again") },
-                            leadingContent = { Icon(Icons.Default.Storage, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
-                            trailingContent = {
-                                TextButton(onClick = {
-                                    viewModel.scanLocalMedia()
-                                    android.widget.Toast.makeText(context, "Rescanning local device storage...", android.widget.Toast.LENGTH_SHORT).show()
-                                }) {
-                                    Text("Rebuild", color = MaterialTheme.colorScheme.error)
-                                }
-                            }
-                        )
-
-                        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-
-                        // wipePlaybackProgressCache action setting row
-                        ListItem(
-                            headlineContent = { Text("Wipe Playback Progress Cache", fontWeight = FontWeight.SemiBold) },
-                            supportingContent = { Text("Erase resume times, landmarks, and playlist indices") },
-                            leadingContent = { Icon(Icons.Default.DeleteForever, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
-                            trailingContent = {
-                                TextButton(onClick = {
-                                    viewModel.clearHistory()
-                                    android.widget.Toast.makeText(context, "History wiped", android.widget.Toast.LENGTH_SHORT).show()
-                                }) {
-                                    Text("Wipe", color = MaterialTheme.colorScheme.error)
-                                }
-                            }
-                        )
-                    }
-
-                    SettingFolder.legalLegalities -> {
-                        // privacyPolicy setting row
-                        ListItem(
-                            headlineContent = { Text("Privacy Policy", fontWeight = FontWeight.SemiBold) },
-                            supportingContent = { Text("Review system data processing and file permissions EULA") },
-                            leadingContent = { Icon(Icons.Default.PrivacyTip, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
-                            trailingContent = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant) },
-                            modifier = Modifier.clickable { showPrivacy() }
-                        )
-
-                        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-
-                        // termsAndConditions setting row
-                        ListItem(
-                            headlineContent = { Text("Terms and Conditions", fontWeight = FontWeight.SemiBold) },
-                            supportingContent = { Text("Aero-Player usage constraints and software licensing model") },
-                            leadingContent = { Icon(Icons.Default.Description, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
-                            trailingContent = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant) },
-                            modifier = Modifier.clickable { showTerms() }
-                        )
-
-                        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-
-                        // changelog setting row
-                        ListItem(
-                            headlineContent = { Text("Changelog", fontWeight = FontWeight.SemiBold) },
-                            supportingContent = { Text("Explore version v1.2.0 capability increments & bugfixes") },
-                            leadingContent = { Icon(Icons.Default.NewReleases, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
-                            trailingContent = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant) },
-                            modifier = Modifier.clickable { showChangelog() }
+                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                    ) {
+                        Text(
+                            text = "Aero Player renders crisp, beautiful subtitles.",
+                            color = try {
+                                val baseColor = android.graphics.Color.parseColor(prefs.subtitleTextColor)
+                                val alpha = (prefs.subtitleOpacity * 255).toInt().coerceIn(0, 255)
+                                Color((baseColor and 0x00FFFFFF) or (alpha shl 24))
+                            } catch (e: Exception) {
+                                Color.White
+                            },
+                            fontSize = prefs.subtitleSize.sp,
+                            fontWeight = if (prefs.subtitleFontStyle == "Bold") FontWeight.Bold else FontWeight.Normal,
+                            textAlign = TextAlign.Center
                         )
                     }
                 }
             }
+        }
+    }
+}
+
+// --- CATEGORY STORAGE SETTINGS ---
+@Composable
+private fun StorageSettingsGroup(
+    viewModel: MainViewModel,
+    prefs: com.example.data.database.PreferenceEntity,
+    showFolderManager: () -> Unit
+) {
+    val context = LocalContext.current
+    Text("STORAGE & MEDIA SCANNER", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary, letterSpacing = 1.sp)
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)),
+        shape = RoundedCornerShape(20.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column {
+            // Media Folders
+            ListItem(
+                headlineContent = { Text("Media Library Folders", fontWeight = FontWeight.SemiBold) },
+                supportingContent = { Text("Manage scanned directory system paths") },
+                leadingContent = { SettingsIconBadge(Icons.Default.FolderOpen) },
+                trailingContent = {
+                    Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Manage", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                },
+                modifier = Modifier.clickable { showFolderManager() }
+            )
+
+
+
+            HorizontalDivider(modifier = Modifier.padding(start = 68.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+
+            // Auto Rescan
+            ListItem(
+                headlineContent = { Text("Auto-Rescan on Launch", fontWeight = FontWeight.SemiBold) },
+                supportingContent = { Text("Rescan device file system during app startup") },
+                leadingContent = { SettingsIconBadge(Icons.Default.Sync) },
+                trailingContent = {
+                    Switch(
+                        checked = prefs.autoScanEnabled,
+                        onCheckedChange = { viewModel.toggleAutoScan(it) }
+                    )
+                }
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(start = 68.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+
+            // Rebuild Database Cache
+            ListItem(
+                headlineContent = { Text("Reset Media Database Cache", fontWeight = FontWeight.SemiBold) },
+                supportingContent = { Text("Clear catalog data and rebuild local indexer") },
+                leadingContent = { SettingsIconBadge(Icons.Default.Storage) },
+                trailingContent = {
+                    TextButton(onClick = {
+                        viewModel.scanLocalMedia()
+                        android.widget.Toast.makeText(context, "Rescanning local device storage...", android.widget.Toast.LENGTH_SHORT).show()
+                    }) {
+                        Text("Rebuild", color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(start = 68.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+
+            // Clear History Progress
+            ListItem(
+                headlineContent = { Text("Wipe Playback Progress Cache", fontWeight = FontWeight.SemiBold) },
+                supportingContent = { Text("Erase resume timestamps and play counts") },
+                leadingContent = { SettingsIconBadge(Icons.Default.DeleteForever) },
+                trailingContent = {
+                    TextButton(onClick = {
+                        viewModel.clearHistory()
+                        android.widget.Toast.makeText(context, "Playback progress wiped", android.widget.Toast.LENGTH_SHORT).show()
+                    }) {
+                        Text("Wipe", color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            )
+        }
+    }
+}
+
+// --- CATEGORY DATA PRIVACY SETTINGS ---
+@Composable
+private fun DataPrivacySettingsGroup(
+    viewModel: MainViewModel,
+    prefs: com.example.data.database.PreferenceEntity,
+    showNetworkMenu: Boolean,
+    onChangeNetworkMenu: (Boolean) -> Unit
+) {
+    Text("DATA & PRIVACY", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary, letterSpacing = 1.sp)
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)),
+        shape = RoundedCornerShape(20.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column {
+            // Metered Network
+            ListItem(
+                headlineContent = { Text("Metered Network Policy", fontWeight = FontWeight.SemiBold) },
+                supportingContent = { Text("Action: ${prefs.meteredNetworkAction}") },
+                leadingContent = { SettingsIconBadge(Icons.Default.Wifi) },
+                trailingContent = {
+                    Box {
+                        TextButton(onClick = { onChangeNetworkMenu(true) }) {
+                            Text("Change")
+                            Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                        }
+                        DropdownMenu(expanded = showNetworkMenu, onDismissRequest = { onChangeNetworkMenu(false) }) {
+                            listOf("WARN_BEFORE_STREAMING", "BLOCK_STREAMING", "ALLOW_STREAMING").forEach { action ->
+                                DropdownMenuItem(
+                                    text = { Text(action) },
+                                    onClick = {
+                                        viewModel.updateMeteredNetworkAction(action)
+                                        onChangeNetworkMenu(false)
+                                    }
+                                )
+                            }
+                        }
+                    }
+                },
+                modifier = Modifier.clickable { onChangeNetworkMenu(true) }
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(start = 68.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+
+            // Playback History Tracker
+            ListItem(
+                headlineContent = { Text("Playback History Tracker", fontWeight = FontWeight.SemiBold) },
+                supportingContent = { Text("Log file progress events to database cache") },
+                leadingContent = { SettingsIconBadge(Icons.Default.History) },
+                trailingContent = {
+                    Switch(
+                        checked = prefs.playHistoryEnabled,
+                        onCheckedChange = { viewModel.togglePlayHistoryEnabled(it) }
+                    )
+                }
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(start = 68.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+
+            // Queue History Tracker
+            ListItem(
+                headlineContent = { Text("Save Video Queue History", fontWeight = FontWeight.SemiBold) },
+                supportingContent = { Text("Remember active video queue list") },
+                leadingContent = { SettingsIconBadge(Icons.Default.Queue) },
+                trailingContent = {
+                    Switch(
+                        checked = prefs.saveVideoQueueHistory,
+                        onCheckedChange = { viewModel.toggleSaveVideoQueueHistory(it) }
+                    )
+                }
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(start = 68.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+
+            ListItem(
+                headlineContent = { Text("Save Audio Queue History", fontWeight = FontWeight.SemiBold) },
+                supportingContent = { Text("Remember active audio queue list") },
+                leadingContent = { SettingsIconBadge(Icons.Default.QueueMusic) },
+                trailingContent = {
+                    Switch(
+                        checked = prefs.saveAudioQueueHistory,
+                        onCheckedChange = { viewModel.toggleSaveAudioQueueHistory(it) }
+                    )
+                }
+            )
+        }
+    }
+}
+
+// --- CATEGORY ABOUT SETTINGS ---
+@Composable
+private fun AboutSettingsGroup(
+    showAbout: () -> Unit,
+    showPrivacy: () -> Unit,
+    showTerms: () -> Unit,
+    showChangelog: () -> Unit
+) {
+    Text("ABOUT & APP INFO", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary, letterSpacing = 1.sp)
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)),
+        shape = RoundedCornerShape(20.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column {
+            ListItem(
+                headlineContent = { Text("About Aero Player", fontWeight = FontWeight.Bold) },
+                supportingContent = { Text("System diagnostics, media decoders & build info") },
+                leadingContent = { SettingsIconBadge(Icons.Default.Info) },
+                trailingContent = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null) },
+                modifier = Modifier.clickable { showAbout() }
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(start = 68.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+
+            ListItem(
+                headlineContent = { Text("What's New (Changelog)", fontWeight = FontWeight.SemiBold) },
+                supportingContent = { Text("View v1.5.0 updates & FFmpeg software decoders") },
+                leadingContent = { SettingsIconBadge(Icons.Default.NewReleases) },
+                trailingContent = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null) },
+                modifier = Modifier.clickable { showChangelog() }
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(start = 68.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+
+            ListItem(
+                headlineContent = { Text("Privacy Policy", fontWeight = FontWeight.SemiBold) },
+                supportingContent = { Text("Data permissions and local storage policy") },
+                leadingContent = { SettingsIconBadge(Icons.Default.PrivacyTip) },
+                trailingContent = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null) },
+                modifier = Modifier.clickable { showPrivacy() }
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(start = 68.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+
+            ListItem(
+                headlineContent = { Text("Terms of Service", fontWeight = FontWeight.SemiBold) },
+                supportingContent = { Text("End-User License Agreement (EULA)") },
+                leadingContent = { SettingsIconBadge(Icons.Default.Gavel) },
+                trailingContent = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null) },
+                modifier = Modifier.clickable { showTerms() }
+            )
+        }
+    }
+}
+
+// --- SEARCH RESULTS VIEW ---
+@Composable
+private fun SearchResultsView(
+    query: String,
+    viewModel: MainViewModel,
+    prefs: com.example.data.database.PreferenceEntity,
+    onOpenFolderManager: () -> Unit,
+    onOpenAbout: () -> Unit,
+    onOpenPrivacy: () -> Unit,
+    onOpenTerms: () -> Unit,
+    onOpenChangelog: () -> Unit
+) {
+    val context = LocalContext.current
+    val q = query.lowercase().trim()
+
+    Text(
+        text = "SEARCH RESULTS FOR \"$query\"",
+        fontSize = 11.sp,
+        fontWeight = FontWeight.Bold,
+        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+        color = MaterialTheme.colorScheme.primary,
+        letterSpacing = 1.sp
+    )
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)),
+        shape = RoundedCornerShape(20.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column {
+            var matchCount = 0
+
+            // Theme
+            if ("theme".contains(q) || "mode".contains(q) || "dark".contains(q) || "light".contains(q)) {
+                matchCount++
+                ListItem(
+                    headlineContent = { Text("App Theme Engine", fontWeight = FontWeight.SemiBold) },
+                    supportingContent = { Text("Selected Theme: ${prefs.themeMode}") },
+                    leadingContent = { SettingsIconBadge(Icons.Default.Palette) }
+                )
+            }
+
+            // Hardware Acceleration
+            if ("hardware".contains(q) || "acceleration".contains(q) || "decoder".contains(q) || "ffmpeg".contains(q) || "codec".contains(q)) {
+                if (matchCount > 0) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+                matchCount++
+                ListItem(
+                    headlineContent = { Text("Hardware Acceleration", fontWeight = FontWeight.SemiBold) },
+                    supportingContent = { Text("Mode: ${prefs.hwAcceleration}") },
+                    leadingContent = { SettingsIconBadge(Icons.Default.Hardware) }
+                )
+            }
+
+            // Seek
+            if ("seek".contains(q) || "jump".contains(q) || "double tap".contains(q)) {
+                if (matchCount > 0) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+                matchCount++
+                ListItem(
+                    headlineContent = { Text("Double-Tap Seek Duration", fontWeight = FontWeight.SemiBold) },
+                    supportingContent = { Text("${prefs.doubleTapSeekSeconds} seconds") },
+                    leadingContent = { SettingsIconBadge(Icons.Default.Gesture) }
+                )
+            }
+
+            // Orientation
+            if ("orientation".contains(q) || "rotation".contains(q) || "portrait".contains(q) || "landscape".contains(q)) {
+                if (matchCount > 0) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+                matchCount++
+                ListItem(
+                    headlineContent = { Text("Video Screen Orientation", fontWeight = FontWeight.SemiBold) },
+                    supportingContent = { Text("Constraint: ${prefs.defaultOrientation}") },
+                    leadingContent = { SettingsIconBadge(Icons.Default.ScreenRotation) }
+                )
+            }
+
+            // Subtitles
+            if ("subtitle".contains(q) || "caption".contains(q) || "language".contains(q) || "font".contains(q) || "color".contains(q) || "encoding".contains(q)) {
+                if (matchCount > 0) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+                matchCount++
+                ListItem(
+                    headlineContent = { Text("Default Subtitle Language", fontWeight = FontWeight.SemiBold) },
+                    supportingContent = { Text("Language: ${prefs.defaultSubtitleLanguage}, Encoding: ${prefs.subtitleEncoding}") },
+                    leadingContent = { SettingsIconBadge(Icons.Default.Subtitles) }
+                )
+            }
+
+            // Folder & Storage
+            if ("folder".contains(q) || "storage".contains(q) || "directory".contains(q) || "scan".contains(q) || "path".contains(q)) {
+                if (matchCount > 0) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+                matchCount++
+                ListItem(
+                    headlineContent = { Text("Media Library Folders", fontWeight = FontWeight.SemiBold) },
+                    supportingContent = { Text("Manage scanned directory paths") },
+                    leadingContent = { SettingsIconBadge(Icons.Default.FolderOpen) },
+                    trailingContent = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null) },
+                    modifier = Modifier.clickable { onOpenFolderManager() }
+                )
+            }
+
+            // History
+            if ("history".contains(q) || "log".contains(q) || "tracker".contains(q) || "resume".contains(q)) {
+                if (matchCount > 0) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+                matchCount++
+                ListItem(
+                    headlineContent = { Text("Playback History Tracker", fontWeight = FontWeight.SemiBold) },
+                    supportingContent = { Text("Log file progress events") },
+                    leadingContent = { SettingsIconBadge(Icons.Default.History) }
+                )
+            }
+
+            // About
+            if ("about".contains(q) || "version".contains(q) || "info".contains(q) || "update".contains(q) || "license".contains(q)) {
+                if (matchCount > 0) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+                matchCount++
+                ListItem(
+                    headlineContent = { Text("About Aero Player", fontWeight = FontWeight.Bold) },
+                    supportingContent = { Text("System diagnostics, FFmpeg audio decoder & build info") },
+                    leadingContent = { SettingsIconBadge(Icons.Default.Info) },
+                    trailingContent = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null) },
+                    modifier = Modifier.clickable { onOpenAbout() }
+                )
+            }
+
+            if (matchCount == 0) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(24.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "No matching settings found for \"$query\"",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 13.sp
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsIconBadge(icon: ImageVector) {
+    Surface(
+        shape = CircleShape,
+        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f),
+        modifier = Modifier.size(36.dp)
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Icon(
+                icon,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                modifier = Modifier.size(18.dp)
+            )
         }
     }
 }

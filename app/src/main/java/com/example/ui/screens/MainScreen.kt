@@ -416,7 +416,8 @@ fun MainScreen(
         Scaffold(
             containerColor = MaterialTheme.colorScheme.background,
             topBar = {
-                Column(
+                if (!showAboutAppSection) {
+                    Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .background(MaterialTheme.colorScheme.background)
@@ -965,12 +966,13 @@ fun MainScreen(
                                     .fillMaxWidth()
                                     .height(3.dp)
                                     .clip(CircleShape),
-                                color = MaterialTheme.colorScheme.secondary,
+                                 color = MaterialTheme.colorScheme.secondary,
                                 trackColor = MaterialTheme.colorScheme.secondary.copy(alpha = 0.2f)
                             )
                         }
                     }
                 }
+            }
             },
             bottomBar = {
                 Column(
@@ -1294,12 +1296,12 @@ fun MainScreen(
                                                                             .fillMaxWidth()
                                                                             .aspectRatio(1.2f)
                                                                     )
-                                                                    Spacer(modifier = Modifier.height(4.dp))
+                                                                     Spacer(modifier = Modifier.height(4.dp))
                                                                     Text(
                                                                         text = folderName,
                                                                         fontSize = 12.sp,
                                                                         fontWeight = FontWeight.Bold,
-                                                                        color = Color.White,
+                                                                        color = MaterialTheme.colorScheme.onSurface,
                                                                         maxLines = 2,
                                                                         overflow = TextOverflow.Ellipsis,
                                                                         textAlign = TextAlign.Center
@@ -1307,7 +1309,7 @@ fun MainScreen(
                                                                     Text(
                                                                         text = "${folderVideos.size} files",
                                                                         fontSize = 10.sp,
-                                                                        color = Color.LightGray,
+                                                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                                                                         textAlign = TextAlign.Center
                                                                     )
                                                                 }
@@ -1350,12 +1352,12 @@ fun MainScreen(
                                                                             text = folderName,
                                                                             fontWeight = FontWeight.Bold,
                                                                             fontSize = 14.sp,
-                                                                            color = Color.White
+                                                                            color = MaterialTheme.colorScheme.onSurface
                                                                         )
                                                                         Text(
                                                                             text = "${folderVideos.size} media files",
                                                                             fontSize = 11.sp,
-                                                                            color = Color.LightGray
+                                                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                                                                         )
                                                                     }
                                                                     Icon(
@@ -1422,14 +1424,17 @@ fun MainScreen(
                                                         Button(
                                                             onClick = { viewModel.playAll(files) },
                                                             enabled = files.isNotEmpty(),
-                                                            colors = ButtonDefaults.buttonColors(containerColor = accentOrange),
+                                                            colors = ButtonDefaults.buttonColors(
+                                                                containerColor = accentOrange,
+                                                                contentColor = MaterialTheme.colorScheme.onPrimary
+                                                            ),
                                                             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                                                             shape = RoundedCornerShape(8.dp),
                                                             modifier = Modifier.height(32.dp)
                                                         ) {
-                                                            Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color.Black)
+                                                            Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onPrimary)
                                                             Spacer(modifier = Modifier.width(4.dp))
-                                                            Text("Play All", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.Black)
+                                                            Text("Play All", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimary)
                                                         }
 
                                                         OutlinedButton(
@@ -1801,426 +1806,21 @@ fun MainScreen(
                             }
                         }
                     } else {
-                        // "More" Tab: Discovery and Browsing (Layer 1 Specifications)
+                        // "More" Tab: Discovery, Utilities, Streams & History Hub
                         if (showAboutAppSection) {
                             AboutAppSection(onBack = { showAboutAppSection = false })
                         } else {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .padding(horizontal = 16.dp)
-                                    .verticalScroll(rememberScrollState()),
-                                verticalArrangement = Arrangement.spacedBy(20.dp)
-                            ) {
-                            Spacer(modifier = Modifier.height(4.dp))
-
-                            // Element 1: Row Header - Dual Button Layout: ["SETTINGS_LAUNCHER", "ABOUT_DIALOG"]
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(12.dp)
-                            ) {
-                                Card(
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .height(84.dp)
-                                        .clip(RoundedCornerShape(16.dp))
-                                        .clickable { onNavigateToSettings() },
-                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
-                                ) {
-                                    Column(
-                                        modifier = Modifier.fillMaxSize().padding(12.dp),
-                                        verticalArrangement = Arrangement.Center,
-                                        horizontalAlignment = Alignment.CenterHorizontally
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Settings,
-                                            contentDescription = "Settings",
-                                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                                            modifier = Modifier.size(24.dp)
-                                        )
-                                        Spacer(modifier = Modifier.height(4.dp))
-                                        Text(
-                                            text = "Aero Settings",
-                                            fontWeight = FontWeight.ExtraBold,
-                                            fontSize = 12.sp,
-                                            color = MaterialTheme.colorScheme.onPrimaryContainer
-                                        )
-                                        Text(
-                                            text = "SETTINGS_LAUNCHER",
-                                            fontSize = 9.sp,
-                                            color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
-                                        )
-                                    }
-                                }
-
-                                Card(
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .height(84.dp)
-                                        .clip(RoundedCornerShape(16.dp))
-                                        .clickable { showAboutAppSection = true },
-                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
-                                ) {
-                                    Column(
-                                        modifier = Modifier.fillMaxSize().padding(12.dp),
-                                        verticalArrangement = Arrangement.Center,
-                                        horizontalAlignment = Alignment.CenterHorizontally
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Info,
-                                            contentDescription = "About",
-                                            tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                                            modifier = Modifier.size(24.dp)
-                                        )
-                                        Spacer(modifier = Modifier.height(4.dp))
-                                        Text(
-                                            text = "About Player",
-                                            fontWeight = FontWeight.ExtraBold,
-                                            fontSize = 12.sp,
-                                            color = MaterialTheme.colorScheme.onSecondaryContainer
-                                        )
-                                        Text(
-                                            text = "ABOUT_DIALOG",
-                                            fontSize = 9.sp,
-                                            color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f)
-                                        )
-                                    }
-                                }
-                            }
-
-                            // Element 2: Section Mid - Card Grid: Title "Streams", action "NEW_STREAM_URL_DIALOG", icon "PlusIcon"
-                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        Icon(
-                                            imageVector = Icons.Default.Podcasts,
-                                            contentDescription = null,
-                                            tint = MaterialTheme.colorScheme.primary,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                        Text(
-                                            text = "Network Streams",
-                                            fontWeight = FontWeight.ExtraBold,
-                                            fontSize = 14.sp,
-                                            color = MaterialTheme.colorScheme.primary
-                                        )
-                                    }
-
-                                    IconButton(
-                                        onClick = { showAddStreamDrawer = true },
-                                        modifier = Modifier
-                                            .size(32.dp)
-                                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.1f), CircleShape)
-                                            .testTag("add_stream_plus_btn")
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Add,
-                                            contentDescription = "NEW_STREAM_URL_DIALOG",
-                                            tint = MaterialTheme.colorScheme.primary,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                    }
-                                }
-
-                                val streamItems = remember(mediaList) {
-                                    mediaList.filter { it.genre == "Live Stream" }
-                                }
-
-                                if (streamItems.isEmpty()) {
-                                    // "Add custom Stream" Trigger Card spanning full width
-                                    Card(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .height(110.dp)
-                                            .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(16.dp))
-                                            .clickable { showAddStreamDrawer = true },
-                                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-                                    ) {
-                                        Column(
-                                            modifier = Modifier.fillMaxSize().padding(12.dp),
-                                            verticalArrangement = Arrangement.Center,
-                                            horizontalAlignment = Alignment.CenterHorizontally
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Default.AddCircle,
-                                                contentDescription = null,
-                                                tint = MaterialTheme.colorScheme.primary,
-                                                modifier = Modifier.size(28.dp)
-                                            )
-                                            Spacer(modifier = Modifier.height(6.dp))
-                                            Text("No network streams added yet", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface)
-                                            Text("Tap to add a custom stream URL", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                        }
-                                    }
-                                } else {
-                                    LazyRow(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                                    ) {
-                                        items(streamItems, key = { it.uriString }) { streamItem ->
-                                            Card(
-                                                modifier = Modifier
-                                                    .width(150.dp)
-                                                    .height(110.dp)
-                                                    .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(16.dp))
-                                                    .clickable { onPlayItem(streamItem) },
-                                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-                                            ) {
-                                                Column(
-                                                    modifier = Modifier.fillMaxSize().padding(12.dp),
-                                                    verticalArrangement = Arrangement.SpaceBetween
-                                                ) {
-                                                    Row(
-                                                        modifier = Modifier.fillMaxWidth(),
-                                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                                        verticalAlignment = Alignment.CenterVertically
-                                                    ) {
-                                                        Icon(
-                                                            imageVector = if (streamItem.isVideo) Icons.Default.Videocam else Icons.Default.AudioFile,
-                                                            contentDescription = null,
-                                                            tint = MaterialTheme.colorScheme.primary,
-                                                            modifier = Modifier.size(20.dp)
-                                                        )
-                                                        
-                                                        IconButton(
-                                                            onClick = { mediaToDelete = streamItem },
-                                                            modifier = Modifier.size(20.dp)
-                                                        ) {
-                                                            Icon(
-                                                                imageVector = Icons.Default.Delete,
-                                                                contentDescription = "Delete",
-                                                                tint = MaterialTheme.colorScheme.error.copy(alpha = 0.7f),
-                                                                modifier = Modifier.size(14.dp)
-                                                            )
-                                                        }
-                                                    }
-                                                    Column {
-                                                        Text(streamItem.title, fontWeight = FontWeight.Bold, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                                        Text(if (streamItem.isVideo) "Video Link" else "Audio Link", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f))
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        item {
-                                            Card(
-                                                modifier = Modifier
-                                                    .width(120.dp)
-                                                    .height(110.dp)
-                                                    .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f), RoundedCornerShape(16.dp))
-                                                    .clickable { showAddStreamDrawer = true },
-                                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
-                                            ) {
-                                                Column(
-                                                    modifier = Modifier.fillMaxSize().padding(12.dp),
-                                                    verticalArrangement = Arrangement.Center,
-                                                    horizontalAlignment = Alignment.CenterHorizontally
-                                                ) {
-                                                    Icon(
-                                                        imageVector = Icons.Default.Add,
-                                                        contentDescription = null,
-                                                        tint = MaterialTheme.colorScheme.primary,
-                                                        modifier = Modifier.size(24.dp)
-                                                    )
-                                                    Spacer(modifier = Modifier.height(4.dp))
-                                                    Text("Add Link", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Element 3: Section Footer - LazyRow Carousel: Title "History", with unique card designs for audio vs video file pointers
-                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        Icon(
-                                            imageVector = Icons.Default.Restore,
-                                            contentDescription = null,
-                                            tint = MaterialTheme.colorScheme.primary,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                        Text(
-                                            text = "Recent Playback History",
-                                            fontWeight = FontWeight.ExtraBold,
-                                            fontSize = 14.sp,
-                                            color = MaterialTheme.colorScheme.primary
-                                        )
-                                    }
-
-                                    if (historyList.isNotEmpty()) {
-                                        TextButton(onClick = { viewModel.clearHistory() }) {
-                                            Text("Clear All", fontSize = 11.sp, color = MaterialTheme.colorScheme.error)
-                                        }
-                                    }
-                                }
-
-                                if (historyList.isEmpty()) {
-                                    Card(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.15f))
-                                    ) {
-                                        Box(
-                                            modifier = Modifier.fillMaxWidth().padding(24.dp),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                                Icon(Icons.Default.HistoryToggleOff, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f), modifier = Modifier.size(32.dp))
-                                                Spacer(modifier = Modifier.height(8.dp))
-                                                Text("No playback sessions recorded yet", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f))
-                                            }
-                                        }
-                                    }
-                                } else {
-                                                                        Column(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                                    ) {
-                                        val chunkedHistory = remember(historyList) { historyList.chunked(2) }
-                                        chunkedHistory.forEach { rowItems ->
-                                            Row(
-                                                modifier = Modifier.fillMaxWidth(),
-                                                horizontalArrangement = Arrangement.spacedBy(12.dp)
-                                            ) {
-                                                rowItems.forEach { history ->
-                                                    val media = MediaEntity(
-                                                        uriString = history.uriString,
-                                                        title = history.title,
-                                                        artist = "Unknown",
-                                                        album = "History",
-                                                        duration = history.duration,
-                                                        size = 0,
-                                                        dateAdded = history.lastPlayedTime,
-                                                        isVideo = history.isVideo,
-                                                        path = history.uriString,
-                                                        mimeType = null
-                                                    )
-
-                                                    Box(modifier = Modifier.weight(1f)) {
-                                                        if (history.isVideo) {
-                                                            // Video Card in 2-column grid
-                                                            Card(
-                                                                modifier = Modifier
-                                                                    .fillMaxWidth()
-                                                                    .height(100.dp)
-                                                                    .clip(RoundedCornerShape(12.dp))
-                                                                    .clickable { onPlayItem(media) },
-                                                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-                                                            ) {
-                                                                Column(
-                                                                    modifier = Modifier.fillMaxSize().padding(10.dp),
-                                                                    verticalArrangement = Arrangement.SpaceBetween
-                                                                ) {
-                                                                    Row(
-                                                                        modifier = Modifier.fillMaxWidth(),
-                                                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                                                        verticalAlignment = Alignment.CenterVertically
-                                                                    ) {
-                                                                        Icon(
-                                                                            imageVector = Icons.Default.Movie,
-                                                                            contentDescription = null,
-                                                                            tint = MaterialTheme.colorScheme.primary,
-                                                                            modifier = Modifier.size(18.dp)
-                                                                        )
-                                                                        IconButton(
-                                                                            onClick = { viewModel.deleteHistory(history.uriString) },
-                                                                            modifier = Modifier.size(20.dp)
-                                                                        ) {
-                                                                            Icon(Icons.Default.Close, contentDescription = "Delete", tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f), modifier = Modifier.size(12.dp))
-                                                                        }
-                                                                    }
-
-                                                                    Column {
-                                                                        Text(
-                                                                            text = history.title,
-                                                                            fontSize = 11.sp,
-                                                                            fontWeight = FontWeight.Bold,
-                                                                            maxLines = 1,
-                                                                            overflow = TextOverflow.Ellipsis
-                                                                        )
-                                                                        Spacer(modifier = Modifier.height(4.dp))
-                                                                        val progressFraction = if (history.duration > 0) history.progressMs.toFloat() / history.duration.toFloat() else 0f
-                                                                        LinearProgressIndicator(
-                                                                            progress = { progressFraction.coerceIn(0f, 1f) },
-                                                                            modifier = Modifier.fillMaxWidth().height(3.dp).clip(CircleShape),
-                                                                            color = MaterialTheme.colorScheme.primary,
-                                                                            trackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
-                                                                        )
-                                                                    }
-                                                                }
-                                                            }
-                                                        } else {
-                                                            // Audio Card in 2-column grid
-                                                            Card(
-                                                                modifier = Modifier
-                                                                    .fillMaxWidth()
-                                                                    .height(100.dp)
-                                                                    .clip(RoundedCornerShape(12.dp))
-                                                                    .clickable { onPlayItem(media) },
-                                                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f))
-                                                            ) {
-                                                                Column(
-                                                                    modifier = Modifier.fillMaxSize().padding(10.dp),
-                                                                    verticalArrangement = Arrangement.SpaceBetween
-                                                                ) {
-                                                                    Row(
-                                                                        modifier = Modifier.fillMaxWidth(),
-                                                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                                                        verticalAlignment = Alignment.CenterVertically
-                                                                    ) {
-                                                                        Icon(
-                                                                            imageVector = Icons.Default.MusicNote,
-                                                                            contentDescription = null,
-                                                                            tint = MaterialTheme.colorScheme.secondary,
-                                                                            modifier = Modifier.size(18.dp)
-                                                                        )
-                                                                        IconButton(
-                                                                            onClick = { viewModel.deleteHistory(history.uriString) },
-                                                                            modifier = Modifier.size(20.dp)
-                                                                        ) {
-                                                                            Icon(Icons.Default.Close, contentDescription = "Delete", tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f), modifier = Modifier.size(12.dp))
-                                                                        }
-                                                                    }
-
-                                                                    Column {
-                                                                        Text(
-                                                                            text = history.title,
-                                                                            fontSize = 11.sp,
-                                                                            fontWeight = FontWeight.Bold,
-                                                                            maxLines = 1,
-                                                                            overflow = TextOverflow.Ellipsis
-                                                                        )
-                                                                        Text(
-                                                                            text = "Audio Track",
-                                                                            fontSize = 9.sp,
-                                                                            color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
-                                                                            maxLines = 1
-                                                                        )
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                                if (rowItems.size < 2) {
-                                                    Spacer(modifier = Modifier.weight(1f))
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            Spacer(modifier = Modifier.height(24.dp))
+                            MoreTabContent(
+                                viewModel = viewModel,
+                                mediaList = mediaList,
+                                historyList = historyList,
+                                onNavigateToSettings = onNavigateToSettings,
+                                onOpenAbout = { showAboutAppSection = true },
+                                onOpenAddStream = { showAddStreamDrawer = true },
+                                onPlayItem = { onPlayItem(it) },
+                                onDeleteStream = { mediaToDelete = it }
+                            )
                         }
-                    }
                     }
                 }
             }
@@ -5445,183 +5045,10 @@ fun StreamOnlyTabContent(
 
 @Composable
 fun AboutAppSection(onBack: () -> Unit) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 8.dp, vertical = 12.dp)
-            .verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                IconButton(
-                    onClick = onBack,
-                    modifier = Modifier
-                        .size(36.dp)
-                        .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f), CircleShape)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.ArrowBack,
-                        contentDescription = "Back",
-                        modifier = Modifier.size(16.dp)
-                    )
-                }
-                Spacer(modifier = Modifier.width(4.dp))
-                Column {
-                    Text(
-                        text = "ABOUT PLAYER",
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.Black,
-                        letterSpacing = 1.sp,
-                        color = MaterialTheme.colorScheme.onBackground
-                    )
-                    Text(
-                        text = "AERO ENGINE v1.2.0  ·  STABLE",
-                        fontSize = 9.sp,
-                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                }
-            }
-            Box(
-                modifier = Modifier
-                    .size(10.dp)
-                    .background(MaterialTheme.colorScheme.primary, CircleShape)
-            )
-        }
-
-        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
-
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(16.dp)),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            shape = RoundedCornerShape(16.dp)
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Text(
-                    text = "APPLICATION SUMMARY",
-                    fontSize = 11.sp,
-                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-
-                Text(
-                    text = "Aero Player is a high-precision, low-latency media rendering suite engineered directly on top of the Google Media3 pipeline. Adhering strictly to monochromatic Nothing OS design blueprints, it pairs complete offline file indexing with real-time parametric equalizer presets, custom audio delay compensation, and adaptive network streaming feeds.",
-                    fontSize = 13.sp,
-                    lineHeight = 18.sp,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-            }
-        }
-
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(16.dp))
-                .background(MaterialTheme.colorScheme.surface)
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            Text(
-                text = "CORE ARCHITECTURE PIPELINE",
-                fontSize = 11.sp,
-                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            listOf(
-                "Advanced Track Selector" to "Custom multi-column fallback channel selection",
-                "Parametric Equalizer" to "Real-time acoustic frequency range customization",
-                "Power Management" to "Background wake-lock OS sleep prevention overrides",
-                "Per-Video Memory" to "State preservation of speed, scale, and volume parameters",
-                "Gesture Controls" to "Scrubbing frame extractor with swipe-to-adjust parameters"
-            ).forEach { (title, desc) ->
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.Top,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Text(
-                        text = "·",
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.Black,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.offset(y = (-2).dp)
-                    )
-                    Column {
-                        Text(
-                            text = title.uppercase(),
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold,
-                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            text = desc,
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-            }
-        }
-
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(16.dp)),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)),
-            shape = RoundedCornerShape(16.dp)
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                listOf(
-                    "BUILD_TAG" to "AERO_STABLE_42",
-                    "SDK_COMPILE" to "ANDROID_API_34",
-                    "PIPELINE" to "EXOPLAYER_MEDIA3_1.3.0",
-                    "DEVELOPER" to "SHUBH_JAIN",
-                    "AESTHETIC" to "NOTHING_OS_MONOCHROMATIC"
-                ).forEach { (key, value) ->
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text(
-                            text = key,
-                            fontSize = 10.sp,
-                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Text(
-                            text = value,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold,
-                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                    }
-                }
-            }
-        }
-    }
+    AboutScreen(
+        onBack = onBack,
+        showPrivacy = null,
+        showTerms = null,
+        showChangelog = null
+    )
 }

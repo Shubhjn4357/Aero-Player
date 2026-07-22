@@ -55,6 +55,7 @@ fun FolderTabContent(
     }
     var currentPathSegments by remember { mutableStateOf<List<String>>(emptyList()) }
     val accentOrange = MaterialTheme.colorScheme.primary
+    val context = androidx.compose.ui.platform.LocalContext.current
     val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
 
     BackHandler(enabled = currentPathSegments.isNotEmpty()) {
@@ -190,18 +191,25 @@ fun FolderTabContent(
                 Button(
                     onClick = { viewModel.playAll(allFilesInFolderAndSubfolders) },
                     enabled = allFilesInFolderAndSubfolders.isNotEmpty(),
-                    colors = ButtonDefaults.buttonColors(containerColor = accentOrange),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = accentOrange,
+                        contentColor = MaterialTheme.colorScheme.onPrimary
+                    ),
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                     shape = RoundedCornerShape(8.dp),
                     modifier = Modifier.height(32.dp)
                 ) {
-                    Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color.Black)
+                    Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onPrimary)
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("Play All", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.Black)
+                    Text("Play All", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimary)
                 }
 
                 OutlinedButton(
-                    onClick = { viewModel.addToQueue(allFilesInFolderAndSubfolders) },
+                    onClick = {
+                        val count = allFilesInFolderAndSubfolders.size
+                        viewModel.addToQueue(allFilesInFolderAndSubfolders)
+                        android.widget.Toast.makeText(context, "Queued $count files", android.widget.Toast.LENGTH_SHORT).show()
+                    },
                     enabled = allFilesInFolderAndSubfolders.isNotEmpty(),
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = accentOrange),
                     border = BorderStroke(1.dp, accentOrange),
@@ -317,7 +325,7 @@ fun FolderTabContent(
                                             .size(18.dp)
                                             .align(Alignment.TopEnd)
                                             .background(
-                                                color = if (isSelected) accentOrange else Color.DarkGray.copy(alpha = 0.6f),
+                                                color = if (isSelected) accentOrange else MaterialTheme.colorScheme.surfaceVariant,
                                                 shape = RoundedCornerShape(4.dp)
                                             ),
                                         contentAlignment = Alignment.Center
@@ -326,7 +334,7 @@ fun FolderTabContent(
                                             Icon(
                                                 imageVector = Icons.Default.Check,
                                                 contentDescription = null,
-                                                tint = Color.Black,
+                                                tint = MaterialTheme.colorScheme.onPrimary,
                                                 modifier = Modifier.size(12.dp)
                                             )
                                         }
@@ -545,7 +553,7 @@ fun FolderTabContent(
                                                 .fillMaxWidth()
                                                 .height(3.dp)
                                                 .align(Alignment.BottomStart)
-                                                .background(Color.White.copy(alpha = 0.3f))
+                                                .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.2f))
                                         ) {
                                             Box(
                                                 modifier = Modifier
@@ -595,7 +603,7 @@ fun FolderTabContent(
                                         modifier = Modifier
                                             .size(20.dp)
                                             .background(
-                                                color = if (isSelected) accentOrange else Color.DarkGray,
+                                                color = if (isSelected) accentOrange else MaterialTheme.colorScheme.surfaceVariant,
                                                 shape = RoundedCornerShape(4.dp)
                                             ),
                                         contentAlignment = Alignment.Center
@@ -604,7 +612,7 @@ fun FolderTabContent(
                                             Icon(
                                                 imageVector = Icons.Default.Check,
                                                 contentDescription = null,
-                                                tint = Color.Black,
+                                                tint = MaterialTheme.colorScheme.onPrimary,
                                                 modifier = Modifier.size(14.dp)
                                             )
                                         }
@@ -617,7 +625,7 @@ fun FolderTabContent(
                                         Icon(
                                             imageVector = Icons.Default.MoreVert,
                                             contentDescription = "Options",
-                                            tint = Color.LightGray
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
                                     }
                                 }
@@ -742,7 +750,7 @@ fun FolderTabContent(
                                                 text = dir,
                                                 fontWeight = FontWeight.Bold,
                                                 fontSize = 14.sp,
-                                                color = Color.White
+                                                color = MaterialTheme.colorScheme.onSurface
                                             )
                                             Text(
                                                 text = "${folderVideos.size} media files",
@@ -812,7 +820,7 @@ fun FolderTabContent(
                                                         .fillMaxWidth()
                                                         .height(3.dp)
                                                         .align(Alignment.BottomStart)
-                                                        .background(Color.White.copy(alpha = 0.3f))
+                                                        .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.2f))
                                                 ) {
                                                     Box(
                                                         modifier = Modifier
@@ -914,7 +922,7 @@ fun FolderTabContent(
                                                          .fillMaxWidth()
                                                          .height(3.dp)
                                                          .align(Alignment.BottomStart)
-                                                         .background(Color.White.copy(alpha = 0.3f))
+                                                         .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.2f))
                                                  ) {
                                                      Box(
                                                          modifier = Modifier
@@ -964,7 +972,7 @@ fun FolderTabContent(
                                                 modifier = Modifier
                                                     .size(20.dp)
                                                     .background(
-                                                        color = if (isSelected) accentOrange else Color.DarkGray,
+                                                        color = if (isSelected) accentOrange else MaterialTheme.colorScheme.surfaceVariant,
                                                         shape = RoundedCornerShape(4.dp)
                                                     ),
                                                 contentAlignment = Alignment.Center
@@ -973,7 +981,7 @@ fun FolderTabContent(
                                                     Icon(
                                                         imageVector = Icons.Default.Check,
                                                         contentDescription = null,
-                                                        tint = Color.Black,
+                                                        tint = MaterialTheme.colorScheme.onPrimary,
                                                         modifier = Modifier.size(14.dp)
                                                     )
                                                 }
@@ -986,7 +994,7 @@ fun FolderTabContent(
                                                 Icon(
                                                     imageVector = Icons.Default.MoreVert,
                                                     contentDescription = "Options",
-                                                    tint = Color.LightGray
+                                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
                                                 )
                                             }
                                         }
@@ -1005,7 +1013,7 @@ fun FolderTabContent(
             FloatingActionButton(
                 onClick = { viewModel.playAll(allFilesInFolderAndSubfolders) },
                 containerColor = accentOrange,
-                contentColor = Color.Black,
+                contentColor = MaterialTheme.colorScheme.onPrimary,
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
                     .padding(bottom = 24.dp, end = 24.dp)
@@ -1045,7 +1053,7 @@ fun FolderThumbnail(
                 1.dp,
                 androidx.compose.ui.graphics.Brush.verticalGradient(
                     colors = listOf(
-                        Color.White.copy(alpha = 0.25f),
+                        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.15f),
                         accentColor.copy(alpha = 0.05f)
                     )
                 ),

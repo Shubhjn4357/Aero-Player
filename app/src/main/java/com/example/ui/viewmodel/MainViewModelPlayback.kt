@@ -95,30 +95,51 @@ fun MainViewModel.downloadFileFromWeb(mediaItem: MediaEntity) {
 }
 
 fun MainViewModel.playAll(items: List<MediaEntity>) {
-    _playQueue.value = items
+    val distinctItems = items.distinctBy { it.uriString }
+    _playQueue.value = distinctItems
     _currentQueueIndex.value = 0
-    if (items.isNotEmpty()) {
-        _currentPlayingItem.value = items[0]
+    if (distinctItems.isNotEmpty()) {
+        _currentPlayingItem.value = distinctItems[0]
     }
 }
 
 fun MainViewModel.addToQueue(items: List<MediaEntity>) {
-    val currentList = _playQueue.value.toMutableList()
-    currentList.addAll(items)
-    _playQueue.value = currentList
+    val currentQueue = _playQueue.value.toMutableList()
+    val existingUris = currentQueue.map { it.uriString }.toSet()
+    val newItems = items.distinctBy { it.uriString }.filter { it.uriString !in existingUris }
+
+    if (newItems.isEmpty()) {
+        if (_currentPlayingItem.value == null && currentQueue.isNotEmpty()) {
+            _currentQueueIndex.value = 0
+            _currentPlayingItem.value = currentQueue[0]
+        }
+        return
+    }
+
+    val wasEmptyOrIdle = currentQueue.isEmpty() || _currentPlayingItem.value == null
+    val firstNewIndex = currentQueue.size
+    currentQueue.addAll(newItems)
+    _playQueue.value = currentQueue
+
+    if (wasEmptyOrIdle) {
+        _currentQueueIndex.value = firstNewIndex
+        _currentPlayingItem.value = currentQueue[firstNewIndex]
+    }
 }
 
 fun MainViewModel.insertNext(item: MediaEntity) {
-    val currentList = _playQueue.value.toMutableList()
+    val currentQueue = _playQueue.value.toMutableList()
+    currentQueue.removeAll { it.uriString == item.uriString }
     val index = _currentQueueIndex.value
-    if (currentList.isEmpty()) {
-        currentList.add(item)
-        _playQueue.value = currentList
+    if (currentQueue.isEmpty() || _currentPlayingItem.value == null) {
+        currentQueue.add(item)
+        _playQueue.value = currentQueue
         _currentQueueIndex.value = 0
         setPlayingItem(item)
     } else {
-        currentList.add(index + 1, item)
-        _playQueue.value = currentList
+        val insertIndex = (index + 1).coerceAtMost(currentQueue.size)
+        currentQueue.add(insertIndex, item)
+        _playQueue.value = currentQueue
     }
 }
 

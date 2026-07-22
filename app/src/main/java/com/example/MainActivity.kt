@@ -348,6 +348,19 @@ fun PermissionAndNavigationContainer(viewModel: MainViewModel) {
                 // Safe delay to ensure Activity/Window is fully ready
                 kotlinx.coroutines.delay(500)
                 permissionState.launchMultiplePermissionRequest()
+
+                // Check and request All Files Access / Storage Deletion Permission at startup (Android 11+)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !android.os.Environment.isExternalStorageManager()) {
+                    try {
+                        val intent = android.content.Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                            data = android.net.Uri.parse("package:${context.packageName}")
+                        }
+                        context.startActivity(intent)
+                    } catch (e: Exception) {
+                        val intent = android.content.Intent(android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
+                        context.startActivity(intent)
+                    }
+                }
             } catch (e: Throwable) {
                 android.util.Log.e("MainActivity", "Permission request error: ${e.message}")
             }
@@ -414,23 +427,6 @@ fun PermissionAndNavigationContainer(viewModel: MainViewModel) {
                     )
                 }
                 "Player" -> {
-                    LaunchedEffect(prefs.rotationLock, defaultOrientation, currentPlayingItem) {
-                        val isAudio = currentPlayingItem?.isVideo == false
-                        if (isAudio) {
-                            if (prefs.rotationLock) {
-                                activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-                            } else {
-                                activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR
-                            }
-                        } else {
-                            if (prefs.rotationLock) {
-                                activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LOCKED
-                            } else {
-                                activity?.requestedOrientation = getOrientationFromPreference(defaultOrientation)
-                            }
-                        }
-                    }
-
                     currentPlayingItem?.let { media ->
                         PlayerScreen(
                             mediaItem = media,
