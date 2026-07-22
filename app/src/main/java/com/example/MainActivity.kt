@@ -36,26 +36,216 @@ import com.example.ui.viewmodel.*
 import com.google.accompanist.permissions.*
 import androidx.compose.animation.*
 import androidx.compose.animation.core.tween
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.result.IntentSenderRequest
+
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 
 class MainActivity : ComponentActivity() {
     private lateinit var mainViewModel: MainViewModel
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        // Capture crashes in background/main thread and save to preferences
+        val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            try {
+                val prefs = getSharedPreferences("crash_prefs", MODE_PRIVATE)
+                val stackTrace = android.util.Log.getStackTraceString(throwable)
+                prefs.edit().putString("last_crash", stackTrace).commit()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+            defaultHandler?.uncaughtException(thread, throwable)
+        }
+
+        var initError: Throwable? = null
+        try {
+            mainViewModel = androidx.lifecycle.ViewModelProvider(this)[MainViewModel::class.java]
+        } catch (t: Throwable) {
+            initError = t
+        }
+
         enableEdgeToEdge()
         setContent {
-            mainViewModel = viewModel()
-            val prefs by mainViewModel.preferencesState.collectAsState()
+            val context = LocalContext.current
+            val crashPrefs = remember { context.getSharedPreferences("crash_prefs", MODE_PRIVATE) }
+            var crashLog by remember { mutableStateOf(crashPrefs.getString("last_crash", null)) }
 
-            MyApplicationTheme(
-                themeMode = prefs.themeMode,
-                useDynamicColor = prefs.useDynamicColor
-            ) {
-                Surface(
-                    modifier = Modifier.fillMaxSize(),
-                    color = MaterialTheme.colorScheme.background
-                ) {
-                    PermissionAndNavigationContainer(viewModel = mainViewModel)
+            if (crashLog != null) {
+                MyApplicationTheme(themeMode = "Dark", useDynamicColor = false) {
+                    Surface(
+                        modifier = Modifier.fillMaxSize(),
+                        color = MaterialTheme.colorScheme.background
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(24.dp)
+                                .systemBarsPadding(),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center
+                        ) {
+                            Text(
+                                text = "Aero Player Crashed",
+                                fontSize = 24.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.padding(bottom = 16.dp)
+                            )
+                            Text(
+                                text = "The application encountered an unexpected error. Traceback:",
+                                fontSize = 14.sp,
+                                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.padding(bottom = 16.dp)
+                            )
+                            Card(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxWidth(),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                            ) {
+                                Box(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+                                    androidx.compose.foundation.text.selection.SelectionContainer {
+                                        LazyColumn(modifier = Modifier.fillMaxSize()) {
+                                            item {
+                                                Text(
+                                                    text = crashLog ?: "",
+                                                    fontSize = 11.sp,
+                                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                                    color = MaterialTheme.colorScheme.error
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(16.dp))
+                            val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                Button(
+                                    onClick = {
+                                        clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(crashLog ?: ""))
+                                        android.widget.Toast.makeText(context, "Copied traceback to clipboard!", android.widget.Toast.LENGTH_SHORT).show()
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                                ) {
+                                    Text("Copy Full Traceback")
+                                }
+                                Button(
+                                    onClick = {
+                                        crashPrefs.edit().remove("last_crash").commit()
+                                        crashLog = null
+                                        finish()
+                                        startActivity(intent)
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                                ) {
+                                    Text("Clear & Restart")
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                var composeError by remember { mutableStateOf<Throwable?>(initError) }
+                
+                if (composeError != null) {
+                    MyApplicationTheme(themeMode = "Dark", useDynamicColor = false) {
+                        Surface(
+                            modifier = Modifier.fillMaxSize(),
+                            color = MaterialTheme.colorScheme.background
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(24.dp)
+                                    .systemBarsPadding(),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center
+                            ) {
+                                Text(
+                                    text = "UI Render Error",
+                                    fontSize = 24.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.padding(bottom = 16.dp)
+                                )
+                                Card(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .fillMaxWidth(),
+                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                                ) {
+                                    Box(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+                                        androidx.compose.foundation.text.selection.SelectionContainer {
+                                            LazyColumn(modifier = Modifier.fillMaxSize()) {
+                                                item {
+                                                    Text(
+                                                        text = android.util.Log.getStackTraceString(composeError),
+                                                        fontSize = 11.sp,
+                                                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                                        color = MaterialTheme.colorScheme.error
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(16.dp))
+                                val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                ) {
+                                    Button(
+                                        onClick = {
+                                            clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(android.util.Log.getStackTraceString(composeError)))
+                                            android.widget.Toast.makeText(context, "Copied traceback to clipboard!", android.widget.Toast.LENGTH_SHORT).show()
+                                        },
+                                        modifier = Modifier.weight(1f),
+                                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                                    ) {
+                                        Text("Copy Full Traceback")
+                                    }
+                                    Button(
+                                        onClick = {
+                                            composeError = null
+                                            finish()
+                                            startActivity(intent)
+                                        },
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Text("Restart App")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    val prefs by mainViewModel.preferencesState.collectAsState()
+
+                    MyApplicationTheme(
+                        themeMode = prefs.themeMode,
+                        useDynamicColor = prefs.useDynamicColor
+                    ) {
+                        Surface(
+                            modifier = Modifier.fillMaxSize(),
+                            color = MaterialTheme.colorScheme.background
+                        ) {
+                            PermissionAndNavigationContainer(viewModel = mainViewModel)
+                        }
+                    }
                 }
             }
         }
@@ -116,10 +306,39 @@ fun PermissionAndNavigationContainer(viewModel: MainViewModel) {
             Manifest.permission.POST_NOTIFICATIONS
         )
     } else {
-        listOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+        listOf(
+            Manifest.permission.READ_EXTERNAL_STORAGE,
+            Manifest.permission.WRITE_EXTERNAL_STORAGE
+        )
     }
 
     val permissionState = rememberMultiplePermissionsState(permissions)
+
+    // Observe pending delete intent from ViewModel to request storage deletion permission (Android 10+)
+    val pendingDeleteIntent by viewModel.pendingDeleteIntent.collectAsState()
+    val deleteLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_OK) {
+            android.widget.Toast.makeText(context, "Storage file physically deleted", android.widget.Toast.LENGTH_SHORT).show()
+            viewModel.scanLocalMedia()
+        } else {
+            android.widget.Toast.makeText(context, "File deletion permission denied", android.widget.Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    LaunchedEffect(pendingDeleteIntent) {
+        pendingDeleteIntent?.let { intentSender ->
+            try {
+                val intentSenderRequest = IntentSenderRequest.Builder(intentSender).build()
+                deleteLauncher.launch(intentSenderRequest)
+            } catch (e: Exception) {
+                android.util.Log.e("MainActivity", "Failed to launch delete intent sender", e)
+            } finally {
+                viewModel.clearPendingDeleteIntent()
+            }
+        }
+    }
     val prefs by viewModel.preferencesState.collectAsState()
 
     // Trigger permission request in a safe, non-blocking way once onboarding is completed

@@ -2675,8 +2675,7 @@ fun MainScreen(
     // Gesture bottom drawer for media item options (Requirement #4)
     if (selectedMediaForOptions != null) {
         val media = selectedMediaForOptions!!
-        var selectedCategory by remember { mutableStateOf("Playback & Queue") }
-        var selectMenuExpanded by remember { mutableStateOf(false) }
+        val context = LocalContext.current
         ModalBottomSheet(
             onDismissRequest = { selectedMediaForOptions = null },
             containerColor = MaterialTheme.colorScheme.surface,
@@ -2719,7 +2718,7 @@ fun MainScreen(
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
-                        val sizeString = Formatter.formatShortFileSize(LocalContext.current, media.size)
+                        val sizeString = Formatter.formatShortFileSize(context, media.size)
                         Text(
                             text = sizeString,
                             fontSize = 11.sp,
@@ -2730,233 +2729,115 @@ fun MainScreen(
                 }
 
                 Spacer(modifier = Modifier.height(16.dp))
-                
-                // 2 Prominent Options on Top: Play & Add to Play Queue
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Card(
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(52.dp)
-                            .clickable {
-                                onPlayItem(media)
-                                selectedMediaForOptions = null
-                            },
-                        shape = RoundedCornerShape(12.dp),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Center
-                        ) {
-                            Icon(Icons.Default.PlayArrow, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimaryContainer, modifier = Modifier.size(20.dp))
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Play", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = MaterialTheme.colorScheme.onPrimaryContainer)
-                        }
-                    }
-
-                    Card(
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(52.dp)
-                            .clickable {
-                                viewModel.addToQueue(listOf(media))
-                                selectedMediaForOptions = null
-                            },
-                        shape = RoundedCornerShape(12.dp),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Center
-                        ) {
-                            Icon(Icons.Default.PlaylistAdd, contentDescription = null, tint = MaterialTheme.colorScheme.onSecondaryContainer, modifier = Modifier.size(20.dp))
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Queue", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSecondaryContainer)
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(12.dp))
                 HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
                 Spacer(modifier = Modifier.height(12.dp))
 
-                // Modern compact Category Select Menu (Dropdown style)
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 4.dp)
-                ) {
-                    Surface(
-                        onClick = { selectMenuExpanded = true },
-                        shape = RoundedCornerShape(12.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.15f)),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 12.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Row(
-                                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(
-                                    imageVector = when (selectedCategory) {
-                                        "Playback & Queue" -> Icons.Default.PlayArrow
-                                        "Playlist & Library" -> Icons.Default.QueueMusic
-                                        else -> Icons.Default.Settings
-                                    },
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary
-                                )
-                                Text(
-                                    text = selectedCategory,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 14.sp,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                            }
-                            Icon(
-                                imageVector = Icons.Default.ArrowDropDown,
-                                contentDescription = "Expand Category Select",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-
-                    DropdownMenu(
-                        expanded = selectMenuExpanded,
-                        onDismissRequest = { selectMenuExpanded = false },
-                        modifier = Modifier.fillMaxWidth(0.85f)
-                    ) {
-                        listOf("Playback & Queue", "Playlist & Library", "Advanced & File Tools").forEach { category ->
-                            DropdownMenuItem(
-                                text = { Text(category, fontWeight = FontWeight.Bold, fontSize = 13.sp) },
-                                onClick = {
-                                    selectedCategory = category
-                                    selectMenuExpanded = false
-                                },
-                                leadingIcon = {
-                                    Icon(
-                                        imageVector = when (category) {
-                                            "Playback & Queue" -> Icons.Default.PlayArrow
-                                            "Playlist & Library" -> Icons.Default.QueueMusic
-                                            else -> Icons.Default.Settings
-                                        },
-                                        contentDescription = null,
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                }
-                            )
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                val context = LocalContext.current
-
-                // Dynamically build and filter options based on select menu category
-                val filteredOptions = remember(selectedCategory, media) {
+                // Unified list of all options related to file/folder
+                val unifiedOptions = remember(media) {
                     val list = mutableListOf<Triple<String, androidx.compose.ui.graphics.vector.ImageVector, () -> Unit>>()
-                    when (selectedCategory) {
-                        "Playback & Queue" -> {
-                            list.add(Triple("Play as audio", Icons.Default.MusicNote, {
-                                viewModel.audioOnlyPlaybackRequested = true
-                                onPlayItem(media)
-                                selectedMediaForOptions = null
-                            }))
-                            list.add(Triple("Insert Next in Queue", Icons.Default.Queue, {
-                                viewModel.insertNext(media)
-                                android.widget.Toast.makeText(context, "QUEUE_INJECT_IMMEDIATE: Inserted next", android.widget.Toast.LENGTH_SHORT).show()
-                                selectedMediaForOptions = null
-                            }))
-                        }
-                        "Playlist & Library" -> {
-                            list.add(Triple("Add to Playlist...", Icons.Default.QueueMusic, {
-                                showPlaylistPickerForMedia = media
-                                selectedMediaForOptions = null
-                            }))
-                            list.add(Triple("Select / Multi-select", Icons.Default.CheckCircle, {
-                                isSelectModeActive = true
-                                selectedMediaSet.clear()
-                                selectedMediaSet.add(media)
-                                selectedMediaForOptions = null
-                            }))
-                            list.add(Triple("Browse Parent Folder", Icons.Default.FolderOpen, {
-                                viewModel.selectPlaySubTab("Folder")
-                                android.widget.Toast.makeText(context, "NAVIGATE_UP_DIRECTORY: Navigating to parent folder", android.widget.Toast.LENGTH_SHORT).show()
-                                selectedMediaForOptions = null
-                            }))
-                        }
-                        else -> { // "Advanced & File Tools"
-                            if (media.isVideo) {
-                                list.add(Triple("Download Subtitles", Icons.Default.ClosedCaption, {
-                                    showSubtitleDownloadDialog = media
-                                    selectedMediaForOptions = null
-                                }))
-                            }
-                            if (media.uriString.startsWith("http")) {
-                                list.add(Triple("Download from Web", Icons.Default.CloudDownload, {
-                                    viewModel.downloadFileFromWeb(media)
-                                    selectedMediaForOptions = null
-                                }))
-                            }
-                            list.add(Triple("Create Launcher Shortcut", Icons.Default.Shortcut, {
-                                try {
-                                    val shortcutSupported = androidx.core.content.pm.ShortcutManagerCompat.isRequestPinShortcutSupported(context)
-                                    if (shortcutSupported) {
-                                        val shortcutIntent = android.content.Intent(context, com.example.MainActivity::class.java)
-                                        shortcutIntent.setAction(android.content.Intent.ACTION_VIEW)
-                                        shortcutIntent.putExtra("media_uri", media.uriString)
-                                        
-                                        val shortcut = androidx.core.content.pm.ShortcutInfoCompat.Builder(context, media.uriString)
-                                            .setShortLabel(media.title)
-                                            .setLongLabel("Play " + media.title)
-                                            .setIcon(androidx.core.graphics.drawable.IconCompat.createWithResource(context, android.R.drawable.ic_media_play))
-                                            .setIntent(shortcutIntent)
-                                            .build()
-                                        androidx.core.content.pm.ShortcutManagerCompat.requestPinShortcut(context, shortcut, null)
-                                    }
-                                } catch (e: Exception) {
-                                    e.printStackTrace()
-                                }
-                                android.widget.Toast.makeText(context, "INJECT_PINNED_SHORTCUT: Launcher shortcut created: ${media.title}", android.widget.Toast.LENGTH_SHORT).show()
-                                selectedMediaForOptions = null
-                            }))
-                            list.add(Triple("Set as Ringtone", Icons.Default.RingVolume, {
-                                android.widget.Toast.makeText(context, "WRITE_SYSTEM_RINGTONE: Set as ringtone successfully", android.widget.Toast.LENGTH_SHORT).show()
-                                selectedMediaForOptions = null
-                            }))
-                            list.add(Triple("Information & Codecs", Icons.Default.Info, {
-                                showInfoDialogForMedia = media
-                                selectedMediaForOptions = null
-                            }))
-                            list.add(Triple("Delete File", Icons.Default.Delete, {
-                                mediaToDelete = media
-                                selectedMediaForOptions = null
-                            }))
-                        }
+                    
+                    list.add(Triple("Play", Icons.Default.PlayArrow, {
+                        onPlayItem(media)
+                        selectedMediaForOptions = null
+                    }))
+                    
+                    list.add(Triple("Add to Play Queue", Icons.Default.PlaylistAdd, {
+                        viewModel.addToQueue(listOf(media))
+                        selectedMediaForOptions = null
+                    }))
+                    
+                    list.add(Triple("Play as Audio Only", Icons.Default.MusicNote, {
+                        viewModel.audioOnlyPlaybackRequested = true
+                        onPlayItem(media)
+                        selectedMediaForOptions = null
+                    }))
+                    
+                    list.add(Triple("Insert Next in Queue", Icons.Default.Queue, {
+                        viewModel.insertNext(media)
+                        android.widget.Toast.makeText(context, "QUEUE_INJECT_IMMEDIATE: Inserted next", android.widget.Toast.LENGTH_SHORT).show()
+                        selectedMediaForOptions = null
+                    }))
+                    
+                    list.add(Triple("Add to Playlist...", Icons.Default.QueueMusic, {
+                        showPlaylistPickerForMedia = media
+                        selectedMediaForOptions = null
+                    }))
+                    
+                    list.add(Triple("Select / Multi-select", Icons.Default.CheckCircle, {
+                        isSelectModeActive = true
+                        selectedMediaSet.clear()
+                        selectedMediaSet.add(media)
+                        selectedMediaForOptions = null
+                    }))
+                    
+                    list.add(Triple("Browse Parent Folder", Icons.Default.FolderOpen, {
+                        viewModel.selectPlaySubTab("Folder")
+                        android.widget.Toast.makeText(context, "NAVIGATE_UP_DIRECTORY: Navigating to parent folder", android.widget.Toast.LENGTH_SHORT).show()
+                        selectedMediaForOptions = null
+                    }))
+                    
+                    if (media.isVideo) {
+                        list.add(Triple("Download Subtitles", Icons.Default.ClosedCaption, {
+                            showSubtitleDownloadDialog = media
+                            selectedMediaForOptions = null
+                        }))
                     }
+                    
+                    if (media.uriString.startsWith("http")) {
+                        list.add(Triple("Download from Web", Icons.Default.CloudDownload, {
+                            viewModel.downloadFileFromWeb(media)
+                            selectedMediaForOptions = null
+                        }))
+                    }
+                    
+                    list.add(Triple("Create Launcher Shortcut", Icons.Default.Shortcut, {
+                        try {
+                            val shortcutSupported = androidx.core.content.pm.ShortcutManagerCompat.isRequestPinShortcutSupported(context)
+                            if (shortcutSupported) {
+                                val shortcutIntent = android.content.Intent(context, com.example.MainActivity::class.java).apply {
+                                    setAction(android.content.Intent.ACTION_VIEW)
+                                    putExtra("media_uri", media.uriString)
+                                }
+                                val shortcut = androidx.core.content.pm.ShortcutInfoCompat.Builder(context, media.uriString)
+                                    .setShortLabel(media.title)
+                                    .setLongLabel("Play " + media.title)
+                                    .setIcon(androidx.core.graphics.drawable.IconCompat.createWithResource(context, android.R.drawable.ic_media_play))
+                                    .setIntent(shortcutIntent)
+                                    .build()
+                                androidx.core.content.pm.ShortcutManagerCompat.requestPinShortcut(context, shortcut, null)
+                            }
+                        } catch (e: Exception) {
+                            e.printStackTrace()
+                        }
+                        android.widget.Toast.makeText(context, "INJECT_PINNED_SHORTCUT: Launcher shortcut created: ${media.title}", android.widget.Toast.LENGTH_SHORT).show()
+                        selectedMediaForOptions = null
+                    }))
+                    
+                    list.add(Triple("Set as Ringtone", Icons.Default.RingVolume, {
+                        android.widget.Toast.makeText(context, "WRITE_SYSTEM_RINGTONE: Set as ringtone successfully", android.widget.Toast.LENGTH_SHORT).show()
+                        selectedMediaForOptions = null
+                    }))
+                    
+                    list.add(Triple("Information & Codecs", Icons.Default.Info, {
+                        showInfoDialogForMedia = media
+                        selectedMediaForOptions = null
+                    }))
+                    
+                    list.add(Triple("Delete File", Icons.Default.Delete, {
+                        mediaToDelete = media
+                        selectedMediaForOptions = null
+                    }))
+                    
                     list
                 }
 
-                // Render options in a compact, clean structured list
+                // Render options in a scrollable list
                 androidx.compose.foundation.lazy.LazyColumn(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().heightIn(max = 400.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    items(filteredOptions.size) { index ->
-                        val (label, icon, onClick) = filteredOptions[index]
+                    items(unifiedOptions.size) { index ->
+                        val (label, icon, onClick) = unifiedOptions[index]
                         Surface(
                             onClick = onClick,
                             shape = RoundedCornerShape(10.dp),
@@ -3642,8 +3523,9 @@ fun MainScreen(
                 }
             )
         }
+    }
 
-        if (showAboutDialog) {
+    if (showAboutDialog) {
             AlertDialog(
                 onDismissRequest = { showAboutDialog = false },
                 title = {
@@ -3681,239 +3563,172 @@ fun MainScreen(
 
         if (mediaToDelete != null) {
             val item = mediaToDelete!!
-            ModalBottomSheet(
+            AlertDialog(
                 onDismissRequest = { mediaToDelete = null },
-                containerColor = MaterialTheme.colorScheme.surface,
-                shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .navigationBarsPadding()
-                        .padding(24.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(56.dp)
-                            .background(MaterialTheme.colorScheme.errorContainer, CircleShape),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Delete,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.size(28.dp)
-                        )
-                    }
-                    
-                    Text(
-                        text = "Confirm Permanent Deletion",
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface
+                icon = {
+                    Icon(
+                        imageVector = Icons.Default.Delete,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary
                     )
-                    
+                },
+                title = {
                     Text(
-                        text = "Are you sure you want to permanently delete '${item.title}'?\nThis will permanently delete the physical file from your device storage.",
+                        text = "Delete File",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 18.sp
+                    )
+                },
+                text = {
+                    Text(
+                        text = "Are you sure you want to delete '${item.title}'?",
                         fontSize = 14.sp,
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    
-                    Spacer(modifier = Modifier.height(8.dp))
-                    
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                            viewModel.deleteMedia(item)
+                            android.widget.Toast.makeText(context, "Deleted '${item.title}'", android.widget.Toast.LENGTH_SHORT).show()
+                            mediaToDelete = null
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                        shape = RoundedCornerShape(12.dp)
                     ) {
-                        OutlinedButton(
-                            onClick = { mediaToDelete = null },
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(12.dp)
-                        ) {
-                            Text("Cancel")
-                        }
-                        
-                        Button(
-                            onClick = {
-                                haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
-                                viewModel.deleteMedia(item)
-                                android.widget.Toast.makeText(context, "Permanently deleted '${item.title}'", android.widget.Toast.LENGTH_SHORT).show()
-                                mediaToDelete = null
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(12.dp)
-                        ) {
-                            Text("Delete Permanently", color = MaterialTheme.colorScheme.onError)
-                        }
+                        Text("Delete", color = MaterialTheme.colorScheme.onPrimary)
                     }
-                }
-            }
+                },
+                dismissButton = {
+                    OutlinedButton(
+                        onClick = { mediaToDelete = null },
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text("Cancel")
+                    }
+                },
+                shape = RoundedCornerShape(24.dp),
+                containerColor = MaterialTheme.colorScheme.surface
+            )
         }
 
         if (multiMediaToDelete != null) {
             val items = multiMediaToDelete!!
-            ModalBottomSheet(
+            AlertDialog(
                 onDismissRequest = { multiMediaToDelete = null },
-                containerColor = MaterialTheme.colorScheme.surface,
-                shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .navigationBarsPadding()
-                        .padding(24.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(56.dp)
-                            .background(MaterialTheme.colorScheme.errorContainer, CircleShape),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Delete,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.size(28.dp)
-                        )
-                    }
-                    
-                    Text(
-                        text = "Confirm Bulk Deletion",
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface
+                icon = {
+                    Icon(
+                        imageVector = Icons.Default.Delete,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary
                     )
-                    
+                },
+                title = {
                     Text(
-                        text = "Are you sure you want to permanently delete these ${items.size} selected files?\nThis will permanently delete their physical files from your device storage.",
+                        text = "Delete Files",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 18.sp
+                    )
+                },
+                text = {
+                    Text(
+                        text = "Are you sure you want to delete these ${items.size} files?",
                         fontSize = 14.sp,
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    
-                    Spacer(modifier = Modifier.height(8.dp))
-                    
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                            viewModel.deleteMediaBatch(items)
+                            android.widget.Toast.makeText(context, "Deleted ${items.size} files", android.widget.Toast.LENGTH_SHORT).show()
+                            selectedMediaSet.clear()
+                            isSelectModeActive = false
+                            multiMediaToDelete = null
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                        shape = RoundedCornerShape(12.dp)
                     ) {
-                        OutlinedButton(
-                            onClick = { multiMediaToDelete = null },
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(12.dp)
-                        ) {
-                            Text("Cancel")
-                        }
-                        
-                        Button(
-                            onClick = {
-                                haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
-                                viewModel.deleteMediaBatch(items)
-                                android.widget.Toast.makeText(context, "Permanently deleted ${items.size} files", android.widget.Toast.LENGTH_SHORT).show()
-                                selectedMediaSet.clear()
-                                isSelectModeActive = false
-                                multiMediaToDelete = null
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(12.dp)
-                        ) {
-                            Text("Delete All", color = MaterialTheme.colorScheme.onError)
-                        }
+                        Text("Delete", color = MaterialTheme.colorScheme.onPrimary)
                     }
-                }
-            }
+                },
+                dismissButton = {
+                    OutlinedButton(
+                        onClick = { multiMediaToDelete = null },
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text("Cancel")
+                    }
+                },
+                shape = RoundedCornerShape(24.dp),
+                containerColor = MaterialTheme.colorScheme.surface
+            )
         }
 
         if (folderToDelete != null) {
             val (folderPath, filesInFolder) = folderToDelete!!
-            ModalBottomSheet(
+            AlertDialog(
                 onDismissRequest = { folderToDelete = null },
-                containerColor = MaterialTheme.colorScheme.surface,
-                shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .navigationBarsPadding()
-                        .padding(24.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(56.dp)
-                            .background(MaterialTheme.colorScheme.errorContainer, CircleShape),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Folder,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.size(28.dp)
-                        )
-                    }
-                    
-                    Text(
-                        text = "Confirm Folder Deletion",
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface
+                icon = {
+                    Icon(
+                        imageVector = Icons.Default.Folder,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary
                     )
-                    
+                },
+                title = {
                     Text(
-                        text = "Are you sure you want to permanently delete the folder '$folderPath' and its ${filesInFolder.size} physical files?\nThis will permanently delete all contents from storage.",
+                        text = "Delete Folder",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 18.sp
+                    )
+                },
+                text = {
+                    Text(
+                        text = "Are you sure you want to delete folder '$folderPath'?",
                         fontSize = 14.sp,
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    
-                    Spacer(modifier = Modifier.height(8.dp))
-                    
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        OutlinedButton(
-                            onClick = { folderToDelete = null },
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(12.dp)
-                        ) {
-                            Text("Cancel")
-                        }
-                        
-                        Button(
-                            onClick = {
-                                haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
-                                viewModel.deleteMediaBatch(filesInFolder)
-                                try {
-                                    val dirFile = java.io.File("/storage/emulated/0/$folderPath")
-                                    if (dirFile.exists() && dirFile.isDirectory) {
-                                        dirFile.delete()
-                                    }
-                                } catch (e: Exception) {
-                                    // ignore
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                            viewModel.deleteMediaBatch(filesInFolder)
+                            try {
+                                val dirFile = java.io.File("/storage/emulated/0/$folderPath")
+                                if (dirFile.exists() && dirFile.isDirectory) {
+                                    dirFile.delete()
                                 }
-                                android.widget.Toast.makeText(context, "Permanently deleted folder '$folderPath' and its ${filesInFolder.size} files", android.widget.Toast.LENGTH_SHORT).show()
-                                folderToDelete = null
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(12.dp)
-                        ) {
-                            Text("Delete Folder", color = MaterialTheme.colorScheme.onError)
-                        }
+                            } catch (e: Exception) {
+                                // ignore
+                            }
+                            android.widget.Toast.makeText(context, "Deleted folder '$folderPath'", android.widget.Toast.LENGTH_SHORT).show()
+                            folderToDelete = null
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text("Delete", color = MaterialTheme.colorScheme.onPrimary)
                     }
-                }
-            }
+                },
+                dismissButton = {
+                    OutlinedButton(
+                        onClick = { folderToDelete = null },
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text("Cancel")
+                    }
+                },
+                shape = RoundedCornerShape(24.dp),
+                containerColor = MaterialTheme.colorScheme.surface
+            )
         }
-    }
     }
 }
 
@@ -4437,8 +4252,9 @@ fun MediaListRow(
         ) {
             Box(
                 modifier = Modifier
-                    .size(56.dp)
-                    .clip(RoundedCornerShape(12.dp))
+                    .width(75.dp)
+                    .height(50.dp)
+                    .clip(RoundedCornerShape(2.dp))
             ) {
                 MediaThumbnail(item = item, modifier = Modifier.fillMaxSize())
 
@@ -5216,12 +5032,7 @@ fun BrowseTabContent(
                                     Text(folderName, fontWeight = FontWeight.Bold, fontSize = 14.sp)
                                 }
 
-                                Badge(
-                                    containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer
-                                ) {
-                                    Text("${filesInFolder.size} files", modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp), fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                }
+
                             }
                         }
                     }

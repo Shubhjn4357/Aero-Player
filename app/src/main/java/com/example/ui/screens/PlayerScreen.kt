@@ -106,6 +106,7 @@ fun PlayerScreen(
     var isNewSession by remember { mutableStateOf(true) }
     var resumePosition by remember { mutableStateOf(0L) }
     var isPlaying by remember { mutableStateOf(true) }
+    var audioFallbackAttempted by remember { mutableStateOf(false) }
     val currentEqualizerPreset by viewModel.currentEqualizerPreset.collectAsState()
     var resizeMode by remember { mutableStateOf(AspectRatioFrameLayout.RESIZE_MODE_FIT) }
     var currentBrightness by remember { mutableStateOf(-1f) }
@@ -209,6 +210,7 @@ fun PlayerScreen(
 
     // Load Uri Source
     LaunchedEffect(activeMediaItem) {
+        audioFallbackAttempted = false
         val currentUri = try { exoPlayer.currentMediaItem?.localConfiguration?.uri?.toString() } catch (e: Exception) { null }
         if (currentUri == activeMediaItem.uriString && !isNewSession) {
             // Already playing this item, don't restart it
@@ -259,10 +261,11 @@ fun PlayerScreen(
         exoPlayer.setPlaybackSpeed(speedToApply)
         exoPlayer.volume = volumeToApply
         resizeMode = resizeToApply
-        // Ensure subtitle/text tracks are NOT disabled and can be selected by default!
+        // Ensure subtitle/text tracks and audio tracks are NOT disabled and can be selected by default!
         exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
             .buildUpon()
             .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+            .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)
             .build()
         if (eqPresetToApply.isNotBlank()) {
             viewModel.applyPreset(eqPresetToApply)
@@ -663,8 +666,100 @@ fun PlayerScreen(
             }
             override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
                 tracksUpdateTrigger++
+
+                // Auto-select Dolby (EAC3/AC3) or unselected audio tracks on initial load
+                val currentParams = exoPlayer.trackSelectionParameters
+                val isAudioDisabled = currentParams.disabledTrackTypes.contains(androidx.media3.common.C.TRACK_TYPE_AUDIO)
+                if (!isAudioDisabled) {
+                    val audioGroups = tracks.groups.filter { it.type == androidx.media3.common.C.TRACK_TYPE_AUDIO }
+                    if (audioGroups.isNotEmpty()) {
+                        val hasSelectedAudioTrack = audioGroups.any { group ->
+                            (0 until group.length).any { group.isTrackSelected(it) }
+                        }
+                        if (!hasSelectedAudioTrack) {
+                            val firstGroup = audioGroups.first()
+                            val newParams = currentParams.buildUpon()
+                                .setOverrideForType(androidx.media3.common.TrackSelectionOverride(firstGroup.mediaTrackGroup, 0))
+                                .setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_AUDIO, false)
+                                .build()
+                            exoPlayer.trackSelectionParameters = newParams
+                        }
+                    }
+                }
             }
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                val errorMsg = error.localizedMessage ?: error.message ?: ""
+                val isAudioError = error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_DECODER_INIT_FAILED ||
+                        error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_DECODER_QUERY_FAILED ||
+                        error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_AUDIO_TRACK_INIT_FAILED ||
+                        error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_AUDIO_TRACK_WRITE_FAILED ||
+                        errorMsg.contains("audio", ignoreCase = true) ||
+                        errorMsg.contains("eac3", ignoreCase = true) ||
+                        errorMsg.contains("ac3", ignoreCase = true) ||
+                        errorMsg.contains("MediaCodecAudioRenderer", ignoreCase = true) ||
+                        errorMsg.contains("AudioRenderer", ignoreCase = true) ||
+                        errorMsg.contains("AudioSink", ignoreCase = true)
+
+                val currentParams = exoPlayer.trackSelectionParameters
+                val audioDisabled = currentParams.disabledTrackTypes.contains(androidx.media3.common.C.TRACK_TYPE_AUDIO)
+
+                if (isAudioError && !audioFallbackAttempted) {
+                    audioFallbackAttempted = true
+                    val resumePos = exoPlayer.currentPosition
+                    val currentTracksInfo = exoPlayer.currentTracks
+                    var fallbackTrackSelected = false
+
+                    // Try finding an alternative audio track (e.g. stereo AAC / MP3) if present
+                    val audioGroups = currentTracksInfo.groups.filter { it.type == androidx.media3.common.C.TRACK_TYPE_AUDIO }
+                    for (group in audioGroups) {
+                        for (i in 0 until group.length) {
+                            val format = group.getTrackFormat(i)
+                            val mime = format.sampleMimeType?.lowercase() ?: ""
+                            if (mime.isNotBlank() && !mime.contains("eac3") && !mime.contains("ac3") && !mime.contains("dts")) {
+                                val newParams = currentParams.buildUpon()
+                                    .setOverrideForType(androidx.media3.common.TrackSelectionOverride(group.mediaTrackGroup, i))
+                                    .setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_AUDIO, false)
+                                    .build()
+                                exoPlayer.trackSelectionParameters = newParams
+                                fallbackTrackSelected = true
+                                break
+                            }
+                        }
+                        if (fallbackTrackSelected) break
+                    }
+
+                    if (fallbackTrackSelected) {
+                        android.widget.Toast.makeText(
+                            context,
+                            "Dolby EAC3 not supported by hardware. Switched to alternative audio track.",
+                            android.widget.Toast.LENGTH_LONG
+                        ).show()
+                    } else {
+                        // Disable audio track so video plays at 60fps without freezing or infinite loop
+                        val newParams = currentParams.buildUpon()
+                            .setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_AUDIO, true)
+                            .build()
+                        exoPlayer.trackSelectionParameters = newParams
+
+                        android.widget.Toast.makeText(
+                            context,
+                            "Dolby EAC3 audio format requires hardware decoder support on this device. Playing video-only mode.",
+                            android.widget.Toast.LENGTH_LONG
+                        ).show()
+                    }
+
+                    playbackErrorMsg = null
+                    exoPlayer.prepare()
+                    exoPlayer.seekTo(resumePos)
+                    exoPlayer.play()
+                    return
+                }
+
+                if (isAudioError && audioFallbackAttempted) {
+                    playbackErrorMsg = "Dolby EAC3 audio format not supported by device hardware"
+                    return
+                }
+
                 playbackErrorMsg = "Unable to play source: ${error.localizedMessage ?: "Network or codec failure"}"
             }
             override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
@@ -2458,12 +2553,15 @@ fun PlayerScreen(
                     }
                 }
             }
+        }
+    }
     // Advanced Player options sheet drawer (Redesigned with custom premium control board style)
     if (showAdvancedControlsSheet) {
         val playQueue by viewModel.playQueue.collectAsState()
         val scrollState = rememberScrollState()
         var jumpInputText by remember { mutableStateOf("") }
         var playlistNameInput by remember { mutableStateOf("") }
+        val isAudio = !activeMediaItem.isVideo || playAsAudioOnly
 
         PlayerRightSideDrawer(
             isOpen = showAdvancedControlsSheet,
@@ -2497,7 +2595,7 @@ fun PlayerScreen(
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
-                                imageVector = Icons.Default.Tune,
+                                imageVector = if (isAudio) Icons.Default.MusicNote else Icons.Default.Tune,
                                 contentDescription = null,
                                 tint = MaterialTheme.colorScheme.primary,
                                 modifier = Modifier.size(16.dp)
@@ -2505,13 +2603,13 @@ fun PlayerScreen(
                         }
                         Column {
                             Text(
-                                text = "Aero Deck",
+                                text = if (isAudio) "Aero Audio Deck" else "Aero Deck",
                                 fontWeight = FontWeight.Black,
                                 fontSize = 16.sp,
                                 color = Color.White
                             )
                             Text(
-                                text = "PRO DASHBOARD",
+                                text = if (isAudio) "AUDIO TUNING BOARD" else "PRO DASHBOARD",
                                 fontSize = 9.sp,
                                 fontWeight = FontWeight.Bold,
                                 letterSpacing = 1.sp,
@@ -2539,7 +2637,669 @@ fun PlayerScreen(
                 HorizontalDivider(color = Color.White.copy(alpha = 0.08f), thickness = 1.dp)
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // SECTION 1: PLAYBACK SPEED (TEMPO CONTROL COCKPIT)
+                if (isAudio) {
+                    // SECTION 1: PLAYBACK SPEED (TEMPO CONTROL COCKPIT)
+                    Text(
+                        text = "TEMPO CONTROL",
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.primary,
+                        letterSpacing = 1.5.sp,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)),
+                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(14.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Speed,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Text(
+                                        text = "Speed Multiplier",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 13.sp,
+                                        color = Color.White
+                                    )
+                                }
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f))
+                                        .border(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f), RoundedCornerShape(6.dp))
+                                        .padding(horizontal = 8.dp, vertical = 3.dp)
+                                ) {
+                                    Text(
+                                        text = String.format("%.2fx", exoPlayer.playbackParameters.speed),
+                                        color = MaterialTheme.colorScheme.primary,
+                                        fontWeight = FontWeight.Black,
+                                        fontSize = 12.sp
+                                    )
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(10.dp))
+
+                            var localSpeed by remember(exoPlayer.playbackParameters.speed) { mutableStateOf(exoPlayer.playbackParameters.speed) }
+                            CustomSlider(
+                                value = localSpeed,
+                                onValueChange = { localSpeed = it },
+                                onValueChangeFinished = { exoPlayer.setPlaybackSpeed(localSpeed) },
+                                valueRange = 0.25f..4.00f
+                            )
+
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                listOf(0.5f, 1.0f, 1.5f, 2.0f).forEach { preset ->
+                                    val isSelected = String.format("%.2f", exoPlayer.playbackParameters.speed) == String.format("%.2f", preset)
+                                    Box(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(
+                                                if (isSelected) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.05f)
+                                            )
+                                            .border(
+                                                width = 1.dp,
+                                                color = if (isSelected) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.1f),
+                                                shape = RoundedCornerShape(8.dp)
+                                            )
+                                            .clickable {
+                                                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                                exoPlayer.setPlaybackSpeed(preset)
+                                            }
+                                            .padding(vertical = 8.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            text = if (preset == 1.0f) "Normal" else "${preset}x",
+                                            color = if (isSelected) Color.Black else Color.White.copy(alpha = 0.8f),
+                                            fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.Medium,
+                                            fontSize = 11.sp
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // SOUND EQUALIZER IN ADVANCED CONTROLS
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = "SOUND EQUALIZER",
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.primary,
+                        letterSpacing = 1.5.sp,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)),
+                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(14.dp)) {
+                            val eqEnabled by viewModel.equalizerEnabled.collectAsState()
+                            val currentPreset by viewModel.currentEqualizerPreset.collectAsState()
+                            val isPlaying by viewModel.isPlaying.collectAsState()
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Tune,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Text(
+                                        text = "Sound Equalizer",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 13.sp,
+                                        color = Color.White
+                                    )
+                                }
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    val isSwitchEnabled = eqEnabled && isPlaying
+                                    Text(
+                                        text = if (isSwitchEnabled) "ON" else "OFF",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (isSwitchEnabled) MaterialTheme.colorScheme.primary else Color.Gray
+                                    )
+                                    Switch(
+                                        checked = eqEnabled,
+                                        onCheckedChange = { if (isPlaying) viewModel.setEqualizerEnabled(it) },
+                                        enabled = isPlaying,
+                                        colors = SwitchDefaults.colors(
+                                            checkedThumbColor = MaterialTheme.colorScheme.primary,
+                                            checkedTrackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
+                                        ),
+                                        modifier = Modifier.graphicsLayer {
+                                            scaleX = 0.8f
+                                            scaleY = 0.8f
+                                        }
+                                    )
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(6.dp))
+
+                            Text(
+                                text = "Preset: $currentPreset",
+                                fontSize = 11.sp,
+                                color = Color.White.copy(alpha = 0.7f),
+                                fontWeight = FontWeight.Medium
+                            )
+
+                            Spacer(modifier = Modifier.height(10.dp))
+
+                            Button(
+                                onClick = {
+                                    if (isPlaying) {
+                                        hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                                        showAdvancedControlsSheet = false
+                                        showEqualizerSheet = true
+                                    }
+                                },
+                                enabled = isPlaying,
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Tune,
+                                        contentDescription = null,
+                                        tint = Color.Black,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                    Text(
+                                        text = "Customize Tuning Profile",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color.Black
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // INTEGRATED SLEEP TIMER FOR AUDIO
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = "SLEEP TIMER",
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.primary,
+                        letterSpacing = 1.5.sp,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)),
+                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(14.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Timer,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Text(
+                                        text = "Timer Status",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 13.sp,
+                                        color = Color.White
+                                    )
+                                }
+
+                                if (sleepTimeLeftMinutes > 0) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(6.dp)
+                                                .clip(CircleShape)
+                                                .background(Color.Green)
+                                        )
+                                        Text(
+                                            text = "${sleepTimeLeftMinutes} MIN LEFT",
+                                            fontWeight = FontWeight.Black,
+                                            fontSize = 10.sp,
+                                            color = Color.Green
+                                        )
+                                    }
+                                } else {
+                                    Text(
+                                        text = "INACTIVE",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 10.sp,
+                                        color = Color.Gray
+                                    )
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            if (sleepTimeLeftMinutes > 0) {
+                                Button(
+                                    onClick = {
+                                        sleepTimeLeftMinutes = 0
+                                        isSleepTimerRunning = false
+                                        android.widget.Toast.makeText(context, "Sleep timer cancelled", android.widget.Toast.LENGTH_SHORT).show()
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color.Red.copy(alpha = 0.8f)),
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(12.dp)
+                                ) {
+                                    Text("Cancel Sleep Timer", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                }
+                            } else {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    listOf(10, 20, 30, 45, 60).forEach { mins ->
+                                        Box(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .background(Color.White.copy(alpha = 0.05f))
+                                                .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(8.dp))
+                                                .clickable {
+                                                    hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                                    sleepTimeLeftMinutes = mins
+                                                    isSleepTimerRunning = true
+                                                    android.widget.Toast.makeText(context, "Timer set for $mins minutes", android.widget.Toast.LENGTH_SHORT).show()
+                                                }
+                                                .padding(vertical = 8.dp),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Text(
+                                                text = "${mins}m",
+                                                color = Color.White,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 11.sp
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // JUMP TO TIME
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = "JUMP TO TIME",
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.primary,
+                        letterSpacing = 1.5.sp,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)),
+                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(14.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                OutlinedTextField(
+                                    value = jumpInputText,
+                                    onValueChange = { jumpInputText = it },
+                                    placeholder = { Text("e.g. 01:30 or 90s", fontSize = 11.sp) },
+                                    singleLine = true,
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedBorderColor = MaterialTheme.colorScheme.primary,
+                                        unfocusedBorderColor = Color.White.copy(alpha = 0.12f),
+                                        focusedContainerColor = Color.Black.copy(alpha = 0.2f),
+                                        unfocusedContainerColor = Color.Black.copy(alpha = 0.2f)
+                                    )
+                                )
+                                CustomButton(
+                                    onClick = {
+                                        val parts = jumpInputText.split(":")
+                                        val targetMs = if (parts.size == 2) {
+                                            val mins = parts[0].toLongOrNull() ?: 0L
+                                            val secs = parts[1].toLongOrNull() ?: 0L
+                                            (mins * 60 + secs) * 1000L
+                                        } else {
+                                            val secs = jumpInputText.toLongOrNull() ?: 0L
+                                            secs * 1000L
+                                        }
+                                        if (targetMs >= 0) {
+                                            exoPlayer.seekTo(targetMs.coerceIn(0L, duration))
+                                            currentPosition = targetMs.coerceIn(0L, duration)
+                                            jumpInputText = ""
+                                            showAdvancedControlsSheet = false
+                                        }
+                                    },
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                                ) {
+                                    Text("Go", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.Black)
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(10.dp))
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                listOf(-30, -10, 10, 30).forEach { seconds ->
+                                    val label = if (seconds > 0) "+${seconds}s" else "${seconds}s"
+                                    Box(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(Color.White.copy(alpha = 0.05f))
+                                            .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(8.dp))
+                                            .clickable {
+                                                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                                val targetSeek = (exoPlayer.currentPosition + seconds * 1000L).coerceIn(0L, duration)
+                                                exoPlayer.seekTo(targetSeek)
+                                                currentPosition = targetSeek
+                                                android.widget.Toast.makeText(context, "Sought $label", android.widget.Toast.LENGTH_SHORT).show()
+                                            }
+                                            .padding(vertical = 8.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            text = label,
+                                            color = Color.White.copy(alpha = 0.9f),
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 11.sp
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // A-B SEGMENT LOOP
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = "A-B SEGMENT LOOP",
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.primary,
+                        letterSpacing = 1.5.sp,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)),
+                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(14.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Loop Window",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp,
+                                    color = Color.White
+                                )
+
+                                if (abRepeatEnabled) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(6.dp)
+                                                .clip(CircleShape)
+                                                .background(Color.Green)
+                                        )
+                                        Text(
+                                            text = "LOOP ACTIVE",
+                                            fontWeight = FontWeight.Black,
+                                            fontSize = 9.sp,
+                                            color = Color.Green
+                                        )
+                                    }
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(10.dp))
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(Color.Black.copy(alpha = 0.15f))
+                                        .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(10.dp))
+                                        .padding(8.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Text("POINT A", fontSize = 9.sp, color = MaterialTheme.colorScheme.primary.copy(alpha = 0.8f), fontWeight = FontWeight.Bold)
+                                        Spacer(modifier = Modifier.height(2.dp))
+                                        Text(
+                                            text = if (pointA == null) "--:--" else formatPlayerDuration(pointA!!),
+                                            fontSize = 12.sp,
+                                            color = Color.White,
+                                            fontWeight = FontWeight.ExtraBold
+                                        )
+                                    }
+                                }
+
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(Color.Black.copy(alpha = 0.15f))
+                                        .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(10.dp))
+                                        .padding(8.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Text("POINT B", fontSize = 9.sp, color = MaterialTheme.colorScheme.primary.copy(alpha = 0.8f), fontWeight = FontWeight.Bold)
+                                        Spacer(modifier = Modifier.height(2.dp))
+                                        Text(
+                                            text = if (pointB == null) "--:--" else formatPlayerDuration(pointB!!),
+                                            fontSize = 12.sp,
+                                            color = Color.White,
+                                            fontWeight = FontWeight.ExtraBold
+                                        )
+                                    }
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                CustomButton(
+                                    onClick = {
+                                        hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                                        if (pointA == null) {
+                                            pointA = currentPosition
+                                            android.widget.Toast.makeText(context, "Point A set!", android.widget.Toast.LENGTH_SHORT).show()
+                                        } else if (pointB == null) {
+                                            if (currentPosition > pointA!!) {
+                                                pointB = currentPosition
+                                                abRepeatEnabled = true
+                                                android.widget.Toast.makeText(context, "Point B set! Looping active.", android.widget.Toast.LENGTH_SHORT).show()
+                                            } else {
+                                                android.widget.Toast.makeText(context, "Point B must be after Point A!", android.widget.Toast.LENGTH_SHORT).show()
+                                            }
+                                        } else {
+                                            pointA = null
+                                            pointB = null
+                                            abRepeatEnabled = false
+                                            android.widget.Toast.makeText(context, "Loop cleared!", android.widget.Toast.LENGTH_SHORT).show()
+                                        }
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = if (abRepeatEnabled) Color.Green else MaterialTheme.colorScheme.primary
+                                    )
+                                ) {
+                                    Text(
+                                        text = when {
+                                            pointA == null -> "Mark [A]"
+                                            pointB == null -> "Mark [B]"
+                                            else -> "Clear Loop"
+                                        },
+                                        color = Color.Black,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 12.sp
+                                    )
+                                }
+
+                                if (pointA != null || pointB != null) {
+                                    IconButton(
+                                        onClick = {
+                                            hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                                            pointA = null
+                                            pointB = null
+                                            abRepeatEnabled = false
+                                            android.widget.Toast.makeText(context, "Loop reset", android.widget.Toast.LENGTH_SHORT).show()
+                                        },
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .background(Color.White.copy(alpha = 0.05f))
+                                            .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(12.dp))
+                                            .size(40.dp)
+                                    ) {
+                                        Icon(Icons.Default.Close, contentDescription = "Reset Loop", tint = Color.Red, modifier = Modifier.size(18.dp))
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // SAVE QUEUE TO PLAYLIST
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = "SAVE CURRENT QUEUE",
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.primary,
+                        letterSpacing = 1.5.sp,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)),
+                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(14.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                OutlinedTextField(
+                                    value = playlistNameInput,
+                                    onValueChange = { playlistNameInput = it },
+                                    placeholder = { Text("Playlist Name...", fontSize = 11.sp) },
+                                    singleLine = true,
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedBorderColor = MaterialTheme.colorScheme.primary,
+                                        unfocusedBorderColor = Color.White.copy(alpha = 0.12f),
+                                        focusedContainerColor = Color.Black.copy(alpha = 0.2f),
+                                        unfocusedContainerColor = Color.Black.copy(alpha = 0.2f)
+                                    )
+                                )
+                                Button(
+                                    onClick = {
+                                        if (playlistNameInput.isNotEmpty() && playQueue.isNotEmpty()) {
+                                            playQueue.forEach { item ->
+                                                viewModel.addMediaToPlaylist(playlistNameInput, item.uriString)
+                                            }
+                                            android.widget.Toast.makeText(context, "Saved play queue as '$playlistNameInput'", android.widget.Toast.LENGTH_SHORT).show()
+                                            playlistNameInput = ""
+                                            showAdvancedControlsSheet = false
+                                        }
+                                    },
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                                ) {
+                                    Text("Save", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.Black)
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // SECTION 1: PLAYBACK SPEED (TEMPO CONTROL COCKPIT)
                 Text(
                     text = "TEMPO CONTROL",
                     fontWeight = FontWeight.ExtraBold,
@@ -2762,138 +3522,140 @@ fun PlayerScreen(
                     }
                 }
 
-                // SECTION 2: AUDIO-ONLY & PIP MODES
-                Spacer(modifier = Modifier.height(16.dp))
-                Text(
-                    text = "DEDICATED MODES",
-                    fontWeight = FontWeight.ExtraBold,
-                    fontSize = 11.sp,
-                    color = MaterialTheme.colorScheme.primary,
-                    letterSpacing = 1.5.sp,
-                    modifier = Modifier.padding(bottom = 8.dp)
-                )
+                if (!isAudio) {
+                    // SECTION 2: AUDIO-ONLY & PIP MODES
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = "DEDICATED MODES",
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.primary,
+                        letterSpacing = 1.5.sp,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    // Audio-Only Mode Card
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(16.dp))
-                            .background(
-                                if (playAsAudioOnly) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
-                                else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)
-                            )
-                            .border(
-                                width = 1.2.dp,
-                                color = if (playAsAudioOnly) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.08f),
-                                shape = RoundedCornerShape(16.dp)
-                            )
-                            .clickable {
-                                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
-                                playAsAudioOnly = !playAsAudioOnly
-                            }
-                            .padding(12.dp)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Column {
-                            Icon(
-                                imageVector = Icons.Default.Headphones,
-                                contentDescription = null,
-                                tint = if (playAsAudioOnly) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.6f),
-                                modifier = Modifier.size(24.dp)
-                            )
-                            Spacer(modifier = Modifier.height(10.dp))
-                            Text(
-                                text = "Audio-Only",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 13.sp,
-                                color = Color.White
-                            )
-                            Text(
-                                text = "Background Play",
-                                fontSize = 10.sp,
-                                color = Color.White.copy(alpha = 0.5f),
-                                lineHeight = 12.sp
-                            )
+                        // Audio-Only Mode Card
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(
+                                    if (playAsAudioOnly) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                                    else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)
+                                )
+                                .border(
+                                    width = 1.2.dp,
+                                    color = if (playAsAudioOnly) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.08f),
+                                    shape = RoundedCornerShape(16.dp)
+                                )
+                                .clickable {
+                                    hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                                    playAsAudioOnly = !playAsAudioOnly
+                                }
+                                .padding(12.dp)
+                        ) {
+                            Column {
+                                Icon(
+                                    imageVector = Icons.Default.Headphones,
+                                    contentDescription = null,
+                                    tint = if (playAsAudioOnly) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.6f),
+                                    modifier = Modifier.size(24.dp)
+                                )
+                                Spacer(modifier = Modifier.height(10.dp))
+                                Text(
+                                    text = "Audio-Only",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp,
+                                    color = Color.White
+                                )
+                                Text(
+                                    text = "Background Play",
+                                    fontSize = 10.sp,
+                                    color = Color.White.copy(alpha = 0.5f),
+                                    lineHeight = 12.sp
+                                )
+                            }
+                            if (playAsAudioOnly) {
+                                Box(
+                                    modifier = Modifier
+                                        .align(Alignment.TopEnd)
+                                        .size(8.dp)
+                                        .clip(CircleShape)
+                                        .background(Color.Green)
+                                )
+                            }
                         }
-                        if (playAsAudioOnly) {
-                            Box(
-                                modifier = Modifier
-                                    .align(Alignment.TopEnd)
-                                    .size(8.dp)
-                                    .clip(CircleShape)
-                                    .background(Color.Green)
-                            )
-                        }
-                    }
 
-                    // Picture in Picture Mode Card
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(16.dp))
-                            .background(
-                                if (isPipActive) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
-                                else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)
-                            )
-                            .border(
-                                width = 1.2.dp,
-                                color = if (isPipActive) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.08f),
-                                shape = RoundedCornerShape(16.dp)
-                            )
-                            .clickable {
-                                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
-                                if (activeMediaItem.isVideo) {
-                                    val activity = context as? android.app.Activity
-                                    if (activity != null && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                                        try {
-                                            val builder = android.app.PictureInPictureParams.Builder()
-                                            activity.enterPictureInPictureMode(builder.build())
-                                            android.widget.Toast.makeText(context, "Entering Picture-in-Picture mode", android.widget.Toast.LENGTH_SHORT).show()
-                                        } catch (e: Exception) {
-                                            // Fallback to internal custom in-app pip
+                        // Picture in Picture Mode Card
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(
+                                    if (isPipActive) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                                    else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)
+                                )
+                                .border(
+                                    width = 1.2.dp,
+                                    color = if (isPipActive) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.08f),
+                                    shape = RoundedCornerShape(16.dp)
+                                )
+                                .clickable {
+                                    hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                                    if (activeMediaItem.isVideo) {
+                                        val activity = context as? android.app.Activity
+                                        if (activity != null && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                                            try {
+                                                val builder = android.app.PictureInPictureParams.Builder()
+                                                activity.enterPictureInPictureMode(builder.build())
+                                                android.widget.Toast.makeText(context, "Entering Picture-in-Picture mode", android.widget.Toast.LENGTH_SHORT).show()
+                                            } catch (e: Exception) {
+                                                // Fallback to internal custom in-app pip
+                                                isPipActive = !isPipActive
+                                            }
+                                        } else {
                                             isPipActive = !isPipActive
                                         }
                                     } else {
-                                        isPipActive = !isPipActive
+                                        android.widget.Toast.makeText(context, "Picture-in-Picture mode is only supported for video files", android.widget.Toast.LENGTH_SHORT).show()
                                     }
-                                } else {
-                                    android.widget.Toast.makeText(context, "Picture-in-Picture mode is only supported for video files", android.widget.Toast.LENGTH_SHORT).show()
                                 }
+                                .padding(12.dp)
+                        ) {
+                            Column {
+                                Icon(
+                                    imageVector = Icons.Default.PictureInPicture,
+                                    contentDescription = null,
+                                    tint = if (isPipActive) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.6f),
+                                    modifier = Modifier.size(24.dp)
+                                )
+                                Spacer(modifier = Modifier.height(10.dp))
+                                Text(
+                                    text = "Pop-Up Player",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp,
+                                    color = Color.White
+                                )
+                                Text(
+                                    text = "Pic-in-Picture",
+                                    fontSize = 10.sp,
+                                    color = Color.White.copy(alpha = 0.5f),
+                                    lineHeight = 12.sp
+                                )
                             }
-                            .padding(12.dp)
-                    ) {
-                        Column {
-                            Icon(
-                                imageVector = Icons.Default.PictureInPicture,
-                                contentDescription = null,
-                                tint = if (isPipActive) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.6f),
-                                modifier = Modifier.size(24.dp)
-                            )
-                            Spacer(modifier = Modifier.height(10.dp))
-                            Text(
-                                text = "Pop-Up Player",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 13.sp,
-                                color = Color.White
-                            )
-                            Text(
-                                text = "Pic-in-Picture",
-                                fontSize = 10.sp,
-                                color = Color.White.copy(alpha = 0.5f),
-                                lineHeight = 12.sp
-                            )
-                        }
-                        if (isPipActive) {
-                            Box(
-                                modifier = Modifier
-                                    .align(Alignment.TopEnd)
-                                    .size(8.dp)
-                                    .clip(CircleShape)
-                                    .background(Color.Green)
-                            )
+                            if (isPipActive) {
+                                Box(
+                                    modifier = Modifier
+                                        .align(Alignment.TopEnd)
+                                        .size(8.dp)
+                                        .clip(CircleShape)
+                                        .background(Color.Green)
+                                )
+                            }
                         }
                     }
                 }
@@ -3169,158 +3931,162 @@ fun PlayerScreen(
                     }
                 }
 
-                // SECTION 5: AUDIO SYNC DELAY
-                Spacer(modifier = Modifier.height(16.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "AUDIO SYNC DELAY",
-                        fontWeight = FontWeight.ExtraBold,
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.primary,
-                        letterSpacing = 1.5.sp
-                    )
-
-                    if (audioDelayMs != 0L) {
-                        Text(
-                            text = "RESET",
-                            color = Color.Red,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 10.sp,
-                            modifier = Modifier.clickable {
-                                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
-                                audioDelayMs = 0L
-                            }
-                        )
-                    }
-                }
-
-                Card(
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)),
-                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
-                    shape = RoundedCornerShape(16.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(14.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = "Delay Offset",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 13.sp,
-                                color = Color.White
-                            )
-                            Text(
-                                text = "${audioDelayMs}ms",
-                                color = if (audioDelayMs == 0L) Color.White.copy(alpha = 0.6f) else MaterialTheme.colorScheme.primary,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 13.sp
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        // Custom Designed Delay Slider
-                        CustomSlider(
-                            value = audioDelayMs.toFloat(),
-                            onValueChange = { audioDelayMs = it.toLong() },
-                            valueRange = -1000f..1000f
-                        )
-                    }
-                }
-
-                // SECTION 6: MEDIA BOOKMARKS (FILMSTRIP PREVIEWS)
-                Spacer(modifier = Modifier.height(16.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "FRAME BOOKMARKS",
-                        fontWeight = FontWeight.ExtraBold,
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.primary,
-                        letterSpacing = 1.5.sp
-                    )
-
-                    TextButton(
-                        onClick = {
-                            hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
-                            if (!bookmarks.contains(currentPosition)) {
-                                bookmarks = bookmarks + currentPosition
-                                android.widget.Toast.makeText(context, "Frame pinned!", android.widget.Toast.LENGTH_SHORT).show()
-                            }
-                        },
-                        contentPadding = PaddingValues(0.dp),
-                        modifier = Modifier.height(24.dp)
+                if (!isAudio) {
+                    // SECTION 5: AUDIO SYNC DELAY
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Icon(Icons.Default.BookmarkAdd, contentDescription = null, modifier = Modifier.size(14.dp))
-                            Text("Pin Frame", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Text(
+                            text = "AUDIO SYNC DELAY",
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.primary,
+                            letterSpacing = 1.5.sp
+                        )
+
+                        if (audioDelayMs != 0L) {
+                            Text(
+                                text = "RESET",
+                                color = Color.Red,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 10.sp,
+                                modifier = Modifier.clickable {
+                                    hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                    audioDelayMs = 0L
+                                }
+                            )
+                        }
+                    }
+
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)),
+                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(14.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Delay Offset",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp,
+                                    color = Color.White
+                                )
+                                Text(
+                                    text = "${audioDelayMs}ms",
+                                    color = if (audioDelayMs == 0L) Color.White.copy(alpha = 0.6f) else MaterialTheme.colorScheme.primary,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.height(10.dp))
+
+                            // Custom Designed Delay Slider
+                            CustomSlider(
+                                value = audioDelayMs.toFloat(),
+                                onValueChange = { audioDelayMs = it.toLong() },
+                                valueRange = -1000f..1000f
+                            )
                         }
                     }
                 }
 
-                Card(
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)),
-                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
-                    shape = RoundedCornerShape(16.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(14.dp)) {
-                        if (bookmarks.isEmpty()) {
-                            Text(
-                                text = "No pinned moments yet. Tap 'Pin Frame' during playback to save precise frames.",
-                                fontSize = 11.sp,
-                                color = Color.White.copy(alpha = 0.45f),
-                                lineHeight = 15.sp
-                            )
-                        } else {
-                            // Scrollable list of frame bookmarks
-                            androidx.compose.foundation.lazy.LazyRow(
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                items(bookmarks.size) { index ->
-                                    val bmk = bookmarks[index]
-                                    Box(
-                                        modifier = Modifier
-                                            .clip(RoundedCornerShape(8.dp))
-                                            .background(Color.Black.copy(alpha = 0.4f))
-                                            .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(8.dp))
-                                            .clickable {
-                                                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
-                                                exoPlayer.seekTo(bmk)
-                                                currentPosition = bmk
-                                            }
-                                            .padding(horizontal = 10.dp, vertical = 6.dp)
-                                    ) {
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                        ) {
-                                            Icon(Icons.Default.Bookmark, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(12.dp))
-                                            Text(
-                                                text = formatPlayerDuration(bmk),
-                                                fontSize = 11.sp,
-                                                color = Color.White,
-                                                fontWeight = FontWeight.Bold
-                                            )
-                                            IconButton(
-                                                onClick = {
+                if (!isAudio) {
+                    // SECTION 6: MEDIA BOOKMARKS (FILMSTRIP PREVIEWS)
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "FRAME BOOKMARKS",
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.primary,
+                            letterSpacing = 1.5.sp
+                        )
+
+                        TextButton(
+                            onClick = {
+                                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                                if (!bookmarks.contains(currentPosition)) {
+                                    bookmarks = bookmarks + currentPosition
+                                    android.widget.Toast.makeText(context, "Frame pinned!", android.widget.Toast.LENGTH_SHORT).show()
+                                }
+                            },
+                            contentPadding = PaddingValues(0.dp),
+                            modifier = Modifier.height(24.dp)
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Icon(Icons.Default.BookmarkAdd, contentDescription = null, modifier = Modifier.size(14.dp))
+                                Text("Pin Frame", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)),
+                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(14.dp)) {
+                            if (bookmarks.isEmpty()) {
+                                Text(
+                                    text = "No pinned moments yet. Tap 'Pin Frame' during playback to save precise frames.",
+                                    fontSize = 11.sp,
+                                    color = Color.White.copy(alpha = 0.45f),
+                                    lineHeight = 15.sp
+                                )
+                            } else {
+                                // Scrollable list of frame bookmarks
+                                androidx.compose.foundation.lazy.LazyRow(
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    items(bookmarks.size) { index ->
+                                        val bmk = bookmarks[index]
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .background(Color.Black.copy(alpha = 0.4f))
+                                                .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(8.dp))
+                                                .clickable {
                                                     hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
-                                                    bookmarks = bookmarks.filter { it != bmk }
-                                                },
-                                                modifier = Modifier.size(16.dp)
+                                                    exoPlayer.seekTo(bmk)
+                                                    currentPosition = bmk
+                                                }
+                                                .padding(horizontal = 10.dp, vertical = 6.dp)
+                                        ) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
                                             ) {
-                                                Icon(Icons.Default.Close, contentDescription = "Delete", tint = Color.Red.copy(alpha = 0.8f), modifier = Modifier.size(10.dp))
+                                                Icon(Icons.Default.Bookmark, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(12.dp))
+                                                Text(
+                                                    text = formatPlayerDuration(bmk),
+                                                    fontSize = 11.sp,
+                                                    color = Color.White,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                                IconButton(
+                                                    onClick = {
+                                                        hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                                        bookmarks = bookmarks.filter { it != bmk }
+                                                    },
+                                                    modifier = Modifier.size(16.dp)
+                                                ) {
+                                                    Icon(Icons.Default.Close, contentDescription = "Delete", tint = Color.Red.copy(alpha = 0.8f), modifier = Modifier.size(10.dp))
+                                                }
                                             }
                                         }
                                     }
@@ -3387,133 +4153,135 @@ fun PlayerScreen(
                     }
                 }
 
-                // SECTION 8: SUBTITLE ENGINE
-                Spacer(modifier = Modifier.height(16.dp))
-                Text(
-                    text = "SUBTITLE ENGINE",
-                    fontWeight = FontWeight.ExtraBold,
-                    fontSize = 11.sp,
-                    color = MaterialTheme.colorScheme.primary,
-                    letterSpacing = 1.5.sp,
-                    modifier = Modifier.padding(bottom = 8.dp)
-                )
+                if (!isAudio) {
+                    // SECTION 8: SUBTITLE ENGINE
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = "SUBTITLE ENGINE",
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.primary,
+                        letterSpacing = 1.5.sp,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
 
-                Card(
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)),
-                    shape = RoundedCornerShape(16.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(16.dp))
-                ) {
-                    Column(modifier = Modifier.padding(14.dp)) {
-                        // Subtitle Size Slider
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.FormatSize,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Text(
-                                text = "Font Size: ${prefs.subtitleSize.toInt()} sp",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 12.sp,
-                                color = Color.White
-                            )
-                        }
-                        Spacer(modifier = Modifier.height(6.dp))
-                        CustomSlider(
-                            value = prefs.subtitleSize,
-                            onValueChange = { size ->
-                                viewModel.updateSubtitleCustomization(
-                                    background = prefs.subtitleBackground,
-                                    textColor = prefs.subtitleTextColor,
-                                    size = size,
-                                    fontStyle = prefs.subtitleFontStyle
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)),
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(16.dp))
+                    ) {
+                        Column(modifier = Modifier.padding(14.dp)) {
+                            // Subtitle Size Slider
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.FormatSize,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(16.dp)
                                 )
-                            },
-                            valueRange = 12f..32f,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        // Subtitle Opacity Slider
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Opacity,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Text(
-                                text = "Opacity: ${(prefs.subtitleOpacity * 100).toInt()}%",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 12.sp,
-                                color = Color.White
-                            )
-                        }
-                        Spacer(modifier = Modifier.height(6.dp))
-                        CustomSlider(
-                            value = prefs.subtitleOpacity,
-                            onValueChange = { opacity ->
-                                viewModel.updateAdvancedSubtitleSettings(opacity = opacity, preset = "Custom")
-                            },
-                            valueRange = 0.1f..1.0f,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-
-                        Spacer(modifier = Modifier.height(14.dp))
-
-                        // Quick Presets Flow
-                        Text(
-                            text = "Color Presets",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.8f)
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            listOf(
-                                "Default White" to "#FFFFFF",
-                                "Vivid Yellow" to "#FFFF00",
-                                "Neon Cyan" to "#00FFFF",
-                                "Lime Green" to "#00FF00"
-                            ).forEach { (presetName, hexColor) ->
-                                val isSelected = prefs.subtitleTextColor.uppercase() == hexColor.uppercase()
-                                Box(
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(if (isSelected) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.08f))
-                                        .clickable {
-                                            viewModel.updateSubtitleCustomization(
-                                                background = prefs.subtitleBackground,
-                                                textColor = hexColor,
-                                                size = prefs.subtitleSize,
-                                                fontStyle = prefs.subtitleFontStyle
-                                            )
-                                        }
-                                        .padding(horizontal = 8.dp, vertical = 4.dp)
-                                ) {
-                                    Text(
-                                        text = presetName,
-                                        fontSize = 10.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = if (isSelected) Color.Black else Color.White
+                                Text(
+                                    text = "Font Size: ${prefs.subtitleSize.toInt()} sp",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp,
+                                    color = Color.White
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(6.dp))
+                            CustomSlider(
+                                value = prefs.subtitleSize,
+                                onValueChange = { size ->
+                                    viewModel.updateSubtitleCustomization(
+                                        background = prefs.subtitleBackground,
+                                        textColor = prefs.subtitleTextColor,
+                                        size = size,
+                                        fontStyle = prefs.subtitleFontStyle
                                     )
+                                },
+                                valueRange = 12f..32f,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            // Subtitle Opacity Slider
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Opacity,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Text(
+                                    text = "Opacity: ${(prefs.subtitleOpacity * 100).toInt()}%",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp,
+                                    color = Color.White
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(6.dp))
+                            CustomSlider(
+                                value = prefs.subtitleOpacity,
+                                onValueChange = { opacity ->
+                                    viewModel.updateAdvancedSubtitleSettings(opacity = opacity, preset = "Custom")
+                                },
+                                valueRange = 0.1f..1.0f,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+
+                            Spacer(modifier = Modifier.height(14.dp))
+
+                            // Quick Presets Flow
+                            Text(
+                                text = "Color Presets",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.8f)
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                listOf(
+                                    "Default White" to "#FFFFFF",
+                                    "Vivid Yellow" to "#FFFF00",
+                                    "Neon Cyan" to "#00FFFF",
+                                    "Lime Green" to "#00FF00"
+                                ).forEach { (presetName, hexColor) ->
+                                    val isSelected = prefs.subtitleTextColor.uppercase() == hexColor.uppercase()
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(if (isSelected) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.08f))
+                                            .clickable {
+                                                viewModel.updateSubtitleCustomization(
+                                                    background = prefs.subtitleBackground,
+                                                    textColor = hexColor,
+                                                    size = prefs.subtitleSize,
+                                                    fontStyle = prefs.subtitleFontStyle
+                                                )
+                                            }
+                                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                                    ) {
+                                        Text(
+                                            text = presetName,
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (isSelected) Color.Black else Color.White
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -3537,7 +4305,7 @@ fun PlayerScreen(
                     ) {
                         Icon(Icons.Default.Info, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Video Details", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Text(if (isAudio) "Audio Details" else "Video Details", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     }
 
                     Button(
@@ -3554,6 +4322,7 @@ fun PlayerScreen(
                         Text("Gestures Help", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.Black)
                     }
                 }
+                } // End of else block (Video-only advanced sections)
                 Spacer(modifier = Modifier.height(24.dp))
             }
         }
@@ -3792,6 +4561,100 @@ fun PlayerScreen(
              val configuration = androidx.compose.ui.platform.LocalConfiguration.current
              val isLandscape = configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
              val currentTracks = remember(tracksUpdateTrigger) { exoPlayer.currentTracks }
+             // 1. Helper functions for detailed track names
+             fun getFullAudioTrackName(format: androidx.media3.common.Format, index: Int): String {
+                 val langName = format.language?.let { langCode ->
+                     val locale = java.util.Locale(langCode)
+                     locale.getDisplayLanguage(locale).takeIf { it.isNotBlank() && it != langCode }
+                         ?: locale.displayLanguage.takeIf { it.isNotBlank() && it != langCode }
+                         ?: langCode.uppercase()
+                 }
+                 
+                 val channels = when (format.channelCount) {
+                     1 -> "Mono"
+                     2 -> "Stereo"
+                     6 -> "5.1 Surround"
+                     8 -> "7.1 Surround"
+                     else -> if (format.channelCount > 0) "${format.channelCount} Ch" else null
+                 }
+                 
+                 val mime = format.sampleMimeType?.substringAfter("/")?.uppercase()
+                     ?.replace("MPEG", "MP3")
+                     ?.replace("MP4A-LATM", "AAC")
+                     ?.replace("EAC3", "E-AC3")
+                     ?.replace("AC3", "AC3")
+
+                 val parts = mutableListOf<String>()
+                 
+                 if (!format.label.isNullOrBlank()) {
+                     parts.add(format.label!!)
+                 }
+                 
+                 if (!langName.isNullOrBlank() && (format.label == null || !format.label!!.contains(langName, ignoreCase = true))) {
+                     parts.add("[$langName]")
+                 }
+                 
+                 if (!channels.isNullOrBlank() && (format.label == null || !format.label!!.contains(channels, ignoreCase = true))) {
+                     parts.add(channels)
+                 }
+                 
+                 if (!mime.isNullOrBlank()) {
+                     parts.add(mime)
+                 }
+                 
+                 return if (parts.isNotEmpty()) parts.joinToString(" • ") else "Audio Track ${index + 1}"
+             }
+
+             fun getFullSubtitleTrackName(format: androidx.media3.common.Format, index: Int): String {
+                 val langName = format.language?.let { langCode ->
+                     val locale = java.util.Locale(langCode)
+                     locale.getDisplayLanguage(locale).takeIf { it.isNotBlank() && it != langCode }
+                         ?: locale.displayLanguage.takeIf { it.isNotBlank() && it != langCode }
+                         ?: langCode.uppercase()
+                 }
+                 
+                 val parts = mutableListOf<String>()
+                 
+                 if (!format.label.isNullOrBlank()) {
+                     parts.add(format.label!!)
+                 }
+                 
+                 if (!langName.isNullOrBlank() && (format.label == null || !format.label!!.contains(langName, ignoreCase = true))) {
+                     parts.add("[$langName]")
+                 }
+                 
+                 val roleFlagsList = mutableListOf<String>()
+                 if (format.roleFlags and androidx.media3.common.C.ROLE_FLAG_DESCRIBES_MUSIC_AND_SOUND != 0 ||
+                     format.roleFlags and androidx.media3.common.C.ROLE_FLAG_EASY_TO_READ != 0) {
+                     roleFlagsList.add("SDH/CC")
+                 }
+                 if (format.selectionFlags and androidx.media3.common.C.SELECTION_FLAG_FORCED != 0) {
+                     roleFlagsList.add("Forced")
+                 }
+                 if (roleFlagsList.isNotEmpty()) {
+                     parts.add(roleFlagsList.joinToString(", "))
+                 }
+                 
+                 return if (parts.isNotEmpty()) parts.joinToString(" • ") else "Subtitle ${index + 1}"
+             }
+
+             fun getFullVideoTrackName(format: androidx.media3.common.Format, index: Int): String {
+                 val parts = mutableListOf<String>()
+                 if (!format.label.isNullOrBlank()) {
+                     parts.add(format.label!!)
+                 }
+                 if (format.width > 0 && format.height > 0) {
+                     parts.add("${format.width}x${format.height}")
+                 }
+                 if (format.frameRate > 0) {
+                     parts.add("${format.frameRate.toInt()}fps")
+                 }
+                 val bitrate = format.bitrate
+                 if (bitrate > 0) {
+                     parts.add("${(bitrate / 1000000.0).let { "%.1f".format(it) }} Mbps")
+                 }
+                 return if (parts.isNotEmpty()) parts.joinToString(" • ") else "Video Quality ${index + 1}"
+             }
 
              // 1. Parse Audio Tracks
              val audioTracks = remember(currentTracks, tracksUpdateTrigger) {
@@ -3801,7 +4664,7 @@ fun PlayerScreen(
                      if (group.type == C.TRACK_TYPE_AUDIO) {
                          for (t in 0 until group.length) {
                              val format = group.getTrackFormat(t)
-                             val label = format.label ?: format.language ?: "Audio Track ${list.size + 1}"
+                             val label = getFullAudioTrackName(format, list.size)
                              list.add(Triple(g, t, label))
                          }
                      }
@@ -3817,7 +4680,7 @@ fun PlayerScreen(
                      if (group.type == C.TRACK_TYPE_TEXT) {
                          for (t in 0 until group.length) {
                              val format = group.getTrackFormat(t)
-                             val label = format.label ?: format.language ?: "Subtitle ${list.size + 1}"
+                             val label = getFullSubtitleTrackName(format, list.size)
                              list.add(Triple(g, t, label))
                          }
                      }
@@ -3833,7 +4696,7 @@ fun PlayerScreen(
                      if (group.type == C.TRACK_TYPE_VIDEO) {
                          for (t in 0 until group.length) {
                              val format = group.getTrackFormat(t)
-                             val label = format.label ?: "${format.width}x${format.height}"
+                             val label = getFullVideoTrackName(format, list.size)
                              list.add(Triple(g, t, label))
                          }
                      }
@@ -3895,8 +4758,15 @@ fun PlayerScreen(
                                          horizontalArrangement = Arrangement.SpaceBetween,
                                          modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 10.dp)
                                      ) {
-                                         Text(label, fontSize = 13.sp, color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal)
+                                         Text(
+                                             text = label,
+                                             fontSize = 13.sp,
+                                             color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                                             fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                             modifier = Modifier.weight(1f)
+                                         )
                                          if (isSelected) {
+                                             Spacer(modifier = Modifier.width(8.dp))
                                              Icon(Icons.Default.Check, contentDescription = "Active", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
                                          }
                                      }
@@ -3914,8 +4784,10 @@ fun PlayerScreen(
                                          val trackGroup = group.mediaTrackGroup
                                          exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
                                              .buildUpon()
+                                             .setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_AUDIO, false)
                                              .setOverrideForType(TrackSelectionOverride(trackGroup, tIndex))
                                              .build()
+                                         audioFallbackAttempted = false
                                          tracksUpdateTrigger++
                                      }
                                  ) {
@@ -3924,8 +4796,15 @@ fun PlayerScreen(
                                          horizontalArrangement = Arrangement.SpaceBetween,
                                          modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 10.dp)
                                      ) {
-                                         Text(label, fontSize = 13.sp, color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal)
+                                         Text(
+                                             text = label,
+                                             fontSize = 13.sp,
+                                             color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                                             fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                             modifier = Modifier.weight(1f)
+                                         )
                                          if (isSelected) {
+                                             Spacer(modifier = Modifier.width(8.dp))
                                              Icon(Icons.Default.Check, contentDescription = "Active", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
                                          }
                                      }
@@ -3973,8 +4852,15 @@ fun PlayerScreen(
                                          horizontalArrangement = Arrangement.SpaceBetween,
                                          modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 10.dp)
                                      ) {
-                                         Text(label, fontSize = 13.sp, color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal)
+                                         Text(
+                                             text = label,
+                                             fontSize = 13.sp,
+                                             color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                                             fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                             modifier = Modifier.weight(1f)
+                                         )
                                          if (isSelected) {
+                                             Spacer(modifier = Modifier.width(8.dp))
                                              Icon(Icons.Default.Check, contentDescription = "Active", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
                                          }
                                      }
@@ -4026,8 +4912,15 @@ fun PlayerScreen(
                                          horizontalArrangement = Arrangement.SpaceBetween,
                                          modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 10.dp)
                                      ) {
-                                         Text(label, fontSize = 13.sp, color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal)
+                                         Text(
+                                             text = label,
+                                             fontSize = 13.sp,
+                                             color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                                             fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                             modifier = Modifier.weight(1f)
+                                         )
                                          if (isSelected) {
+                                             Spacer(modifier = Modifier.width(8.dp))
                                              Icon(Icons.Default.Check, contentDescription = "Active", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
                                          }
                                      }
@@ -4107,8 +5000,15 @@ fun PlayerScreen(
                                          horizontalArrangement = Arrangement.SpaceBetween,
                                          modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 10.dp)
                                      ) {
-                                         Text(label, fontSize = 13.sp, color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal)
+                                         Text(
+                                             text = label,
+                                             fontSize = 13.sp,
+                                             color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                                             fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                             modifier = Modifier.weight(1f)
+                                         )
                                          if (isSelected) {
+                                             Spacer(modifier = Modifier.width(8.dp))
                                              Icon(Icons.Default.Check, contentDescription = "Active", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
                                          }
                                      }
@@ -4135,8 +5035,15 @@ fun PlayerScreen(
                                          horizontalArrangement = Arrangement.SpaceBetween,
                                          modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 10.dp)
                                      ) {
-                                         Text(label, fontSize = 13.sp, color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal)
+                                         Text(
+                                             text = label,
+                                             fontSize = 13.sp,
+                                             color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                                             fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                             modifier = Modifier.weight(1f)
+                                         )
                                          if (isSelected) {
+                                             Spacer(modifier = Modifier.width(8.dp))
                                              Icon(Icons.Default.Check, contentDescription = "Active", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
                                          }
                                      }
@@ -4649,10 +5556,6 @@ fun PlayerScreen(
     }
 }
 
-}
-
-}
-
 // Physical Vinyl disk view (Nordic cream styled)
 @Composable
 fun AudioVinylPlayer(
@@ -4674,9 +5577,7 @@ fun AudioVinylPlayer(
 
     Column(
         modifier = modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-            .padding(24.dp),
+            .padding(12.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {

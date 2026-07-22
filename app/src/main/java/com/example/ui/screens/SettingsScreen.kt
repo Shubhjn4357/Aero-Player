@@ -1760,6 +1760,38 @@ fun FolderSettingsScreen(
                             modifier = Modifier.clickable { showFolderManager() }
                         )
 
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                            val isAllFilesAllowed = android.os.Environment.isExternalStorageManager()
+                            val settingContext = LocalContext.current
+                            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+
+                            ListItem(
+                                headlineContent = { Text("Bypass Deletion Prompts", fontWeight = FontWeight.SemiBold) },
+                                supportingContent = { Text(if (isAllFilesAllowed) "All Files Access granted (direct deletion active)" else "Grant All Files Access to delete files without prompt") },
+                                leadingContent = { Icon(Icons.Default.Security, contentDescription = null, tint = if (isAllFilesAllowed) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error) },
+                                trailingContent = {
+                                    Button(
+                                        onClick = {
+                                            try {
+                                                val intent = android.content.Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                                                    data = android.net.Uri.parse("package:${settingContext.packageName}")
+                                                }
+                                                settingContext.startActivity(intent)
+                                            } catch (e: Exception) {
+                                                val intent = android.content.Intent(android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
+                                                settingContext.startActivity(intent)
+                                            }
+                                        },
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = if (isAllFilesAllowed) MaterialTheme.colorScheme.primary.copy(alpha = 0.5f) else MaterialTheme.colorScheme.primary
+                                        )
+                                    ) {
+                                        Text(if (isAllFilesAllowed) "Granted" else "Grant")
+                                    }
+                                }
+                            )
+                        }
+
                         HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
 
                         // autoRescanOnLaunch setting row
@@ -1802,7 +1834,7 @@ fun FolderSettingsScreen(
                             trailingContent = {
                                 TextButton(onClick = {
                                     viewModel.clearHistory()
-                                    android.widget.Toast.makeText(context, "History wiped permanently", android.widget.Toast.LENGTH_SHORT).show()
+                                    android.widget.Toast.makeText(context, "History wiped", android.widget.Toast.LENGTH_SHORT).show()
                                 }) {
                                     Text("Wipe", color = MaterialTheme.colorScheme.error)
                                 }

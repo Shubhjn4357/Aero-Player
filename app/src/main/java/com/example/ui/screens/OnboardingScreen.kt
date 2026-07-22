@@ -16,7 +16,9 @@ import androidx.compose.material.icons.filled.PlayCircleFilled
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -125,12 +127,71 @@ fun OnboardingScreen(
                             elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
                         ) {
                             Box(modifier = Modifier.fillMaxSize()) {
-                                Image(
-                                    painter = painterResource(id = com.example.R.drawable.img_aero_hero_banner),
-                                    contentDescription = "Aero Player Banner",
-                                    contentScale = ContentScale.Crop,
-                                    modifier = Modifier.fillMaxSize()
-                                )
+                                val context = androidx.compose.ui.platform.LocalContext.current
+                                val bannerPainter: androidx.compose.ui.graphics.painter.Painter? = remember(context) {
+                                    try {
+                                        val drawable = androidx.core.content.ContextCompat.getDrawable(context, com.example.R.drawable.img_aero_hero_banner)
+                                        if (drawable != null) {
+                                            val bitmap = android.graphics.Bitmap.createBitmap(
+                                                drawable.intrinsicWidth.coerceAtLeast(1),
+                                                drawable.intrinsicHeight.coerceAtLeast(1),
+                                                android.graphics.Bitmap.Config.ARGB_8888
+                                            )
+                                            val canvas = android.graphics.Canvas(bitmap)
+                                            drawable.setBounds(0, 0, canvas.width, canvas.height)
+                                            drawable.draw(canvas)
+                                            androidx.compose.ui.graphics.painter.BitmapPainter(
+                                                bitmap.asImageBitmap()
+                                            )
+                                        } else {
+                                            null
+                                        }
+                                    } catch (t: Throwable) {
+                                        android.util.Log.e("OnboardingScreen", "Failed to load hero banner", t)
+                                        null
+                                    }
+                                }
+
+                                if (bannerPainter != null) {
+                                    Image(
+                                        painter = bannerPainter,
+                                        contentDescription = "Aero Player Banner",
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier.fillMaxSize()
+                                    )
+                                } else {
+                                    // Beautiful fallback linear gradient with audio waves visual
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .background(
+                                                androidx.compose.ui.graphics.Brush.linearGradient(
+                                                    colors = listOf(
+                                                        MaterialTheme.colorScheme.primary,
+                                                        MaterialTheme.colorScheme.tertiary,
+                                                        MaterialTheme.colorScheme.secondary
+                                                    )
+                                                )
+                                            ),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(16.dp),
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            val waveHeights = listOf(24.dp, 48.dp, 36.dp, 60.dp, 40.dp, 56.dp, 30.dp, 48.dp, 20.dp)
+                                            waveHeights.forEach { height ->
+                                                Box(
+                                                    modifier = Modifier
+                                                        .width(4.dp)
+                                                        .height(height)
+                                                        .background(Color.White.copy(alpha = 0.6f), RoundedCornerShape(2.dp))
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
                                 // Overlaid semi-transparent layer for better readability
                                 Box(
                                     modifier = Modifier

@@ -54,6 +54,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application), A
 
     // Picture-in-Picture & System Notification State
     val isInPipMode = MutableStateFlow(false)
+
+    internal val _pendingDeleteIntent = MutableStateFlow<android.content.IntentSender?>(null)
+    val pendingDeleteIntent: StateFlow<android.content.IntentSender?> = _pendingDeleteIntent.asStateFlow()
+
+    fun clearPendingDeleteIntent() {
+        _pendingDeleteIntent.value = null
+    }
     internal val notificationManager = application.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
     internal val CHANNEL_ID = "aero_player_channel"
     internal var mediaSession: androidx.media3.session.MediaSession? = null
@@ -76,25 +83,80 @@ class MainViewModel(application: Application) : AndroidViewModel(application), A
     internal val _currentEqualizerPreset = MutableStateFlow("Normal")
     val currentEqualizerPreset: StateFlow<String> = _currentEqualizerPreset.asStateFlow()
 
+    private var isExoPlayerInitialized = false
+
     val exoPlayer: ExoPlayer by lazy {
-        val renderersFactory = androidx.media3.exoplayer.DefaultRenderersFactory(application).apply {
-            setExtensionRendererMode(androidx.media3.exoplayer.DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
-        }
-        val loadControl = androidx.media3.exoplayer.DefaultLoadControl.Builder()
-            .setBufferDurationsMs(
-                50000, // minBufferMs
-                120000, // maxBufferMs (4k buffer boost)
-                1500, // bufferForPlaybackMs
-                2500  // bufferForPlaybackAfterRebufferMs
+        isExoPlayerInitialized = true
+        var player: ExoPlayer? = null
+        try {
+            val audioCapabilities = androidx.media3.exoplayer.audio.AudioCapabilities(
+                intArrayOf(
+                    android.media.AudioFormat.ENCODING_PCM_16BIT,
+                    android.media.AudioFormat.ENCODING_PCM_FLOAT,
+                    android.media.AudioFormat.ENCODING_PCM_24BIT_PACKED,
+                    android.media.AudioFormat.ENCODING_PCM_32BIT
+                ),
+                8
             )
-            .build()
-        ExoPlayer.Builder(application)
-            .setRenderersFactory(renderersFactory)
-            .setLoadControl(loadControl)
-            .build()
-            .apply {
-                playWhenReady = true
-                setSeekParameters(androidx.media3.exoplayer.SeekParameters.CLOSEST_SYNC)
+
+            val renderersFactory = object : androidx.media3.exoplayer.DefaultRenderersFactory(application) {
+                override fun buildAudioSink(
+                    context: android.content.Context,
+                    enableFloatOutput: Boolean,
+                    enableAudioTrackPlaybackParams: Boolean
+                ): androidx.media3.exoplayer.audio.AudioSink {
+                    return androidx.media3.exoplayer.audio.DefaultAudioSink.Builder(context)
+                        .setEnableFloatOutput(true)
+                        .setEnableAudioTrackPlaybackParams(true)
+                        .setAudioCapabilities(audioCapabilities)
+                        .build()
+                }
+            }.apply {
+                setExtensionRendererMode(androidx.media3.exoplayer.DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
+                setEnableDecoderFallback(true)
+                setMediaCodecSelector(androidx.media3.exoplayer.mediacodec.MediaCodecSelector.DEFAULT)
+            }
+
+            val trackSelector = androidx.media3.exoplayer.trackselection.DefaultTrackSelector(application).apply {
+                parameters = buildUponParameters()
+                    .setSelectUndeterminedTextLanguage(true)
+                    .setExceedAudioConstraintsIfNecessary(true)
+                    .setExceedRendererCapabilitiesIfNecessary(true)
+                    .setAllowAudioMixedChannelCountAdaptiveness(true)
+                    .setAllowAudioMixedMimeTypeAdaptiveness(true)
+                    .setAllowAudioMixedSampleRateAdaptiveness(true)
+                    .setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_AUDIO, false)
+                    .build()
+            }
+
+            val loadControl = androidx.media3.exoplayer.DefaultLoadControl.Builder()
+                .setBufferDurationsMs(
+                    50000, // minBufferMs
+                    120000, // maxBufferMs (4k buffer boost)
+                    1500, // bufferForPlaybackMs
+                    2500  // bufferForPlaybackAfterRebufferMs
+                )
+                .build()
+
+            player = ExoPlayer.Builder(application)
+                .setRenderersFactory(renderersFactory)
+                .setTrackSelector(trackSelector)
+                .setLoadControl(loadControl)
+                .build()
+        } catch (t: Throwable) {
+            Log.e("MainViewModel", "Failed to build optimized ExoPlayer, using simple fallback", t)
+            try {
+                player = ExoPlayer.Builder(application).build()
+            } catch (t2: Throwable) {
+                Log.e("MainViewModel", "Fatal: Failed to build even simple ExoPlayer", t2)
+            }
+        }
+
+        val finalPlayer = player ?: throw IllegalStateException("Could not initialize ExoPlayer")
+
+        finalPlayer.apply {
+            playWhenReady = true
+            setSeekParameters(androidx.media3.exoplayer.SeekParameters.CLOSEST_SYNC)
             addListener(object : Player.Listener {
                 override fun onIsPlayingChanged(isPlaying: Boolean) {
                     updateNotificationState()
@@ -281,10 +343,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application), A
             while (true) {
                 kotlinx.coroutines.delay(1000)
                 try {
-                    if (exoPlayer.isPlaying) {
+                    if (_currentPlayingItem.value != null && exoPlayer.isPlaying) {
                         updateNotificationState()
                     }
-                } catch (e: Exception) {
+                } catch (e: Throwable) {
                     Log.e("MainViewModel", "Ticker update failed", e)
                 }
             }
@@ -454,37 +516,92 @@ class MainViewModel(application: Application) : AndroidViewModel(application), A
                 Log.e("MainViewModel", "Error updating deletedUrisJson preference", e)
             }
 
+            val context = getApplication<Application>()
+            val urisThatNeedPrompt = mutableListOf<android.net.Uri>()
+
             items.forEach { item ->
                 mediaRepository.deleteMedia(item.uriString)
-                try {
-                    val context = getApplication<Application>()
-                    // 1. First always try direct file deletion if path exists
-                    if (item.path.isNotBlank()) {
+                var deletedSilently = false
+                if (item.path.isNotBlank()) {
+                    try {
                         val file = java.io.File(item.path)
                         if (file.exists()) {
                             val deleted = file.delete()
-                            Log.d("MainViewModel", "Physical file deletion for ${item.path}: $deleted")
-                            
-                            // Notify Android Media Store to update and remove file from index
-                            android.media.MediaScannerConnection.scanFile(
-                                context,
-                                arrayOf(item.path),
-                                null
-                            ) { path, uri ->
-                                Log.d("MainViewModel", "MediaStore updated for deleted file: $path -> $uri")
+                            Log.d("MainViewModel", "Direct physical file deletion for ${item.path}: $deleted")
+                            if (deleted) {
+                                deletedSilently = true
+                                android.media.MediaScannerConnection.scanFile(
+                                    context,
+                                    arrayOf(item.path),
+                                    null
+                                ) { path, uri ->
+                                    Log.d("MainViewModel", "MediaStore updated for directly deleted file: $path -> $uri")
+                                    viewModelScope.launch {
+                                        scanLocalMedia()
+                                    }
+                                }
                             }
+                        } else {
+                            deletedSilently = true
+                        }
+                    } catch (e: Exception) {
+                        Log.e("MainViewModel", "Direct file delete failed: ${item.path}", e)
+                    }
+                }
+                if (item.uriString.startsWith("content://")) {
+                    val uri = android.net.Uri.parse(item.uriString)
+                    try {
+                        context.contentResolver.delete(uri, null, null)
+                        deletedSilently = true
+                        Log.d("MainViewModel", "ContentResolver deleted URI silently: $uri")
+                    } catch (securityException: SecurityException) {
+                        Log.w("MainViewModel", "SecurityException on silent delete for URI: $uri. Prompt needed.", securityException)
+                        if (!deletedSilently) {
+                            urisThatNeedPrompt.add(uri)
+                        }
+                    } catch (e: Exception) {
+                        Log.e("MainViewModel", "Error deleting URI: $uri", e)
+                        if (!deletedSilently) {
+                            urisThatNeedPrompt.add(uri)
                         }
                     }
-                    // 2. Also try content resolver delete for content providers
-                    if (item.uriString.startsWith("content://")) {
-                        val contentResolver = context.contentResolver
-                        val uri = android.net.Uri.parse(item.uriString)
-                        contentResolver.delete(uri, null, null)
-                        Log.d("MainViewModel", "ContentResolver deletion for URI: ${item.uriString}")
-                    }
-                } catch (e: Exception) {
-                    Log.e("MainViewModel", "Error physically deleting file: ${item.path}", e)
                 }
+            }
+
+            if (urisThatNeedPrompt.isNotEmpty()) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    try {
+                        val pendingIntent = android.provider.MediaStore.createDeleteRequest(context.contentResolver, urisThatNeedPrompt)
+                        _pendingDeleteIntent.value = pendingIntent.intentSender
+                    } catch (e: Exception) {
+                        Log.e("MainViewModel", "MediaStore.createDeleteRequest failed, falling back", e)
+                        deleteUrisOneByOne(urisThatNeedPrompt, context)
+                    }
+                } else {
+                    deleteUrisOneByOne(urisThatNeedPrompt, context)
+                }
+            } else {
+                scanLocalMedia()
+            }
+        }
+    }
+
+    private fun deleteUrisOneByOne(uris: List<android.net.Uri>, context: Context) {
+        uris.forEach { uri ->
+            try {
+                context.contentResolver.delete(uri, null, null)
+                Log.d("MainViewModel", "ContentResolver deletion for URI: $uri")
+            } catch (securityException: SecurityException) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    val rse = securityException as? android.app.RecoverableSecurityException
+                    if (rse != null) {
+                        _pendingDeleteIntent.value = rse.userAction.actionIntent.intentSender
+                    }
+                } else {
+                    Log.e("MainViewModel", "SecurityException deleting URI: $uri", securityException)
+                }
+            } catch (e: Exception) {
+                Log.e("MainViewModel", "Error deleting URI: $uri", e)
             }
         }
     }
@@ -525,10 +642,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application), A
         try {
             androidEqualizer?.release()
         } catch (e: Exception) {}
-        try {
-            exoPlayer.release()
-        } catch (e: Exception) {
-            Log.e("MainViewModel", "Error releasing ExoPlayer in onCleared", e)
+        if (isExoPlayerInitialized) {
+            try {
+                exoPlayer.release()
+            } catch (e: Exception) {
+                Log.e("MainViewModel", "Error releasing ExoPlayer in onCleared", e)
+            }
         }
     }
 

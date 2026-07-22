@@ -172,9 +172,10 @@ class MediaRepository(private val mediaDao: MediaDao) {
         }
 
         // Seeding preloaded/online content so users can play and download from web
+        val packageName = context.packageName
         val preloadedItems = listOf(
             MediaEntity(
-                uriString = "android.resource://com.example/raw/sample_track",
+                uriString = "android.resource://$packageName/raw/sample_track",
                 title = "Aero Premium Beats (Offline Demo)",
                 artist = "Aero Collective",
                 album = "Aero Showcase",
@@ -182,7 +183,7 @@ class MediaRepository(private val mediaDao: MediaDao) {
                 size = 8945228,
                 dateAdded = System.currentTimeMillis() / 1000,
                 isVideo = false,
-                path = "android.resource://com.example/raw/sample_track",
+                path = "android.resource://$packageName/raw/sample_track",
                 mimeType = "audio/mp3",
                 genre = "Audio"
             ),

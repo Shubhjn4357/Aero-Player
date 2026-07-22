@@ -533,8 +533,9 @@ fun FolderTabContent(
                             ) {
                                 Box(
                                     modifier = Modifier
-                                        .size(64.dp)
-                                        .clip(RoundedCornerShape(12.dp))
+                                        .width(75.dp)
+                                        .height(50.dp)
+                                        .clip(RoundedCornerShape(2.dp))
                                 ) {
                                     VideoThumbnailItem(file)
                                     val progress = historyProgressMap[file.uriString]
@@ -901,8 +902,9 @@ fun FolderTabContent(
                                     ) {
                                         Box(
                                             modifier = Modifier
-                                                .size(64.dp)
-                                                .clip(RoundedCornerShape(12.dp))
+                                                .width(75.dp)
+                                                .height(50.dp)
+                                                .clip(RoundedCornerShape(2.dp))
                                         ) {
                                             VideoThumbnailItem(file)
                                              val progress = historyProgressMap[file.uriString]
@@ -1066,23 +1068,7 @@ fun FolderThumbnail(
             modifier = Modifier.size(28.dp)
         )
         
-        // Count Badge
-        if (folderFiles.isNotEmpty()) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(4.dp)
-                    .background(accentColor, RoundedCornerShape(6.dp))
-                    .padding(horizontal = 4.dp, vertical = 2.dp)
-            ) {
-                Text(
-                    text = folderFiles.size.toString(),
-                    color = MaterialTheme.colorScheme.onPrimary,
-                    fontSize = 8.sp,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-        }
+        // Count Badge removed
     }
 }
 
