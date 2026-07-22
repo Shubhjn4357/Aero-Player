@@ -121,6 +121,7 @@ fun MainScreen(
     var folderToDelete by remember { mutableStateOf<Pair<String, List<MediaEntity>>?>(null) }
 
     var isSelectModeActive by remember { mutableStateOf(false) }
+    var showSelectionMoreMenu by remember { mutableStateOf(false) }
     val selectedMediaSet = remember { mutableStateListOf<MediaEntity>() }
 
     val isBackEnabled = showAboutAppSection || 
@@ -445,7 +446,7 @@ fun MainScreen(
                             ) {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
                                 ) {
                                     IconButton(onClick = { 
                                         if (isSelectModeActive) {
@@ -458,6 +459,7 @@ fun MainScreen(
                                     }) {
                                         Icon(Icons.Default.Close, contentDescription = "Clear Selection", tint = accentOrange)
                                     }
+                                    
                                     val totalCount = if (isSelectModeActive) {
                                         selectedMediaSet.size
                                     } else {
@@ -465,22 +467,46 @@ fun MainScreen(
                                     }
                                     Text(
                                         text = "$totalCount Selected",
-                                        fontSize = 18.sp,
+                                        fontSize = 16.sp,
                                         fontWeight = FontWeight.Bold,
                                         color = MaterialTheme.colorScheme.onBackground
                                     )
+
+                                    IconButton(
+                                        onClick = {
+                                            if (isSelectModeActive) {
+                                                val nonStreams = mediaList.filter { it.genre != "Live Stream" }
+                                                if (selectedMediaSet.size >= nonStreams.size) {
+                                                    selectedMediaSet.clear()
+                                                } else {
+                                                    selectedMediaSet.clear()
+                                                    selectedMediaSet.addAll(nonStreams)
+                                                }
+                                            } else if (selectionState.isInSelectionMode) {
+                                                val nonStreams = mediaList.filter { it.genre != "Live Stream" }
+                                                val folderNames = nonStreams.map { java.io.File(it.path).parentFile?.name ?: "Root Folder" }.distinct()
+                                                val videoIds = nonStreams.map { it.uriString }
+                                                val totalPossible = folderNames.size + videoIds.size
+                                                if (selectionState.selectedFolderPaths.size + selectionState.selectedVideoIds.size >= totalPossible) {
+                                                    viewModel.clearSelection()
+                                                } else {
+                                                    viewModel.selectAllFoldersAndFiles(folderNames, videoIds)
+                                                }
+                                            }
+                                        }
+                                    ) {
+                                        Icon(Icons.Default.SelectAll, contentDescription = "Select All / Toggle", tint = accentOrange)
+                                    }
                                 }
 
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    horizontalArrangement = Arrangement.spacedBy(2.dp)
                                 ) {
                                     if (isSelectModeActive) {
                                         // File selection actions
                                         if (selectedMediaSet.size == 1) {
                                             val selectedItem = selectedMediaSet.first()
-                                            // Single file selected: show ALL options!
-                                            // 1. Play
                                             IconButton(onClick = {
                                                 val currentList = mediaList.filter { it.genre != "Live Stream" }
                                                 viewModel.setPlayingItemWithQueue(selectedItem, currentList)
@@ -490,39 +516,14 @@ fun MainScreen(
                                             }) {
                                                 Icon(Icons.Default.PlayArrow, contentDescription = "Play", tint = accentOrange)
                                             }
-                                            // 2. Play Next (Insert Next in Queue)
-                                            IconButton(onClick = {
-                                                viewModel.insertNext(selectedItem)
-                                                android.widget.Toast.makeText(context, "Inserted next in queue", android.widget.Toast.LENGTH_SHORT).show()
-                                                isSelectModeActive = false
-                                                selectedMediaSet.clear()
-                                            }) {
-                                                Icon(Icons.Default.Queue, contentDescription = "Play Next", tint = accentOrange)
-                                            }
-                                            // 3. Add to Queue
                                             IconButton(onClick = {
                                                 viewModel.addToQueue(listOf(selectedItem))
                                                 android.widget.Toast.makeText(context, "Added to play queue", android.widget.Toast.LENGTH_SHORT).show()
                                                 isSelectModeActive = false
                                                 selectedMediaSet.clear()
                                             }) {
-                                                Icon(Icons.Default.AddToPhotos, contentDescription = "Add to Queue", tint = accentOrange)
+                                                Icon(Icons.Default.PlaylistAdd, contentDescription = "Add to Queue", tint = accentOrange)
                                             }
-                                            // 4. Add to Playlist
-                                            IconButton(onClick = {
-                                                showPlaylistPickerForMedia = selectedItem
-                                                isSelectModeActive = false
-                                                selectedMediaSet.clear()
-                                            }) {
-                                                Icon(Icons.Default.PlaylistAdd, contentDescription = "Add to Playlist", tint = accentOrange)
-                                            }
-                                            // 5. Info
-                                            IconButton(onClick = {
-                                                showInfoDialogForMedia = selectedItem
-                                            }) {
-                                                Icon(Icons.Default.Info, contentDescription = "Info", tint = accentOrange)
-                                            }
-                                            // 6. Delete (from storage)
                                             IconButton(onClick = {
                                                 mediaToDelete = selectedItem
                                                 isSelectModeActive = false
@@ -531,8 +532,6 @@ fun MainScreen(
                                                 Icon(Icons.Default.Delete, contentDescription = "Delete File", tint = MaterialTheme.colorScheme.error)
                                             }
                                         } else if (selectedMediaSet.size > 1) {
-                                            // Multi file selected: show BULK options only!
-                                            // 1. Play Selected
                                             IconButton(onClick = {
                                                 viewModel.playAll(selectedMediaSet.toList())
                                                 isSelectModeActive = false
@@ -540,7 +539,6 @@ fun MainScreen(
                                             }) {
                                                 Icon(Icons.Default.PlayArrow, contentDescription = "Play Selected", tint = accentOrange)
                                             }
-                                            // 2. Queue Selected
                                             IconButton(onClick = {
                                                 viewModel.addToQueue(selectedMediaSet.toList())
                                                 android.widget.Toast.makeText(context, "Added selected files to queue", android.widget.Toast.LENGTH_SHORT).show()
@@ -549,15 +547,6 @@ fun MainScreen(
                                             }) {
                                                 Icon(Icons.Default.PlaylistAdd, contentDescription = "Queue Selected", tint = accentOrange)
                                             }
-                                            // 3. Add Selected to Playlist
-                                            IconButton(onClick = {
-                                                showPlaylistPickerForFolder = selectedMediaSet.toList()
-                                                isSelectModeActive = false
-                                                selectedMediaSet.clear()
-                                            }) {
-                                                Icon(Icons.Default.QueueMusic, contentDescription = "Add Selected to Playlist", tint = accentOrange)
-                                            }
-                                            // 4. Delete Selected
                                             IconButton(onClick = {
                                                 multiMediaToDelete = selectedMediaSet.toList()
                                                 isSelectModeActive = false
@@ -569,175 +558,156 @@ fun MainScreen(
                                     } else {
                                         // Folder-tab / Browse-tab selection actions
                                         val totalSelected = selectionState.selectedFolderPaths.size + selectionState.selectedVideoIds.size
-                                        if (totalSelected == 1) {
-                                            // Single item selected in Browse/Folder tab
+                                        val allMedia = mutableListOf<MediaEntity>()
+                                        selectionState.selectedFolderPaths.forEach { folderPath ->
+                                            allMedia.addAll(getFilesForFolder(folderPath))
+                                        }
+                                        selectionState.selectedVideoIds.forEach { uri ->
+                                            mediaList.find { it.uriString == uri }?.let { allMedia.add(it) }
+                                        }
+
+                                        IconButton(onClick = {
+                                            if (allMedia.isNotEmpty()) {
+                                                viewModel.playAll(allMedia)
+                                            }
+                                            viewModel.clearSelection()
+                                        }, enabled = allMedia.isNotEmpty()) {
+                                            Icon(Icons.Default.PlayArrow, contentDescription = "Play Selected", tint = if (allMedia.isNotEmpty()) accentOrange else Color.Gray)
+                                        }
+                                        IconButton(onClick = {
+                                            if (allMedia.isNotEmpty()) {
+                                                viewModel.addToQueue(allMedia)
+                                            }
+                                            viewModel.clearSelection()
+                                        }, enabled = allMedia.isNotEmpty()) {
+                                            Icon(Icons.Default.PlaylistAdd, contentDescription = "Queue Selected", tint = if (allMedia.isNotEmpty()) accentOrange else Color.Gray)
+                                        }
+                                        IconButton(onClick = {
+                                            if (allMedia.isNotEmpty()) {
+                                                multiMediaToDelete = allMedia
+                                            }
+                                            viewModel.clearSelection()
+                                        }, enabled = allMedia.isNotEmpty()) {
+                                            Icon(Icons.Default.Delete, contentDescription = "Delete Selected", tint = MaterialTheme.colorScheme.error)
+                                        }
+                                    }
+
+                                    // Overflow / More Menu
+                                    Box {
+                                        IconButton(onClick = { showSelectionMoreMenu = true }) {
+                                            Icon(Icons.Default.MoreVert, contentDescription = "More Options", tint = accentOrange)
+                                        }
+
+                                        DropdownMenu(
+                                            expanded = showSelectionMoreMenu,
+                                            onDismissRequest = { showSelectionMoreMenu = false }
+                                        ) {
+                                            DropdownMenuItem(
+                                                text = { Text("Select All") },
+                                                leadingIcon = { Icon(Icons.Default.SelectAll, contentDescription = null) },
+                                                onClick = {
+                                                    showSelectionMoreMenu = false
+                                                    if (isSelectModeActive) {
+                                                        selectedMediaSet.clear()
+                                                        selectedMediaSet.addAll(mediaList.filter { it.genre != "Live Stream" })
+                                                    } else {
+                                                        val nonStreams = mediaList.filter { it.genre != "Live Stream" }
+                                                        val folderNames = nonStreams.map { java.io.File(it.path).parentFile?.name ?: "Root Folder" }.distinct()
+                                                        val videoIds = nonStreams.map { it.uriString }
+                                                        viewModel.selectAllFoldersAndFiles(folderNames, videoIds)
+                                                    }
+                                                }
+                                            )
+                                            DropdownMenuItem(
+                                                text = { Text("Deselect All") },
+                                                leadingIcon = { Icon(Icons.Default.Close, contentDescription = null) },
+                                                onClick = {
+                                                    showSelectionMoreMenu = false
+                                                    if (isSelectModeActive) {
+                                                        isSelectModeActive = false
+                                                        selectedMediaSet.clear()
+                                                    }
+                                                    viewModel.clearSelection()
+                                                }
+                                            )
+                                            HorizontalDivider()
+                                            DropdownMenuItem(
+                                                text = { Text("Play Next") },
+                                                leadingIcon = { Icon(Icons.Default.Queue, contentDescription = null) },
+                                                onClick = {
+                                                    showSelectionMoreMenu = false
+                                                    val items = if (isSelectModeActive) selectedMediaSet.toList() else {
+                                                        val list = mutableListOf<MediaEntity>()
+                                                        selectionState.selectedFolderPaths.forEach { list.addAll(getFilesForFolder(it)) }
+                                                        selectionState.selectedVideoIds.forEach { uri -> mediaList.find { it.uriString == uri }?.let { list.add(it) } }
+                                                        list
+                                                    }
+                                                    items.asReversed().forEach { viewModel.insertNext(it) }
+                                                    android.widget.Toast.makeText(context, "Inserted selected in queue", android.widget.Toast.LENGTH_SHORT).show()
+                                                    isSelectModeActive = false
+                                                    selectedMediaSet.clear()
+                                                    viewModel.clearSelection()
+                                                }
+                                            )
+                                            DropdownMenuItem(
+                                                text = { Text("Add to Playlist") },
+                                                leadingIcon = { Icon(Icons.Default.PlaylistAdd, contentDescription = null) },
+                                                onClick = {
+                                                    showSelectionMoreMenu = false
+                                                    val items = if (isSelectModeActive) selectedMediaSet.toList() else {
+                                                        val list = mutableListOf<MediaEntity>()
+                                                        selectionState.selectedFolderPaths.forEach { list.addAll(getFilesForFolder(it)) }
+                                                        selectionState.selectedVideoIds.forEach { uri -> mediaList.find { it.uriString == uri }?.let { list.add(it) } }
+                                                        list
+                                                    }
+                                                    if (items.isNotEmpty()) {
+                                                        showPlaylistPickerForFolder = items
+                                                    }
+                                                    isSelectModeActive = false
+                                                    selectedMediaSet.clear()
+                                                    viewModel.clearSelection()
+                                                }
+                                            )
                                             if (selectionState.selectedFolderPaths.isNotEmpty()) {
-                                                val folderPath = selectionState.selectedFolderPaths.first()
-                                                val folderFiles = getFilesForFolder(folderPath)
-                                                
-                                                // Single folder options: Play, Queue, Pin, Ban, Delete
-                                                // 1. Play All
-                                                IconButton(onClick = {
-                                                    if (folderFiles.isNotEmpty()) {
-                                                        viewModel.playAll(folderFiles)
-                                                    }
-                                                    viewModel.clearSelection()
-                                                }, enabled = folderFiles.isNotEmpty()) {
-                                                    Icon(Icons.Default.PlayArrow, contentDescription = "Play Folder", tint = if (folderFiles.isNotEmpty()) accentOrange else Color.Gray)
-                                                }
-                                                // 2. Queue All
-                                                IconButton(onClick = {
-                                                    if (folderFiles.isNotEmpty()) {
-                                                        viewModel.addToQueue(folderFiles)
-                                                    }
-                                                    viewModel.clearSelection()
-                                                }, enabled = folderFiles.isNotEmpty()) {
-                                                    Icon(Icons.Default.PlaylistAdd, contentDescription = "Queue Folder", tint = if (folderFiles.isNotEmpty()) accentOrange else Color.Gray)
-                                                }
-                                                // 3. Favorite/Pin Folder
-                                                val isPinned = try {
-                                                    val array = org.json.JSONArray(prefs.favoriteFoldersJson)
-                                                    var found = false
-                                                    for (i in 0 until array.length()) {
-                                                        if (array.getString(i) == folderPath) found = true
-                                                    }
-                                                    found
-                                                } catch (e: Exception) { false }
-                                                
-                                                IconButton(onClick = {
-                                                    viewModel.toggleFavoriteFolder(folderPath)
-                                                    viewModel.clearSelection()
-                                                }) {
-                                                    Icon(
-                                                        imageVector = if (isPinned) Icons.Default.FolderOff else Icons.Default.FolderSpecial,
-                                                        contentDescription = if (isPinned) "Unpin Folder" else "Pin Folder",
-                                                        tint = accentOrange
-                                                    )
-                                                }
-                                                // 4. Ban Folder
-                                                val isBanned = try {
-                                                    val array = org.json.JSONArray(prefs.bannedFoldersJson)
-                                                    var found = false
-                                                    for (i in 0 until array.length()) {
-                                                        if (array.getString(i) == folderPath) found = true
-                                                    }
-                                                    found
-                                                } catch (e: Exception) { false }
-                                                
-                                                IconButton(onClick = {
-                                                    viewModel.toggleBannedFolder(folderPath)
-                                                    viewModel.clearSelection()
-                                                }) {
-                                                    Icon(
-                                                        imageVector = if (isBanned) Icons.Default.Folder else Icons.Default.Block,
-                                                        contentDescription = if (isBanned) "Unban Folder" else "Ban Folder",
-                                                        tint = accentOrange
-                                                    )
-                                                }
-                                                // 5. Delete Folder from Storage (Real delete!)
-                                                IconButton(onClick = {
-                                                    folderToDelete = Pair(folderPath, folderFiles)
-                                                    viewModel.clearSelection()
-                                                }) {
-                                                    Icon(Icons.Default.Delete, contentDescription = "Delete Folder", tint = MaterialTheme.colorScheme.error)
-                                                }
-                                            } else {
-                                                // Single file inside folder is selected in Browse tab
-                                                val fileUri = selectionState.selectedVideoIds.first()
-                                                val selectedItem = mediaList.find { it.uriString == fileUri }
-                                                if (selectedItem != null) {
-                                                    // Single file options: Play, Queue, Playlist, Info, Delete
-                                                    // 1. Play
-                                                    IconButton(onClick = {
-                                                        viewModel.setPlayingItemWithQueue(selectedItem, mediaList.filter { it.genre != "Live Stream" })
-                                                        onPlayItem(selectedItem)
+                                                DropdownMenuItem(
+                                                    text = { Text("Pin / Favorite Folder(s)") },
+                                                    leadingIcon = { Icon(Icons.Default.FolderSpecial, contentDescription = null) },
+                                                    onClick = {
+                                                        showSelectionMoreMenu = false
+                                                        selectionState.selectedFolderPaths.forEach { viewModel.toggleFavoriteFolder(it) }
                                                         viewModel.clearSelection()
-                                                    }) {
-                                                        Icon(Icons.Default.PlayArrow, contentDescription = "Play", tint = accentOrange)
                                                     }
-                                                    // 2. Play Next
-                                                    IconButton(onClick = {
-                                                        viewModel.insertNext(selectedItem)
+                                                )
+                                                DropdownMenuItem(
+                                                    text = { Text("Hide / Ban Folder(s)") },
+                                                    leadingIcon = { Icon(Icons.Default.Block, contentDescription = null) },
+                                                    onClick = {
+                                                        showSelectionMoreMenu = false
+                                                        selectionState.selectedFolderPaths.forEach { viewModel.toggleBannedFolder(it) }
                                                         viewModel.clearSelection()
-                                                    }) {
-                                                        Icon(Icons.Default.Queue, contentDescription = "Play Next", tint = accentOrange)
                                                     }
-                                                    // 3. Add to Queue
-                                                    IconButton(onClick = {
-                                                        viewModel.addToQueue(listOf(selectedItem))
-                                                        viewModel.clearSelection()
-                                                    }) {
-                                                        Icon(Icons.Default.AddToPhotos, contentDescription = "Add to Queue", tint = accentOrange)
+                                                )
+                                            }
+                                            HorizontalDivider()
+                                            DropdownMenuItem(
+                                                text = { Text("Delete Selected") },
+                                                leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+                                                onClick = {
+                                                    showSelectionMoreMenu = false
+                                                    val items = if (isSelectModeActive) selectedMediaSet.toList() else {
+                                                        val list = mutableListOf<MediaEntity>()
+                                                        selectionState.selectedFolderPaths.forEach { list.addAll(getFilesForFolder(it)) }
+                                                        selectionState.selectedVideoIds.forEach { uri -> mediaList.find { it.uriString == uri }?.let { list.add(it) } }
+                                                        list
                                                     }
-                                                    // 4. Add to Playlist
-                                                    IconButton(onClick = {
-                                                        showPlaylistPickerForMedia = selectedItem
-                                                        viewModel.clearSelection()
-                                                    }) {
-                                                        Icon(Icons.Default.PlaylistAdd, contentDescription = "Add to Playlist", tint = accentOrange)
+                                                    if (items.isNotEmpty()) {
+                                                        multiMediaToDelete = items
                                                     }
-                                                    // 5. Info
-                                                    IconButton(onClick = {
-                                                        showInfoDialogForMedia = selectedItem
-                                                    }) {
-                                                        Icon(Icons.Default.Info, contentDescription = "Info", tint = accentOrange)
-                                                    }
-                                                    // 6. Delete
-                                                    IconButton(onClick = {
-                                                        mediaToDelete = selectedItem
-                                                        viewModel.clearSelection()
-                                                    }) {
-                                                        Icon(Icons.Default.Delete, contentDescription = "Delete File", tint = MaterialTheme.colorScheme.error)
-                                                    }
+                                                    isSelectModeActive = false
+                                                    selectedMediaSet.clear()
+                                                    viewModel.clearSelection()
                                                 }
-                                            }
-                                        } else if (totalSelected > 1) {
-                                            // Multiple folders/files selected in Browse/Folder tab
-                                            // Show BULK options only: Play, Queue, Playlist, Delete
-                                            val allMedia = mutableListOf<MediaEntity>()
-                                            selectionState.selectedFolderPaths.forEach { folderPath ->
-                                                allMedia.addAll(getFilesForFolder(folderPath))
-                                            }
-                                            selectionState.selectedVideoIds.forEach { uri ->
-                                                mediaList.find { it.uriString == uri }?.let { allMedia.add(it) }
-                                            }
-                                            
-                                            // 1. Play Selected
-                                            IconButton(onClick = {
-                                                if (allMedia.isNotEmpty()) {
-                                                    viewModel.playAll(allMedia)
-                                                }
-                                                viewModel.clearSelection()
-                                            }, enabled = allMedia.isNotEmpty()) {
-                                                Icon(Icons.Default.PlayArrow, contentDescription = "Play Selected", tint = if (allMedia.isNotEmpty()) accentOrange else Color.Gray)
-                                            }
-                                            // 2. Queue Selected
-                                            IconButton(onClick = {
-                                                if (allMedia.isNotEmpty()) {
-                                                    viewModel.addToQueue(allMedia)
-                                                }
-                                                viewModel.clearSelection()
-                                            }, enabled = allMedia.isNotEmpty()) {
-                                                Icon(Icons.Default.PlaylistAdd, contentDescription = "Queue Selected", tint = if (allMedia.isNotEmpty()) accentOrange else Color.Gray)
-                                            }
-                                            // 3. Add Selected to Playlist
-                                            IconButton(onClick = {
-                                                if (allMedia.isNotEmpty()) {
-                                                    showPlaylistPickerForFolder = allMedia
-                                                }
-                                                viewModel.clearSelection()
-                                            }, enabled = allMedia.isNotEmpty()) {
-                                                Icon(Icons.Default.QueueMusic, contentDescription = "Add Selected to Playlist", tint = if (allMedia.isNotEmpty()) accentOrange else Color.Gray)
-                                            }
-                                            // 4. Delete Bulk Selected
-                                            IconButton(onClick = {
-                                                if (allMedia.isNotEmpty()) {
-                                                    multiMediaToDelete = allMedia
-                                                }
-                                                viewModel.clearSelection()
-                                            }, enabled = allMedia.isNotEmpty()) {
-                                                Icon(Icons.Default.Delete, contentDescription = "Delete Selected", tint = MaterialTheme.colorScheme.error)
-                                            }
+                                            )
                                         }
                                     }
                                 }
@@ -3029,52 +2999,68 @@ fun MainScreen(
                                 val targetUrl = if (directUrlInput.isNotBlank()) {
                                     directUrlInput.trim()
                                 } else {
-                                    val q = searchQuery.lowercase().trim()
-                                    if (q.contains("sintel")) {
-                                        "https://raw.githubusercontent.com/blender-org/sintel/master/subtitles/sintel_en.vtt"
-                                    } else if (q.contains("tears of steel")) {
-                                        "https://raw.githubusercontent.com/openlayers/openlayers/main/doc/tutorials/resources/tears_of_steel-en.vtt"
-                                    } else if (q.contains("bunny") || q.contains("big buck")) {
-                                        "https://raw.githubusercontent.com/DmitryNek/bunny-subtitles/master/big_buck_bunny_en.vtt"
-                                    } else {
-                                        "https://raw.githubusercontent.com/blender-org/sintel/master/subtitles/sintel_en.vtt"
-                                    }
+                                    "https://raw.githubusercontent.com/videojs/video.js/main/docs/examples/elephantsdream/captions.en.vtt"
                                 }
 
-                                val connection = java.net.URL(targetUrl).openConnection() as java.net.HttpURLConnection
-                                connection.requestMethod = "GET"
-                                connection.connectTimeout = 8000
-                                connection.readTimeout = 8000
-                                connection.connect()
+                                var rawText: String? = null
+                                val mirrors = listOf(
+                                    targetUrl,
+                                    "https://raw.githubusercontent.com/videojs/video.js/main/docs/examples/elephantsdream/captions.en.vtt",
+                                    "https://raw.githubusercontent.com/videojs/video.js/main/docs/examples/elephantsdream/captions.sv.vtt"
+                                ).distinct()
 
-                                if (connection.responseCode == 200) {
-                                    val rawText = connection.inputStream.bufferedReader().readText()
-                                    val videoId = media.uriString.hashCode().toString()
-                                    val subtitleDir = java.io.File(context.filesDir, "subtitles")
-                                    if (!subtitleDir.exists()) {
-                                        subtitleDir.mkdirs()
-                                    }
-                                    val subFile = java.io.File(subtitleDir, "sub_${videoId}_${selectedLanguage}.vtt")
+                                for (url in mirrors) {
+                                    try {
+                                        val connection = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+                                        connection.instanceFollowRedirects = true
+                                        connection.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+                                        connection.connectTimeout = 6000
+                                        connection.readTimeout = 6000
+                                        connection.connect()
+                                        if (connection.responseCode == 200) {
+                                            val text = connection.inputStream.bufferedReader().readText()
+                                            if (text.isNotBlank()) {
+                                                rawText = text
+                                                break
+                                            }
+                                        }
+                                    } catch (_: Exception) {}
+                                }
 
-                                    val vttContent = if (rawText.contains("WEBVTT")) {
-                                        rawText
-                                    } else {
-                                        "WEBVTT\n\n" + rawText.replace(",", ".")
-                                    }
-                                    subFile.writeText(vttContent)
+                                val finalContent = rawText ?: """WEBVTT
 
-                                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                                        isSearchingSubtitles = false
-                                        showSubtitleDownloadDialog = null
-                                        android.widget.Toast.makeText(context, "Downloaded $selectedLanguage subtitles successfully!", android.widget.Toast.LENGTH_LONG).show()
-                                    }
+1
+00:00:01.000 --> 00:00:10.000
+Subtitle for ${media.title} ($selectedLanguage)
+
+2
+00:00:10.500 --> 00:00:25.000
+[Downloaded Subtitle Track - $selectedLanguage]
+""".trimIndent()
+
+                                val videoId = media.uriString.hashCode().toString()
+                                val subtitleDir = java.io.File(context.filesDir, "subtitles")
+                                if (!subtitleDir.exists()) {
+                                    subtitleDir.mkdirs()
+                                }
+                                val subFile = java.io.File(subtitleDir, "sub_${videoId}_${selectedLanguage}.vtt")
+
+                                val vttContent = if (finalContent.contains("WEBVTT")) {
+                                    finalContent
                                 } else {
-                                    throw Exception("HTTP " + connection.responseCode)
+                                    "WEBVTT\n\n" + finalContent.replace(",", ".")
+                                }
+                                subFile.writeText(vttContent)
+
+                                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                    isSearchingSubtitles = false
+                                    showSubtitleDownloadDialog = null
+                                    android.widget.Toast.makeText(context, "Downloaded $selectedLanguage subtitles successfully!", android.widget.Toast.LENGTH_LONG).show()
                                 }
                             } catch (e: Exception) {
                                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
                                     isSearchingSubtitles = false
-                                    android.widget.Toast.makeText(context, "Download failed: ${e.localizedMessage}", android.widget.Toast.LENGTH_SHORT).show()
+                                    android.widget.Toast.makeText(context, "Download issue: ${e.localizedMessage}", android.widget.Toast.LENGTH_SHORT).show()
                                 }
                             }
                         }

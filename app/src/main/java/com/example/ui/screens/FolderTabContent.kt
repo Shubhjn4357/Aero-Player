@@ -180,6 +180,14 @@ fun FolderTabContent(
             )
         }
 
+        val isAllFolderItemsSelected = remember(selectionState, subDirectories, files) {
+            val selDirs = selectionState.selectedFolderPaths
+            val selFiles = selectionState.selectedVideoIds
+            (subDirectories.isNotEmpty() || files.isNotEmpty()) &&
+                subDirectories.all { selDirs.contains(it) } &&
+                files.all { selFiles.contains(it.uriString) }
+        }
+
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -187,7 +195,10 @@ fun FolderTabContent(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Button(
                     onClick = { viewModel.playAll(allFilesInFolderAndSubfolders) },
                     enabled = allFilesInFolderAndSubfolders.isNotEmpty(),
@@ -195,7 +206,7 @@ fun FolderTabContent(
                         containerColor = accentOrange,
                         contentColor = MaterialTheme.colorScheme.onPrimary
                     ),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
                     shape = RoundedCornerShape(8.dp),
                     modifier = Modifier.height(32.dp)
                 ) {
@@ -213,13 +224,40 @@ fun FolderTabContent(
                     enabled = allFilesInFolderAndSubfolders.isNotEmpty(),
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = accentOrange),
                     border = BorderStroke(1.dp, accentOrange),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
                     shape = RoundedCornerShape(8.dp),
                     modifier = Modifier.height(32.dp)
                 ) {
                     Icon(Icons.Default.PlaylistAdd, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(4.dp))
                     Text("Queue All", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                }
+
+                OutlinedButton(
+                    onClick = {
+                        if (isAllFolderItemsSelected) {
+                            viewModel.clearSelection()
+                        } else {
+                            viewModel.selectAllFoldersAndFiles(subDirectories, files.map { it.uriString })
+                        }
+                    },
+                    enabled = subDirectories.isNotEmpty() || files.isNotEmpty(),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        containerColor = if (isAllFolderItemsSelected) accentOrange.copy(alpha = 0.15f) else Color.Transparent,
+                        contentColor = accentOrange
+                    ),
+                    border = BorderStroke(1.dp, accentOrange),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.height(32.dp)
+                ) {
+                    Icon(
+                        imageVector = if (isAllFolderItemsSelected) Icons.Default.CheckCircle else Icons.Default.SelectAll,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(if (isAllFolderItemsSelected) "Deselect" else "Select All", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                 }
             }
 

@@ -89,15 +89,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), A
         isExoPlayerInitialized = true
         var player: ExoPlayer? = null
         try {
-            val audioCapabilities = androidx.media3.exoplayer.audio.AudioCapabilities(
-                intArrayOf(
-                    android.media.AudioFormat.ENCODING_PCM_16BIT,
-                    android.media.AudioFormat.ENCODING_PCM_FLOAT,
-                    android.media.AudioFormat.ENCODING_PCM_24BIT_PACKED,
-                    android.media.AudioFormat.ENCODING_PCM_32BIT
-                ),
-                8
-            )
+            val systemAudioCapabilities = androidx.media3.exoplayer.audio.AudioCapabilities.getCapabilities(application)
 
             val renderersFactory = object : androidx.media3.exoplayer.DefaultRenderersFactory(application) {
                 override fun buildAudioSink(
@@ -108,11 +100,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application), A
                     return androidx.media3.exoplayer.audio.DefaultAudioSink.Builder(context)
                         .setEnableFloatOutput(true)
                         .setEnableAudioTrackPlaybackParams(true)
-                        .setAudioCapabilities(audioCapabilities)
+                        .setAudioCapabilities(systemAudioCapabilities)
                         .build()
                 }
             }.apply {
-                setExtensionRendererMode(androidx.media3.exoplayer.DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
+                setExtensionRendererMode(androidx.media3.exoplayer.DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF)
                 setEnableDecoderFallback(true)
                 setMediaCodecSelector(androidx.media3.exoplayer.mediacodec.MediaCodecSelector.DEFAULT)
             }
@@ -131,11 +123,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application), A
 
             val loadControl = androidx.media3.exoplayer.DefaultLoadControl.Builder()
                 .setBufferDurationsMs(
-                    50000, // minBufferMs
-                    120000, // maxBufferMs (4k buffer boost)
-                    1500, // bufferForPlaybackMs
-                    2500  // bufferForPlaybackAfterRebufferMs
+                    15000, // minBufferMs
+                    50000, // maxBufferMs
+                    1500,  // bufferForPlaybackMs
+                    2500   // bufferForPlaybackAfterRebufferMs
                 )
+                .setPrioritizeTimeOverSizeThresholds(true)
                 .build()
 
             player = ExoPlayer.Builder(application)

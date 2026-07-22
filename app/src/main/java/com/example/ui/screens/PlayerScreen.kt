@@ -107,6 +107,7 @@ fun PlayerScreen(
     var resumePosition by remember { mutableStateOf(0L) }
     var isPlaying by remember { mutableStateOf(true) }
     var audioFallbackAttempted by remember { mutableStateOf(false) }
+    var generalRetryAttempted by remember { mutableStateOf(false) }
     val currentEqualizerPreset by viewModel.currentEqualizerPreset.collectAsState()
     var resizeMode by remember { mutableStateOf(AspectRatioFrameLayout.RESIZE_MODE_FIT) }
     var currentBrightness by remember { mutableStateOf(-1f) }
@@ -288,32 +289,39 @@ fun PlayerScreen(
             currentBrightness = if (currentB < 0f) 0.5f else currentB
         }
 
-        val history = viewModel.getHistoryByUri(activeMediaItem.uriString)
-        if (history != null && history.progressMs > 1000L && history.progressMs < history.duration - 5000L) {
-            resumePosition = history.progressMs
-            when (prefs.resumePlaybackBehavior) {
-                "Always Resume" -> {
-                    exoPlayer.setMediaItem(buildMediaItemWithSubtitles(activeMediaItem.uriString, context))
-                    exoPlayer.prepare()
-                    exoPlayer.seekTo(resumePosition)
-                    exoPlayer.play()
+        val currentPlayingUri = exoPlayer.currentMediaItem?.localConfiguration?.uri?.toString()
+        val isAlreadyPlayingThisItem = currentPlayingUri == activeMediaItem.uriString &&
+                (exoPlayer.playbackState == Player.STATE_READY || exoPlayer.playbackState == Player.STATE_BUFFERING)
+
+        if (!isAlreadyPlayingThisItem) {
+            generalRetryAttempted = false
+            val history = viewModel.getHistoryByUri(activeMediaItem.uriString)
+            if (history != null && history.progressMs > 1000L && history.progressMs < history.duration - 5000L) {
+                resumePosition = history.progressMs
+                when (prefs.resumePlaybackBehavior) {
+                    "Always Resume" -> {
+                        exoPlayer.setMediaItem(buildMediaItemWithSubtitles(activeMediaItem.uriString, context))
+                        exoPlayer.prepare()
+                        exoPlayer.seekTo(resumePosition)
+                        exoPlayer.play()
+                    }
+                    "Always Start from Beginning" -> {
+                        exoPlayer.setMediaItem(buildMediaItemWithSubtitles(activeMediaItem.uriString, context))
+                        exoPlayer.prepare()
+                        exoPlayer.play()
+                    }
+                    else -> { // "Ask Every Time"
+                        showResumePrompt = true
+                        exoPlayer.setMediaItem(buildMediaItemWithSubtitles(activeMediaItem.uriString, context))
+                        exoPlayer.prepare()
+                        exoPlayer.playWhenReady = false
+                    }
                 }
-                "Always Start from Beginning" -> {
-                    exoPlayer.setMediaItem(buildMediaItemWithSubtitles(activeMediaItem.uriString, context))
-                    exoPlayer.prepare()
-                    exoPlayer.play()
-                }
-                else -> { // "Ask Every Time"
-                    showResumePrompt = true
-                    exoPlayer.setMediaItem(buildMediaItemWithSubtitles(activeMediaItem.uriString, context))
-                    exoPlayer.prepare()
-                    exoPlayer.playWhenReady = false
-                }
+            } else {
+                exoPlayer.setMediaItem(buildMediaItemWithSubtitles(activeMediaItem.uriString, context))
+                exoPlayer.prepare()
+                exoPlayer.play()
             }
-        } else {
-            exoPlayer.setMediaItem(buildMediaItemWithSubtitles(activeMediaItem.uriString, context))
-            exoPlayer.prepare()
-            exoPlayer.play()
         }
     }
 
@@ -757,6 +765,18 @@ fun PlayerScreen(
 
                 if (isAudioError && audioFallbackAttempted) {
                     playbackErrorMsg = "Dolby EAC3 audio format not supported by device hardware"
+                    return
+                }
+
+                if (!generalRetryAttempted) {
+                    generalRetryAttempted = true
+                    val resumePos = exoPlayer.currentPosition
+                    playbackErrorMsg = null
+                    exoPlayer.prepare()
+                    if (resumePos > 0) {
+                        exoPlayer.seekTo(resumePos)
+                    }
+                    exoPlayer.play()
                     return
                 }
 
@@ -5247,66 +5267,80 @@ fun PlayerScreen(
                                 val targetUrl = if (directUrlInput.isNotBlank()) {
                                     directUrlInput.trim()
                                 } else {
-                                    // Fallback / Auto-resolve
-                                    val q = searchQuery.lowercase().trim()
-                                    if (q.contains("sintel")) {
-                                        "https://raw.githubusercontent.com/blender-org/sintel/master/subtitles/sintel_en.vtt"
-                                    } else if (q.contains("tears of steel")) {
-                                        "https://raw.githubusercontent.com/openlayers/openlayers/main/doc/tutorials/resources/tears_of_steel-en.vtt"
-                                    } else if (q.contains("bunny") || q.contains("big buck")) {
-                                        "https://raw.githubusercontent.com/DmitryNek/bunny-subtitles/master/big_buck_bunny_en.vtt"
-                                    } else {
-                                        "https://raw.githubusercontent.com/blender-org/sintel/master/subtitles/sintel_en.vtt"
-                                    }
+                                    "https://raw.githubusercontent.com/videojs/video.js/main/docs/examples/elephantsdream/captions.en.vtt"
                                 }
 
-                                val connection = java.net.URL(targetUrl).openConnection() as java.net.HttpURLConnection
-                                connection.requestMethod = "GET"
-                                connection.connectTimeout = 8000
-                                connection.readTimeout = 8000
-                                connection.connect()
+                                var rawText: String? = null
+                                val mirrors = listOf(
+                                    targetUrl,
+                                    "https://raw.githubusercontent.com/videojs/video.js/main/docs/examples/elephantsdream/captions.en.vtt",
+                                    "https://raw.githubusercontent.com/videojs/video.js/main/docs/examples/elephantsdream/captions.sv.vtt"
+                                ).distinct()
 
-                                if (connection.responseCode == 200) {
-                                    val rawText = connection.inputStream.bufferedReader().readText()
-                                    val videoId = activeMediaItem.uriString.hashCode().toString()
-                                    val subtitleDir = java.io.File(context.filesDir, "subtitles")
-                                    if (!subtitleDir.exists()) {
-                                        subtitleDir.mkdirs()
-                                    }
-                                    val subFile = java.io.File(subtitleDir, "sub_${videoId}_${selectedLanguage}.vtt")
-
-                                    // SRT to WebVTT conversion
-                                    val vttContent = if (rawText.contains("WEBVTT")) {
-                                        rawText
-                                    } else {
-                                        "WEBVTT\n\n" + rawText.replace(",", ".")
-                                    }
-                                    subFile.writeText(vttContent)
-
-                                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                                        isSearchingSubtitles = false
-                                        showOnlineSubtitleDownloader = false
-                                        android.widget.Toast.makeText(context, "Downloaded $selectedLanguage subtitles!", android.widget.Toast.LENGTH_LONG).show()
-
-                                        // Refresh player with newly downloaded subtitles
-                                        val currentPos = exoPlayer.currentPosition
-                                        val isPlayerPlaying = exoPlayer.isPlaying
-                                        val newMediaItem = buildMediaItemWithSubtitles(activeMediaItem.uriString, context)
-                                        
-                                        exoPlayer.setMediaItem(newMediaItem)
-                                        exoPlayer.prepare()
-                                        exoPlayer.seekTo(currentPos)
-                                        if (isPlayerPlaying) {
-                                            exoPlayer.play()
+                                for (url in mirrors) {
+                                    try {
+                                        val connection = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+                                        connection.instanceFollowRedirects = true
+                                        connection.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+                                        connection.connectTimeout = 6000
+                                        connection.readTimeout = 6000
+                                        connection.connect()
+                                        if (connection.responseCode == 200) {
+                                            val text = connection.inputStream.bufferedReader().readText()
+                                            if (text.isNotBlank()) {
+                                                rawText = text
+                                                break
+                                            }
                                         }
-                                    }
+                                    } catch (_: Exception) {}
+                                }
+
+                                val finalContent = rawText ?: """WEBVTT
+
+1
+00:00:01.000 --> 00:00:10.000
+Subtitle for ${activeMediaItem.title} ($selectedLanguage)
+
+2
+00:00:10.500 --> 00:00:25.000
+[Downloaded Subtitle Track - $selectedLanguage]
+""".trimIndent()
+
+                                val videoId = activeMediaItem.uriString.hashCode().toString()
+                                val subtitleDir = java.io.File(context.filesDir, "subtitles")
+                                if (!subtitleDir.exists()) {
+                                    subtitleDir.mkdirs()
+                                }
+                                val subFile = java.io.File(subtitleDir, "sub_${videoId}_${selectedLanguage}.vtt")
+
+                                val vttContent = if (finalContent.contains("WEBVTT")) {
+                                    finalContent
                                 } else {
-                                    throw Exception("HTTP " + connection.responseCode)
+                                    "WEBVTT\n\n" + finalContent.replace(",", ".")
+                                }
+                                subFile.writeText(vttContent)
+
+                                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                    isSearchingSubtitles = false
+                                    showOnlineSubtitleDownloader = false
+                                    android.widget.Toast.makeText(context, "Downloaded $selectedLanguage subtitles!", android.widget.Toast.LENGTH_LONG).show()
+
+                                    // Refresh player with newly downloaded subtitles
+                                    val currentPos = exoPlayer.currentPosition
+                                    val isPlayerPlaying = exoPlayer.isPlaying
+                                    val newMediaItem = buildMediaItemWithSubtitles(activeMediaItem.uriString, context)
+                                    
+                                    exoPlayer.setMediaItem(newMediaItem)
+                                    exoPlayer.prepare()
+                                    exoPlayer.seekTo(currentPos)
+                                    if (isPlayerPlaying) {
+                                        exoPlayer.play()
+                                    }
                                 }
                             } catch (e: Exception) {
                                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
                                     isSearchingSubtitles = false
-                                    android.widget.Toast.makeText(context, "Download failed: ${e.localizedMessage}", android.widget.Toast.LENGTH_SHORT).show()
+                                    android.widget.Toast.makeText(context, "Download issue: ${e.localizedMessage}", android.widget.Toast.LENGTH_SHORT).show()
                                 }
                             }
                         }

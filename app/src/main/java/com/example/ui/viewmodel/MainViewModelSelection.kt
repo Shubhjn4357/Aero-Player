@@ -59,6 +59,15 @@ fun MainViewModel.selectAllVideos(videoIds: List<String>) {
     )
 }
 
+fun MainViewModel.selectAllFoldersAndFiles(folderPaths: List<String>, videoIds: List<String>) {
+    val current = _selectionState.value
+    _selectionState.value = current.copy(
+        isInSelectionMode = folderPaths.isNotEmpty() || videoIds.isNotEmpty(),
+        selectedFolderPaths = folderPaths.toSet(),
+        selectedVideoIds = videoIds.toSet()
+    )
+}
+
 fun MainViewModel.clearSelection() {
     _selectionState.value = SelectionState(
         isInSelectionMode = false,
