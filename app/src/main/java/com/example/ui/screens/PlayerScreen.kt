@@ -2056,6 +2056,33 @@ fun PlayerScreen(
                                         fontSize = 13.sp,
                                         fontWeight = FontWeight.SemiBold
                                     )
+
+                                    // Aspect Ratio / Screen Fit Button on top of progressbar right side
+                                    IconButton(
+                                        onClick = {
+                                            hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                            val modes = listOf(
+                                                AspectRatioFrameLayout.RESIZE_MODE_FIT to "Fit",
+                                                AspectRatioFrameLayout.RESIZE_MODE_FILL to "Stretch/Fill",
+                                                AspectRatioFrameLayout.RESIZE_MODE_ZOOM to "Zoom/Crop",
+                                                AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH to "Fixed Width",
+                                                AspectRatioFrameLayout.RESIZE_MODE_FIXED_HEIGHT to "Fixed Height"
+                                            )
+                                            val currentModeIndex = modes.indexOfFirst { it.first == resizeMode }.coerceAtLeast(0)
+                                            val nextModeIndex = (currentModeIndex + 1) % modes.size
+                                            val nextMode = modes[nextModeIndex]
+                                            resizeMode = nextMode.first
+                                            android.widget.Toast.makeText(context, "Aspect Ratio: ${nextMode.second}", android.widget.Toast.LENGTH_SHORT).show()
+                                        },
+                                        modifier = Modifier.size(32.dp).testTag("aspect_ratio_button")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.AspectRatio,
+                                            contentDescription = "Aspect Ratio",
+                                            tint = Color.White,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
                                 }
 
                                 Spacer(modifier = Modifier.height(6.dp))
@@ -2419,34 +2446,7 @@ fun PlayerScreen(
                                                         verticalArrangement = Arrangement.spacedBy(4.dp),
                                                         horizontalAlignment = Alignment.CenterHorizontally
                                                     ) {
-                                                        // 1. Sizing / Screen Fit Option
-                                                        IconButton(
-                                                            onClick = {
-                                                                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
-                                                                val modes = listOf(
-                                                                    AspectRatioFrameLayout.RESIZE_MODE_FIT to "Fit",
-                                                                    AspectRatioFrameLayout.RESIZE_MODE_FILL to "Stretch/Fill",
-                                                                    AspectRatioFrameLayout.RESIZE_MODE_ZOOM to "Zoom/Crop",
-                                                                    AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH to "Fixed Width",
-                                                                    AspectRatioFrameLayout.RESIZE_MODE_FIXED_HEIGHT to "Fixed Height"
-                                                                )
-                                                                val currentModeIndex = modes.indexOfFirst { it.first == resizeMode }.coerceAtLeast(0)
-                                                                val nextModeIndex = (currentModeIndex + 1) % modes.size
-                                                                val nextMode = modes[nextModeIndex]
-                                                                resizeMode = nextMode.first
-                                                                android.widget.Toast.makeText(context, "Aspect Ratio: ${nextMode.second}", android.widget.Toast.LENGTH_SHORT).show()
-                                                            },
-                                                            modifier = Modifier.size(36.dp)
-                                                        ) {
-                                                            Icon(
-                                                                imageVector = Icons.Default.AspectRatio,
-                                                                contentDescription = "Screen Fit / Sizing",
-                                                                tint = Color.White,
-                                                                modifier = Modifier.size(20.dp)
-                                                            )
-                                                        }
-
-                                                        // 2. Shuffle
+                                                        // 1. Shuffle
                                                         IconButton(
                                                             onClick = {
                                                                 hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
@@ -2542,34 +2542,7 @@ fun PlayerScreen(
                                                         horizontalArrangement = Arrangement.spacedBy(4.dp),
                                                         verticalAlignment = Alignment.CenterVertically
                                                     ) {
-                                                        // 1. Sizing / Screen Fit Option
-                                                        IconButton(
-                                                            onClick = {
-                                                                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
-                                                                val modes = listOf(
-                                                                    AspectRatioFrameLayout.RESIZE_MODE_FIT to "Fit",
-                                                                    AspectRatioFrameLayout.RESIZE_MODE_FILL to "Stretch/Fill",
-                                                                    AspectRatioFrameLayout.RESIZE_MODE_ZOOM to "Zoom/Crop",
-                                                                    AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH to "Fixed Width",
-                                                                    AspectRatioFrameLayout.RESIZE_MODE_FIXED_HEIGHT to "Fixed Height"
-                                                                )
-                                                                val currentModeIndex = modes.indexOfFirst { it.first == resizeMode }.coerceAtLeast(0)
-                                                                val nextModeIndex = (currentModeIndex + 1) % modes.size
-                                                                val nextMode = modes[nextModeIndex]
-                                                                resizeMode = nextMode.first
-                                                                android.widget.Toast.makeText(context, "Aspect Ratio: ${nextMode.second}", android.widget.Toast.LENGTH_SHORT).show()
-                                                            },
-                                                            modifier = Modifier.size(36.dp)
-                                                        ) {
-                                                            Icon(
-                                                                imageVector = Icons.Default.AspectRatio,
-                                                                contentDescription = "Screen Fit / Sizing",
-                                                                tint = Color.White,
-                                                                modifier = Modifier.size(20.dp)
-                                                            )
-                                                        }
-
-                                                        // 2. Shuffle
+                                                        // 1. Shuffle
                                                         IconButton(
                                                             onClick = {
                                                                 hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
