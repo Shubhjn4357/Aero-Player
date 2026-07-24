@@ -89,21 +89,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), A
         isExoPlayerInitialized = true
         var player: ExoPlayer? = null
         try {
-            val systemAudioCapabilities = androidx.media3.exoplayer.audio.AudioCapabilities.getCapabilities(application)
-
-            val renderersFactory = object : androidx.media3.exoplayer.DefaultRenderersFactory(application) {
-                override fun buildAudioSink(
-                    context: android.content.Context,
-                    enableFloatOutput: Boolean,
-                    enableAudioTrackPlaybackParams: Boolean
-                ): androidx.media3.exoplayer.audio.AudioSink {
-                    return androidx.media3.exoplayer.audio.DefaultAudioSink.Builder(context)
-                        .setEnableFloatOutput(true)
-                        .setEnableAudioTrackPlaybackParams(true)
-                        .setAudioCapabilities(systemAudioCapabilities)
-                        .build()
-                }
-            }.apply {
+            val renderersFactory = androidx.media3.exoplayer.DefaultRenderersFactory(application).apply {
                 setExtensionRendererMode(androidx.media3.exoplayer.DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF)
                 setEnableDecoderFallback(true)
                 setMediaCodecSelector(androidx.media3.exoplayer.mediacodec.MediaCodecSelector.DEFAULT)
@@ -113,7 +99,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), A
                 parameters = buildUponParameters()
                     .setSelectUndeterminedTextLanguage(true)
                     .setExceedAudioConstraintsIfNecessary(true)
-                    .setExceedRendererCapabilitiesIfNecessary(true)
+                    .setExceedRendererCapabilitiesIfNecessary(false)
                     .setAllowAudioMixedChannelCountAdaptiveness(true)
                     .setAllowAudioMixedMimeTypeAdaptiveness(true)
                     .setAllowAudioMixedSampleRateAdaptiveness(true)

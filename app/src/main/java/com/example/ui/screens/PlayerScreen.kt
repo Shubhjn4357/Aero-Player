@@ -409,16 +409,68 @@ fun PlayerScreen(
     var selectedMockSubtitleIndex by remember { mutableStateOf(0) }
     var selectedMockVideoIndex by remember { mutableStateOf(0) }
 
+    // LRU Cache for preloaded video keyframe thumbnails (up to 120 bitmaps)
+    val thumbnailCache = remember { androidx.collection.LruCache<String, android.graphics.Bitmap>(120) }
+
     // Async thumbnail extractor during scrubbing (highly optimized, preloaded, cached seek frame system)
     var cachedRetriever by remember { mutableStateOf<android.media.MediaMetadataRetriever?>(null) }
+
+    // Background Auto-Preload Keyframe Thumbnails for instant scrub preview
+    LaunchedEffect(activeMediaItem) {
+        if (activeMediaItem.isVideo) {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                var retriever: android.media.MediaMetadataRetriever? = null
+                try {
+                    retriever = android.media.MediaMetadataRetriever()
+                    val mediaUri = parseMediaUri(activeMediaItem.uriString)
+                    if (activeMediaItem.uriString.startsWith("content://")) {
+                        retriever.setDataSource(context, mediaUri)
+                    } else {
+                        retriever.setDataSource(activeMediaItem.path ?: activeMediaItem.uriString)
+                    }
+                    val videoId = activeMediaItem.uriString.hashCode().toString()
+                    val durSec = (activeMediaItem.duration / 1000L).coerceAtLeast(10L)
+                    val stepSec = (durSec / 25L).coerceIn(2L, 20L)
+                    for (sec in 0L..durSec step stepSec) {
+                        val key = "${videoId}_$sec"
+                        if (thumbnailCache.get(key) == null) {
+                            val frame = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O_MR1) {
+                                retriever.getScaledFrameAtTime(
+                                    sec * 1000000L,
+                                    android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                                    180,
+                                    100
+                                )
+                            } else {
+                                retriever.getFrameAtTime(
+                                    sec * 1000000L,
+                                    android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC
+                                )
+                            }
+                            if (frame != null) {
+                                thumbnailCache.put(key, frame)
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                } finally {
+                    try {
+                        retriever?.release()
+                    } catch (e: Exception) {}
+                }
+            }
+        }
+    }
 
     LaunchedEffect(isScrubbing, activeMediaItem) {
         if (isScrubbing && activeMediaItem.isVideo) {
             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                 try {
                     val r = android.media.MediaMetadataRetriever()
+                    val mediaUri = parseMediaUri(activeMediaItem.uriString)
                     if (activeMediaItem.uriString.startsWith("content://")) {
-                        r.setDataSource(context, android.net.Uri.parse(activeMediaItem.uriString))
+                        r.setDataSource(context, mediaUri)
                     } else {
                         r.setDataSource(activeMediaItem.path ?: activeMediaItem.uriString)
                     }
@@ -439,30 +491,56 @@ fun PlayerScreen(
         }
     }
 
-    LaunchedEffect(scrubPosition, cachedRetriever) {
-        val retriever = cachedRetriever
-        if (retriever != null && isScrubbing) {
-            delay(40) // fast debounce
-            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                try {
-                    val frame = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O_MR1) {
-                        retriever.getScaledFrameAtTime(
-                            scrubPosition * 1000L,
-                            android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
-                            160, // width
-                            95   // height
-                        )
-                    } else {
-                        retriever.getFrameAtTime(
-                            scrubPosition * 1000L,
-                            android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC
-                        )
+    LaunchedEffect(scrubPosition, cachedRetriever, isScrubbing) {
+        if (isScrubbing && activeMediaItem.isVideo) {
+            val videoId = activeMediaItem.uriString.hashCode().toString()
+            val targetSec = scrubPosition / 1000L
+            val exactKey = "${videoId}_$targetSec"
+            
+            // 1. Try exact cache lookup
+            var cachedBitmap = thumbnailCache.get(exactKey)
+            
+            // 2. Try nearby keyframe cache (+/- 5 seconds)
+            if (cachedBitmap == null) {
+                for (offset in listOf(-1L, 1L, -2L, 2L, -4L, 4L, -8L, 8L)) {
+                    val testKey = "${videoId}_${(targetSec + offset).coerceAtLeast(0L)}"
+                    val b = thumbnailCache.get(testKey)
+                    if (b != null) {
+                        cachedBitmap = b
+                        break
                     }
-                    if (frame != null) {
-                        scrubbingBitmap = frame
+                }
+            }
+
+            if (cachedBitmap != null) {
+                scrubbingBitmap = cachedBitmap
+            }
+
+            val retriever = cachedRetriever
+            if (retriever != null) {
+                delay(20) // light debounce
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    try {
+                        val frame = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O_MR1) {
+                            retriever.getScaledFrameAtTime(
+                                scrubPosition * 1000L,
+                                android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                                180, // width
+                                100  // height
+                            )
+                        } else {
+                            retriever.getFrameAtTime(
+                                scrubPosition * 1000L,
+                                android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC
+                            )
+                        }
+                        if (frame != null) {
+                            thumbnailCache.put(exactKey, frame)
+                            scrubbingBitmap = frame
+                        }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
                     }
-                } catch (e: Exception) {
-                    e.printStackTrace()
                 }
             }
         }
@@ -887,6 +965,7 @@ fun PlayerScreen(
                                 factory = { ctx ->
                                     PlayerView(ctx).apply {
                                         useController = false
+                                        keepScreenOn = true
                                         player = exoPlayer
                                         layoutParams = FrameLayout.LayoutParams(
                                             ViewGroup.LayoutParams.MATCH_PARENT,
@@ -1194,6 +1273,7 @@ fun PlayerScreen(
                         factory = { ctx ->
                             PlayerView(ctx).apply {
                                 useController = false
+                                keepScreenOn = true
                                 player = exoPlayer
                                 layoutParams = FrameLayout.LayoutParams(
                                     ViewGroup.LayoutParams.MATCH_PARENT,
@@ -5144,7 +5224,7 @@ fun PlayerScreen(
                             .build()
 
                         val newMediaItem = MediaItem.Builder()
-                            .setUri(activeMediaItem.uriString)
+                            .setUri(parseMediaUri(activeMediaItem.uriString))
                             .setSubtitleConfigurations(listOf(subtitleConfig))
                             .build()
 
@@ -6372,8 +6452,18 @@ fun SwipeToUnlock(
     }
 }
 
+fun parseMediaUri(uriString: String): android.net.Uri {
+    val trimmed = uriString.trim()
+    return if (trimmed.startsWith("http://") || trimmed.startsWith("https://") || trimmed.startsWith("content://") || trimmed.startsWith("file://")) {
+        android.net.Uri.parse(trimmed)
+    } else {
+        android.net.Uri.fromFile(java.io.File(trimmed))
+    }
+}
+
 fun buildMediaItemWithSubtitles(uriString: String, context: android.content.Context): MediaItem {
-    val builder = MediaItem.Builder().setUri(uriString)
+    val mediaUri = parseMediaUri(uriString)
+    val builder = MediaItem.Builder().setUri(mediaUri)
     try {
         val videoId = uriString.hashCode().toString()
         val subtitleDir = java.io.File(context.filesDir, "subtitles")
