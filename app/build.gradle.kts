@@ -1,4 +1,5 @@
 import com.google.gms.googleservices.GoogleServicesPlugin.MissingGoogleServicesStrategy
+import java.io.File
 
 plugins {
   alias(libs.plugins.android.application)
@@ -137,10 +138,23 @@ dependencies {
   "ksp"(libs.moshi.kotlin.codegen)
 }
 
-tasks.register<Copy>("autoExportApkToSystemOutput") {
-  from(layout.buildDirectory.file("outputs/apk/debug/app-debug.apk"))
-  into(file("/output"))
-  rename { "app-debug.apk" }
+val debugApkFile = layout.buildDirectory.file("outputs/apk/debug/app-debug.apk")
+val releaseApkFile = layout.buildDirectory.file("outputs/apk/release/app-release.apk")
+
+tasks.register("autoExportApkToSystemOutput") {
+  val srcFile = debugApkFile.get().asFile
+  doLast {
+    try {
+      val sysOutputDir = File("/output")
+      if (sysOutputDir.exists() && sysOutputDir.canWrite()) {
+        if (srcFile.exists()) {
+          srcFile.copyTo(File(sysOutputDir, "app-debug.apk"), overwrite = true)
+        }
+      }
+    } catch (e: Exception) {
+      // Safely ignore when running in non-system environment like GitHub Actions
+    }
+  }
 }
 
 tasks.register<Copy>("autoExportApkToLocalOutput") {
@@ -149,10 +163,20 @@ tasks.register<Copy>("autoExportApkToLocalOutput") {
   rename { "app-debug.apk" }
 }
 
-tasks.register<Copy>("autoExportReleaseApkToSystemOutput") {
-  from(layout.buildDirectory.file("outputs/apk/release/app-release.apk"))
-  into(file("/output"))
-  rename { "app-release.apk" }
+tasks.register("autoExportReleaseApkToSystemOutput") {
+  val srcFile = releaseApkFile.get().asFile
+  doLast {
+    try {
+      val sysOutputDir = File("/output")
+      if (sysOutputDir.exists() && sysOutputDir.canWrite()) {
+        if (srcFile.exists()) {
+          srcFile.copyTo(File(sysOutputDir, "app-release.apk"), overwrite = true)
+        }
+      }
+    } catch (e: Exception) {
+      // Safely ignore when running in non-system environment like GitHub Actions
+    }
+  }
 }
 
 tasks.register<Copy>("autoExportReleaseApkToLocalOutput") {
