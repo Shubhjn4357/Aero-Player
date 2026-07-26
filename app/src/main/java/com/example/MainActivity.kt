@@ -290,6 +290,16 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+    override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent?): Boolean {
+        if (::mainViewModel.isInitialized && (keyCode == android.view.KeyEvent.KEYCODE_VOLUME_UP ||
+                keyCode == android.view.KeyEvent.KEYCODE_VOLUME_DOWN ||
+                keyCode == android.view.KeyEvent.KEYCODE_VOLUME_MUTE)) {
+            if (mainViewModel.onVolumeKeyPressed(keyCode)) {
+                return true
+            }
+        }
+        return super.onKeyDown(keyCode, event)
+    }
 }
 
 @OptIn(ExperimentalPermissionsApi::class)
@@ -341,30 +351,52 @@ fun PermissionAndNavigationContainer(viewModel: MainViewModel) {
     }
     val prefs by viewModel.preferencesState.collectAsState()
 
-    // Trigger permission request in a safe, non-blocking way once onboarding is completed
+    var showAllFilesAccessDialog by remember { mutableStateOf(false) }
+
     LaunchedEffect(prefs.onboardingCompleted) {
         if (prefs.onboardingCompleted) {
             try {
-                // Safe delay to ensure Activity/Window is fully ready
                 kotlinx.coroutines.delay(500)
                 permissionState.launchMultiplePermissionRequest()
 
-                // Check and request All Files Access / Storage Deletion Permission at startup (Android 11+)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !android.os.Environment.isExternalStorageManager()) {
-                    try {
-                        val intent = android.content.Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
-                            data = android.net.Uri.parse("package:${context.packageName}")
-                        }
-                        context.startActivity(intent)
-                    } catch (e: Exception) {
-                        val intent = android.content.Intent(android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
-                        context.startActivity(intent)
-                    }
+                    showAllFilesAccessDialog = true
                 }
             } catch (e: Throwable) {
                 android.util.Log.e("MainActivity", "Permission request error: ${e.message}")
             }
         }
+    }
+
+    if (showAllFilesAccessDialog && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !android.os.Environment.isExternalStorageManager()) {
+        AlertDialog(
+            onDismissRequest = { showAllFilesAccessDialog = false },
+            title = { Text("All Files Access Required", fontWeight = FontWeight.Bold) },
+            text = { Text("Aero Player requires All Files Access permission to browse, play, rename, and delete media files seamlessly across your storage.") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showAllFilesAccessDialog = false
+                        try {
+                            val intent = android.content.Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                                data = android.net.Uri.parse("package:${context.packageName}")
+                            }
+                            context.startActivity(intent)
+                        } catch (e: Exception) {
+                            val intent = android.content.Intent(android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
+                            context.startActivity(intent)
+                        }
+                    }
+                ) {
+                    Text("Grant Permission")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAllFilesAccessDialog = false }) {
+                    Text("Later")
+                }
+            }
+        )
     }
 
     // Automatically trigger scan once permissions are granted and onboarding is completed

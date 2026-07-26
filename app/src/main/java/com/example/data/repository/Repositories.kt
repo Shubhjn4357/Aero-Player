@@ -242,7 +242,6 @@ class MediaRepository(private val mediaDao: MediaDao) {
         )
         mediaList.addAll(preloadedItems)
 
-        mediaDao.clearLocalMedia()
         mediaDao.insertMedia(mediaList)
     }
 }

@@ -34,6 +34,7 @@ import com.example.data.database.MediaEntity
 import com.example.ui.viewmodel.MainViewModel
 import com.example.ui.viewmodel.applyPreset
 import com.example.ui.viewmodel.setEqualizerEnabled
+import com.example.ui.viewmodel.toggleBannedFolder
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -51,6 +52,21 @@ fun MoreTabContent(
 
     val currentEqPreset by viewModel.currentEqualizerPreset.collectAsState()
     val isEqEnabled by viewModel.equalizerEnabled.collectAsState()
+    val prefs by viewModel.preferencesState.collectAsState()
+    val context = LocalContext.current
+
+    val bannedFolders = remember(prefs.bannedFoldersJson) {
+        try {
+            val array = org.json.JSONArray(prefs.bannedFoldersJson)
+            val list = mutableListOf<String>()
+            for (i in 0 until array.length()) {
+                list.add(array.getString(i))
+            }
+            list
+        } catch (e: Exception) {
+            emptyList<String>()
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -164,7 +180,16 @@ fun MoreTabContent(
         }
 
         val streamItems = remember(mediaList) {
-            mediaList.filter { it.genre == "Live Stream" }
+            mediaList.filter { it.genre == "Live Stream" || it.genre == "Playlist Stream Channel" }
+        }
+        var activePlaylistStream by remember { mutableStateOf<MediaEntity?>(null) }
+
+        if (activePlaylistStream != null) {
+            com.example.ui.components.StreamPlaylistViewerSheet(
+                streamItem = activePlaylistStream!!,
+                onDismiss = { activePlaylistStream = null },
+                onPlayItem = onPlayItem
+            )
         }
 
         if (streamItems.isEmpty()) {
@@ -220,7 +245,13 @@ fun MoreTabContent(
                             .width(170.dp)
                             .height(115.dp)
                             .clip(RoundedCornerShape(18.dp))
-                            .clickable { onPlayItem(streamItem) },
+                            .clickable {
+                                if (com.example.util.StreamPlaylistParser.isPlaylistUrl(streamItem.uriString, streamItem.mimeType)) {
+                                    activePlaylistStream = streamItem
+                                } else {
+                                    onPlayItem(streamItem)
+                                }
+                            },
                         colors = CardDefaults.cardColors(
                             containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
                         )
@@ -315,6 +346,121 @@ fun MoreTabContent(
                                 fontSize = 12.sp,
                                 color = MaterialTheme.colorScheme.primary
                             )
+                        }
+                    }
+                }
+            }
+        }
+
+        // Banned / Blacklisted Folders Section
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Block,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(18.dp)
+                )
+                Text(
+                    text = "BLACK-LISTED / BANNED FOLDERS",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.error,
+                    letterSpacing = 1.sp
+                )
+            }
+        }
+
+        if (bannedFolders.isEmpty()) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.2f)
+                )
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(20.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        "No blacklisted folders. Long-press or open options menu on any folder to ban/unban.",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        } else {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                bannedFolders.forEach { folderName ->
+                    val isFullPath = folderName.startsWith("/")
+                    val displayName = if (isFullPath) java.io.File(folderName).name else folderName
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.25f)
+                        )
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.FolderOff,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                                Column {
+                                    Text(
+                                        text = displayName,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 13.sp,
+                                        color = MaterialTheme.colorScheme.onErrorContainer
+                                    )
+                                    Text(
+                                        text = if (isFullPath) folderName else "/storage/emulated/0/$folderName",
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.7f),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+
+                            Button(
+                                onClick = {
+                                    viewModel.toggleBannedFolder(folderName)
+                                    android.widget.Toast.makeText(context, "Unbanned $displayName", android.widget.Toast.LENGTH_SHORT).show()
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Text("Unban", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
                         }
                     }
                 }

@@ -521,3 +521,41 @@ fun MainViewModel.deletePlaylist(playlistName: String) {
         preferenceRepository.updatePreferences(current.copy(playlistsJson = jsonObj.toString()))
     }
 }
+
+fun MainViewModel.updateCastSettings(
+    isCastEnabled: Boolean? = null,
+    selectedCastDevice: String? = null,
+    castProtocol: String? = null,
+    castQuality: String? = null,
+    castBufferSize: String? = null,
+    autoConnectCast: Boolean? = null,
+    castAudioDelayMs: Int? = null,
+    castVolume: Float? = null,
+    useOpenGlNetworkRemote: Boolean? = null,
+    openGlRemoteUrl: String? = null,
+    openGlRenderMode: String? = null,
+    pauseOnScreenSleep: Boolean? = null,
+    keepCastingOnScreenSleep: Boolean? = null
+) {
+    viewModelScope.launch {
+        val current = preferencesState.value
+        preferenceRepository.updatePreferences(
+            current.copy(
+                isCastEnabled = isCastEnabled ?: current.isCastEnabled,
+                selectedCastDevice = selectedCastDevice ?: current.selectedCastDevice,
+                castProtocol = castProtocol ?: current.castProtocol,
+                castQuality = castQuality ?: current.castQuality,
+                castBufferSize = castBufferSize ?: current.castBufferSize,
+                autoConnectCast = autoConnectCast ?: current.autoConnectCast,
+                castAudioDelayMs = castAudioDelayMs ?: current.castAudioDelayMs,
+                castVolume = castVolume ?: current.castVolume,
+                useOpenGlNetworkRemote = useOpenGlNetworkRemote ?: current.useOpenGlNetworkRemote,
+                openGlRemoteUrl = openGlRemoteUrl ?: current.openGlRemoteUrl,
+                openGlRenderMode = openGlRenderMode ?: current.openGlRenderMode,
+                pauseOnScreenSleep = pauseOnScreenSleep ?: current.pauseOnScreenSleep,
+                keepCastingOnScreenSleep = keepCastingOnScreenSleep ?: current.keepCastingOnScreenSleep
+            )
+        )
+    }
+}
+

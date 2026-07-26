@@ -86,5 +86,18 @@ data class PreferenceEntity(
     val useDynamicColor: Boolean = true,
     val useGroupWiseFolderStyle: Boolean = true,
     val groupByStyle: String = "none",
-    val deletedUrisJson: String = "[]"
+    val deletedUrisJson: String = "[]",
+    val isCastEnabled: Boolean = true,
+    val selectedCastDevice: String = "Living Room TV (Chromecast)",
+    val castProtocol: String = "Chromecast / DLNA",
+    val castQuality: String = "High (320kbps / 1080p)",
+    val castBufferSize: String = "Standard (3s)",
+    val autoConnectCast: Boolean = false,
+    val castAudioDelayMs: Int = 0,
+    val castVolume: Float = 1.0f,
+    val useOpenGlNetworkRemote: Boolean = false,
+    val openGlRemoteUrl: String = "gl://192.168.1.100:8080",
+    val openGlRenderMode: String = "Hardware Accelerated GL (Network ES 3.0)",
+    val pauseOnScreenSleep: Boolean = true,
+    val keepCastingOnScreenSleep: Boolean = true
 )

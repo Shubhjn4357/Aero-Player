@@ -24,9 +24,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.ui.viewmodel.*
+import com.example.data.database.PreferenceEntity
 
 enum class NativeSettingsCategory(
     val title: String,
@@ -36,6 +38,7 @@ enum class NativeSettingsCategory(
     DISPLAY("Display & Theme", "App theme, dynamic colors, and media list layout", Icons.Default.Palette),
     PLAYBACK("Playback Engine", "Hardware acceleration, seek intervals, orientation, and PiP mode", Icons.Default.PlayCircle),
     SUBTITLES("Subtitles & Captions", "Language, font size, text colors, encodings, and shadow effects", Icons.Default.Subtitles),
+    CASTING("Audio & Network Casting", "Chromecast, DLNA, stream quality, buffer latency, and audio delay", Icons.Default.Cast),
     STORAGE("Storage & Scanner", "Library folders, all files permission, and database index rebuild", Icons.Default.Storage),
     DATA_PRIVACY("Data & Privacy", "Metered network alerts and playback history tracking", Icons.Default.Security),
     ABOUT("About & App Info", "Version diagnostic tools, system info, EULA, and release notes", Icons.Default.Info)
@@ -57,6 +60,7 @@ fun SettingsScreen(
 
     // Dialog state controllers
     var showFolderManagerDialog by remember { mutableStateOf(false) }
+    var showBannedFolderManagerDialog by remember { mutableStateOf(false) }
     var showPrivacyPolicyDialog by remember { mutableStateOf(false) }
     var showTermsDialog by remember { mutableStateOf(false) }
     var showChangelogDialog by remember { mutableStateOf(false) }
@@ -80,11 +84,17 @@ fun SettingsScreen(
     var showShadowColorMenu by remember { mutableStateOf(false) }
     var showOutlineColorMenu by remember { mutableStateOf(false) }
     var showNetworkMenu by remember { mutableStateOf(false) }
+    var showCastDeviceMenu by remember { mutableStateOf(false) }
+    var showCastProtocolMenu by remember { mutableStateOf(false) }
+    var showCastQualityMenu by remember { mutableStateOf(false) }
+    var showCastBufferMenu by remember { mutableStateOf(false) }
+    var showOpenGlRenderMenu by remember { mutableStateOf(false) }
 
     BackHandler {
         when {
             showAboutScreen -> showAboutScreen = false
             showFolderManagerDialog -> showFolderManagerDialog = false
+            showBannedFolderManagerDialog -> showBannedFolderManagerDialog = false
             showPrivacyPolicyDialog -> showPrivacyPolicyDialog = false
             showTermsDialog -> showTermsDialog = false
             showChangelogDialog -> showChangelogDialog = false
@@ -263,11 +273,28 @@ fun SettingsScreen(
                                 onChangeOutlineColorMenu = { showOutlineColorMenu = it }
                             )
                         }
+                        NativeSettingsCategory.CASTING -> {
+                            CastingSettingsGroup(
+                                viewModel = viewModel,
+                                prefs = prefs,
+                                showCastDeviceMenu = showCastDeviceMenu,
+                                onChangeCastDeviceMenu = { showCastDeviceMenu = it },
+                                showCastProtocolMenu = showCastProtocolMenu,
+                                onChangeCastProtocolMenu = { showCastProtocolMenu = it },
+                                showCastQualityMenu = showCastQualityMenu,
+                                onChangeCastQualityMenu = { showCastQualityMenu = it },
+                                showCastBufferMenu = showCastBufferMenu,
+                                onChangeCastBufferMenu = { showCastBufferMenu = it },
+                                showOpenGlRenderMenu = showOpenGlRenderMenu,
+                                onChangeOpenGlRenderMenu = { showOpenGlRenderMenu = it }
+                            )
+                        }
                         NativeSettingsCategory.STORAGE -> {
                             StorageSettingsGroup(
                                 viewModel = viewModel,
                                 prefs = prefs,
-                                showFolderManager = { showFolderManagerDialog = true }
+                                showFolderManager = { showFolderManagerDialog = true },
+                                showBannedFolderManager = { showBannedFolderManagerDialog = true }
                             )
                         }
                         NativeSettingsCategory.DATA_PRIVACY -> {
@@ -404,6 +431,139 @@ fun SettingsScreen(
             confirmButton = {},
             dismissButton = {
                 TextButton(onClick = { showFolderManagerDialog = false }) {
+                    Text("Close")
+                }
+            }
+        )
+    }
+
+    // Banned / Blacklisted Folders Manager Dialog
+    if (showBannedFolderManagerDialog) {
+        val bannedFolders = remember(prefs.bannedFoldersJson) {
+            try {
+                val array = org.json.JSONArray(prefs.bannedFoldersJson)
+                val list = mutableListOf<String>()
+                for (i in 0 until array.length()) {
+                    list.add(array.getString(i))
+                }
+                list
+            } catch (e: Exception) {
+                emptyList<String>()
+            }
+        }
+        var customBanPath by remember { mutableStateOf("") }
+
+        AlertDialog(
+            onDismissRequest = { showBannedFolderManagerDialog = false },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Icon(Icons.Default.Block, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+                    Text("Blacklisted / Banned Folders", fontWeight = FontWeight.Bold)
+                }
+            },
+            text = {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        "Files in blacklisted folders are ignored during scanning and hidden from your media library:",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    if (bannedFolders.isEmpty()) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 16.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                "No folders are currently blacklisted.",
+                                fontSize = 13.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    } else {
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 200.dp)
+                                .verticalScroll(rememberScrollState())
+                        ) {
+                            bannedFolders.forEach { folder ->
+                                val isFullPath = folder.startsWith("/")
+                                val displayPath = if (isFullPath) folder else "/storage/emulated/0/$folder"
+                                Card(
+                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.2f)),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(10.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Icon(Icons.Default.Block, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp))
+                                            Column {
+                                                Text(if (isFullPath) java.io.File(folder).name else folder, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                                Text(displayPath, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                            }
+                                        }
+                                        Button(
+                                            onClick = {
+                                                viewModel.toggleBannedFolder(folder)
+                                                android.widget.Toast.makeText(context, "Unbanned $folder", android.widget.Toast.LENGTH_SHORT).show()
+                                            },
+                                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                            shape = RoundedCornerShape(8.dp)
+                                        ) {
+                                            Text("Unban", fontSize = 11.sp)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+
+                    OutlinedTextField(
+                        value = customBanPath,
+                        onValueChange = { customBanPath = it },
+                        label = { Text("Blacklist Folder Name or Path") },
+                        placeholder = { Text("e.g. WhatsApp Video") },
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    Button(
+                        onClick = {
+                            if (customBanPath.isNotBlank()) {
+                                viewModel.toggleBannedFolder(customBanPath.trim())
+                                android.widget.Toast.makeText(context, "Blacklisted folder: ${customBanPath.trim()}", android.widget.Toast.LENGTH_SHORT).show()
+                                customBanPath = ""
+                            }
+                        },
+                        enabled = customBanPath.isNotBlank(),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.align(Alignment.End)
+                    ) {
+                        Text("Add to Blacklist", fontSize = 12.sp)
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = { showBannedFolderManagerDialog = false }) {
                     Text("Close")
                 }
             }
@@ -1096,6 +1256,46 @@ private fun SubtitleSettingsGroup(
 
             HorizontalDivider(modifier = Modifier.padding(start = 68.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
 
+            // Subtitle Background Color
+            ListItem(
+                headlineContent = { Text("Subtitle Background Color", fontWeight = FontWeight.SemiBold) },
+                supportingContent = { Text("Hex: ${if (prefs.subtitleBackground == "#00000000") "Transparent" else prefs.subtitleBackground}") },
+                leadingContent = { SettingsIconBadge(Icons.Default.FormatColorFill) },
+                trailingContent = {
+                    Box {
+                        TextButton(onClick = { onChangeSubtitleBgMenu(true) }) {
+                            Text("Change")
+                            Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                        }
+                        DropdownMenu(expanded = showSubtitleBgMenu, onDismissRequest = { onChangeSubtitleBgMenu(false) }) {
+                            listOf(
+                                "#00000000" to "Transparent",
+                                "#FF000000" to "Solid Black",
+                                "#80000000" to "Semi-transparent Black",
+                                "#FF1F1F1F" to "Dark Grey",
+                                "#FF000080" to "Navy Blue"
+                            ).forEach { (hex, name) ->
+                                DropdownMenuItem(
+                                    text = { Text(name) },
+                                    onClick = {
+                                        viewModel.updateSubtitleCustomization(
+                                            background = hex,
+                                            textColor = prefs.subtitleTextColor,
+                                            size = prefs.subtitleSize,
+                                            fontStyle = prefs.subtitleFontStyle
+                                        )
+                                        onChangeSubtitleBgMenu(false)
+                                    }
+                                )
+                            }
+                        }
+                    }
+                },
+                modifier = Modifier.clickable { onChangeSubtitleBgMenu(true) }
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(start = 68.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+
             // Subtitle Text Size
             ListItem(
                 headlineContent = { Text("Subtitle Text Size", fontWeight = FontWeight.SemiBold) },
@@ -1108,7 +1308,7 @@ private fun SubtitleSettingsGroup(
                             Icon(Icons.Default.ArrowDropDown, contentDescription = null)
                         }
                         DropdownMenu(expanded = showSubtitleSizeMenu, onDismissRequest = { onChangeSubtitleSizeMenu(false) }) {
-                            listOf(12f, 14f, 16f, 18f, 20f, 24f).forEach { sz ->
+                            listOf(12f, 14f, 16f, 18f, 20f, 24f, 28f).forEach { sz ->
                                 DropdownMenuItem(
                                     text = { Text("${sz.toInt()} sp") },
                                     onClick = {
@@ -1126,6 +1326,117 @@ private fun SubtitleSettingsGroup(
                     }
                 },
                 modifier = Modifier.clickable { onChangeSubtitleSizeMenu(true) }
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(start = 68.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+
+            // Subtitle Font Style
+            ListItem(
+                headlineContent = { Text("Subtitle Font Style", fontWeight = FontWeight.SemiBold) },
+                supportingContent = { Text("Style: ${prefs.subtitleFontStyle}") },
+                leadingContent = { SettingsIconBadge(Icons.Default.Title) },
+                trailingContent = {
+                    Box {
+                        TextButton(onClick = { onChangeSubtitleFontMenu(true) }) {
+                            Text(prefs.subtitleFontStyle)
+                            Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                        }
+                        DropdownMenu(expanded = showSubtitleFontMenu, onDismissRequest = { onChangeSubtitleFontMenu(false) }) {
+                            listOf("Normal", "Bold", "Italic").forEach { st ->
+                                DropdownMenuItem(
+                                    text = { Text(st) },
+                                    onClick = {
+                                        viewModel.updateSubtitleCustomization(
+                                            background = prefs.subtitleBackground,
+                                            textColor = prefs.subtitleTextColor,
+                                            size = prefs.subtitleSize,
+                                            fontStyle = st
+                                        )
+                                        onChangeSubtitleFontMenu(false)
+                                    }
+                                )
+                            }
+                        }
+                    }
+                },
+                modifier = Modifier.clickable { onChangeSubtitleFontMenu(true) }
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(start = 68.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+
+            // Subtitle Outline Color
+            ListItem(
+                headlineContent = { Text("Subtitle Outline / Stroke", fontWeight = FontWeight.SemiBold) },
+                supportingContent = { Text("Outline color: ${if (prefs.subtitleOutlineColor == "#00000000" || prefs.subtitleOutlineColor.isEmpty()) "None" else prefs.subtitleOutlineColor}") },
+                leadingContent = { SettingsIconBadge(Icons.Default.BorderColor) },
+                trailingContent = {
+                    Box {
+                        TextButton(onClick = { onChangeOutlineColorMenu(true) }) {
+                            Text("Outline")
+                            Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                        }
+                        DropdownMenu(expanded = showOutlineColorMenu, onDismissRequest = { onChangeOutlineColorMenu(false) }) {
+                            listOf(
+                                "#00000000" to "None",
+                                "#FF000000" to "Black",
+                                "#FFFFFFFF" to "White",
+                                "#FFFF00" to "Yellow",
+                                "#FF333333" to "Dark Grey"
+                            ).forEach { (hex, name) ->
+                                DropdownMenuItem(
+                                    text = { Text(name) },
+                                    onClick = {
+                                        viewModel.updateAdvancedSubtitleSettings(
+                                            outlineColor = hex,
+                                            outlineWidth = 2.5f,
+                                            shadowColor = if (hex != "#00000000") "#00000000" else prefs.subtitleShadowColor
+                                        )
+                                        onChangeOutlineColorMenu(false)
+                                    }
+                                )
+                            }
+                        }
+                    }
+                },
+                modifier = Modifier.clickable { onChangeOutlineColorMenu(true) }
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(start = 68.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+
+            // Subtitle Shadow Color
+            ListItem(
+                headlineContent = { Text("Subtitle Drop Shadow", fontWeight = FontWeight.SemiBold) },
+                supportingContent = { Text("Shadow color: ${if (prefs.subtitleShadowColor == "#00000000" || prefs.subtitleShadowColor.isEmpty()) "None" else prefs.subtitleShadowColor}") },
+                leadingContent = { SettingsIconBadge(Icons.Default.WbSunny) },
+                trailingContent = {
+                    Box {
+                        TextButton(onClick = { onChangeShadowColorMenu(true) }) {
+                            Text("Shadow")
+                            Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                        }
+                        DropdownMenu(expanded = showShadowColorMenu, onDismissRequest = { onChangeShadowColorMenu(false) }) {
+                            listOf(
+                                "#00000000" to "None",
+                                "#80000000" to "Soft Shadow",
+                                "#FF000000" to "Solid Black Shadow",
+                                "#80FF0000" to "Red Glow"
+                            ).forEach { (hex, name) ->
+                                DropdownMenuItem(
+                                    text = { Text(name) },
+                                    onClick = {
+                                        viewModel.updateAdvancedSubtitleSettings(
+                                            shadowColor = hex,
+                                            shadowRadius = 4f,
+                                            outlineColor = if (hex != "#00000000") "#00000000" else prefs.subtitleOutlineColor
+                                        )
+                                        onChangeShadowColorMenu(false)
+                                    }
+                                )
+                            }
+                        }
+                    }
+                },
+                modifier = Modifier.clickable { onChangeShadowColorMenu(true) }
             )
 
             HorizontalDivider(modifier = Modifier.padding(start = 68.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
@@ -1176,13 +1487,13 @@ private fun SubtitleSettingsGroup(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(100.dp)
+                        .height(110.dp)
                         .clip(RoundedCornerShape(12.dp))
                         .background(Color(0xFF151515)),
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        text = "[ Video Frame Background Preview ]",
+                        text = "[ Video Frame Preview ]",
                         style = MaterialTheme.typography.bodySmall,
                         color = Color.Gray.copy(alpha = 0.4f)
                     )
@@ -1201,18 +1512,29 @@ private fun SubtitleSettingsGroup(
                             )
                             .padding(horizontal = 8.dp, vertical = 4.dp)
                     ) {
+                        val textColor = try {
+                            val baseColor = android.graphics.Color.parseColor(prefs.subtitleTextColor)
+                            val alpha = (prefs.subtitleOpacity * 255).toInt().coerceIn(0, 255)
+                            Color((baseColor and 0x00FFFFFF) or (alpha shl 24))
+                        } catch (e: Exception) {
+                            Color.White
+                        }
+
+                        val shadow = if (prefs.subtitleShadowColor != "#00000000" && prefs.subtitleShadowColor.isNotEmpty()) {
+                            androidx.compose.ui.graphics.Shadow(
+                                color = try { Color(android.graphics.Color.parseColor(prefs.subtitleShadowColor)) } catch (e: Exception) { Color.Black },
+                                blurRadius = prefs.subtitleShadowRadius
+                            )
+                        } else null
+
                         Text(
-                            text = "Aero Player renders crisp, beautiful subtitles.",
-                            color = try {
-                                val baseColor = android.graphics.Color.parseColor(prefs.subtitleTextColor)
-                                val alpha = (prefs.subtitleOpacity * 255).toInt().coerceIn(0, 255)
-                                Color((baseColor and 0x00FFFFFF) or (alpha shl 24))
-                            } catch (e: Exception) {
-                                Color.White
-                            },
+                            text = "Aero Player renders crisp, customized subtitles.",
+                            color = textColor,
                             fontSize = prefs.subtitleSize.sp,
                             fontWeight = if (prefs.subtitleFontStyle == "Bold") FontWeight.Bold else FontWeight.Normal,
-                            textAlign = TextAlign.Center
+                            fontStyle = if (prefs.subtitleFontStyle == "Italic") androidx.compose.ui.text.font.FontStyle.Italic else androidx.compose.ui.text.font.FontStyle.Normal,
+                            textAlign = TextAlign.Center,
+                            style = androidx.compose.ui.text.TextStyle(shadow = shadow)
                         )
                     }
                 }
@@ -1226,7 +1548,8 @@ private fun SubtitleSettingsGroup(
 private fun StorageSettingsGroup(
     viewModel: MainViewModel,
     prefs: com.example.data.database.PreferenceEntity,
-    showFolderManager: () -> Unit
+    showFolderManager: () -> Unit,
+    showBannedFolderManager: () -> Unit
 ) {
     val context = LocalContext.current
     Text("STORAGE & MEDIA SCANNER", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary, letterSpacing = 1.sp)
@@ -1246,6 +1569,19 @@ private fun StorageSettingsGroup(
                     Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Manage", tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 },
                 modifier = Modifier.clickable { showFolderManager() }
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(start = 68.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+
+            // Banned Folders
+            ListItem(
+                headlineContent = { Text("Blacklisted / Banned Folders", fontWeight = FontWeight.SemiBold) },
+                supportingContent = { Text("View & unban folders excluded from media scans") },
+                leadingContent = { SettingsIconBadge(Icons.Default.Block) },
+                trailingContent = {
+                    Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Manage", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                },
+                modifier = Modifier.clickable { showBannedFolderManager() }
             )
 
 
@@ -1535,6 +1871,17 @@ private fun SearchResultsView(
                 )
             }
 
+            // Casting & Network Audio
+            if ("cast".contains(q) || "dlna".contains(q) || "chromecast".contains(q) || "airplay".contains(q) || "tv".contains(q) || "stream".contains(q) || "wireless".contains(q) || "speaker".contains(q)) {
+                if (matchCount > 0) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+                matchCount++
+                ListItem(
+                    headlineContent = { Text("Audio & Network Casting Controls", fontWeight = FontWeight.SemiBold) },
+                    supportingContent = { Text("Receiver: ${prefs.selectedCastDevice} (${if (prefs.isCastEnabled) "Enabled" else "Disabled"})") },
+                    leadingContent = { SettingsIconBadge(Icons.Default.Cast) }
+                )
+            }
+
             // Folder & Storage
             if ("folder".contains(q) || "storage".contains(q) || "directory".contains(q) || "scan".contains(q) || "path".contains(q)) {
                 if (matchCount > 0) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
@@ -1603,6 +1950,299 @@ private fun SettingsIconBadge(icon: ImageVector) {
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.onPrimaryContainer,
                 modifier = Modifier.size(18.dp)
+            )
+        }
+    }
+}
+
+// --- CATEGORY CASTING SETTINGS ---
+@Composable
+private fun CastingSettingsGroup(
+    viewModel: MainViewModel,
+    prefs: PreferenceEntity,
+    showCastDeviceMenu: Boolean,
+    onChangeCastDeviceMenu: (Boolean) -> Unit,
+    showCastProtocolMenu: Boolean,
+    onChangeCastProtocolMenu: (Boolean) -> Unit,
+    showCastQualityMenu: Boolean,
+    onChangeCastQualityMenu: (Boolean) -> Unit,
+    showCastBufferMenu: Boolean,
+    onChangeCastBufferMenu: (Boolean) -> Unit,
+    showOpenGlRenderMenu: Boolean,
+    onChangeOpenGlRenderMenu: (Boolean) -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text("AUDIO & NETWORK CASTING", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary, letterSpacing = 1.sp)
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Enable Casting Switch
+            ListItem(
+                headlineContent = { Text("Enable Audio & Network Casting", fontWeight = FontWeight.SemiBold) },
+                supportingContent = { Text("Show cast button in player for Chromecast, DLNA & network speakers") },
+                leadingContent = { SettingsIconBadge(Icons.Default.Cast) },
+                trailingContent = {
+                    Switch(
+                        checked = prefs.isCastEnabled,
+                        onCheckedChange = { viewModel.updateCastSettings(isCastEnabled = it) }
+                    )
+                }
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(start = 68.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+
+            // Target Cast Device
+            ListItem(
+                headlineContent = { Text("Default Cast Receiver", fontWeight = FontWeight.SemiBold) },
+                supportingContent = { Text(prefs.selectedCastDevice) },
+                leadingContent = { SettingsIconBadge(Icons.Default.Tv) },
+                trailingContent = {
+                    Box {
+                        TextButton(onClick = { onChangeCastDeviceMenu(true) }) {
+                            Text("Select")
+                            Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                        }
+                        DropdownMenu(expanded = showCastDeviceMenu, onDismissRequest = { onChangeCastDeviceMenu(false) }) {
+                            listOf(
+                                "Living Room TV (Chromecast)",
+                                "Aero Audio Receiver (DLNA)",
+                                "Bedroom Soundbar (AirPlay)",
+                                "Kitchen Smart Speaker (Local Stream)"
+                            ).forEach { dev ->
+                                DropdownMenuItem(
+                                    text = { Text(dev) },
+                                    onClick = {
+                                        viewModel.updateCastSettings(selectedCastDevice = dev)
+                                        onChangeCastDeviceMenu(false)
+                                    }
+                                )
+                            }
+                        }
+                    }
+                },
+                modifier = Modifier.clickable { onChangeCastDeviceMenu(true) }
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(start = 68.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+
+            // Streaming Protocol
+            ListItem(
+                headlineContent = { Text("Casting Protocol", fontWeight = FontWeight.SemiBold) },
+                supportingContent = { Text(prefs.castProtocol) },
+                leadingContent = { SettingsIconBadge(Icons.Default.Router) },
+                trailingContent = {
+                    Box {
+                        TextButton(onClick = { onChangeCastProtocolMenu(true) }) {
+                            Text("Protocol")
+                            Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                        }
+                        DropdownMenu(expanded = showCastProtocolMenu, onDismissRequest = { onChangeCastProtocolMenu(false) }) {
+                            listOf(
+                                "Chromecast / DLNA",
+                                "AirPlay Protocol",
+                                "Local Wi-Fi Audio Stream"
+                            ).forEach { prot ->
+                                DropdownMenuItem(
+                                    text = { Text(prot) },
+                                    onClick = {
+                                        viewModel.updateCastSettings(castProtocol = prot)
+                                        onChangeCastProtocolMenu(false)
+                                    }
+                                )
+                            }
+                        }
+                    }
+                },
+                modifier = Modifier.clickable { onChangeCastProtocolMenu(true) }
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(start = 68.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+
+            // Stream Quality
+            ListItem(
+                headlineContent = { Text("Cast Quality & Bitrate", fontWeight = FontWeight.SemiBold) },
+                supportingContent = { Text(prefs.castQuality) },
+                leadingContent = { SettingsIconBadge(Icons.Default.HighQuality) },
+                trailingContent = {
+                    Box {
+                        TextButton(onClick = { onChangeCastQualityMenu(true) }) {
+                            Text("Quality")
+                            Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                        }
+                        DropdownMenu(expanded = showCastQualityMenu, onDismissRequest = { onChangeCastQualityMenu(false) }) {
+                            listOf(
+                                "Original Quality (Lossless)",
+                                "High (320kbps / 1080p)",
+                                "Medium (192kbps / 720p)",
+                                "Low Latency (128kbps)"
+                            ).forEach { q ->
+                                DropdownMenuItem(
+                                    text = { Text(q) },
+                                    onClick = {
+                                        viewModel.updateCastSettings(castQuality = q)
+                                        onChangeCastQualityMenu(false)
+                                    }
+                                )
+                            }
+                        }
+                    }
+                },
+                modifier = Modifier.clickable { onChangeCastQualityMenu(true) }
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(start = 68.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+
+            // Buffer Size
+            ListItem(
+                headlineContent = { Text("Network Buffer & Latency", fontWeight = FontWeight.SemiBold) },
+                supportingContent = { Text(prefs.castBufferSize) },
+                leadingContent = { SettingsIconBadge(Icons.Default.Speed) },
+                trailingContent = {
+                    Box {
+                        TextButton(onClick = { onChangeCastBufferMenu(true) }) {
+                            Text("Buffer")
+                            Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                        }
+                        DropdownMenu(expanded = showCastBufferMenu, onDismissRequest = { onChangeCastBufferMenu(false) }) {
+                            listOf(
+                                "Low Latency (1s)",
+                                "Standard (3s)",
+                                "Smooth Buffer (5s)",
+                                "Large Network Buffer (10s)"
+                            ).forEach { b ->
+                                DropdownMenuItem(
+                                    text = { Text(b) },
+                                    onClick = {
+                                        viewModel.updateCastSettings(castBufferSize = b)
+                                        onChangeCastBufferMenu(false)
+                                    }
+                                )
+                            }
+                        }
+                    }
+                },
+                modifier = Modifier.clickable { onChangeCastBufferMenu(true) }
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(start = 68.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+
+            // Auto Connect
+            ListItem(
+                headlineContent = { Text("Auto-Connect on Playback", fontWeight = FontWeight.SemiBold) },
+                supportingContent = { Text("Automatically initiate casting to default receiver when playback starts") },
+                leadingContent = { SettingsIconBadge(Icons.Default.Autorenew) },
+                trailingContent = {
+                    Switch(
+                        checked = prefs.autoConnectCast,
+                        onCheckedChange = { viewModel.updateCastSettings(autoConnectCast = it) }
+                    )
+                }
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(start = 68.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+
+            // Audio Delay Offset Slider
+            ListItem(
+                headlineContent = {
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("Audio Sync Offset", fontWeight = FontWeight.SemiBold)
+                        Text("${prefs.castAudioDelayMs} ms", color = MaterialTheme.colorScheme.primary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    }
+                },
+                supportingContent = {
+                    Column {
+                        Text("Adjust audio timing offset to eliminate lip-sync delay on network speakers")
+                        Slider(
+                            value = prefs.castAudioDelayMs.toFloat(),
+                            onValueChange = { viewModel.updateCastSettings(castAudioDelayMs = it.toInt()) },
+                            valueRange = -500f..500f,
+                            steps = 40
+                        )
+                    }
+                },
+                leadingContent = { SettingsIconBadge(Icons.Default.Sync) }
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(start = 68.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+
+            // OpenGL Network Remote Switch
+            ListItem(
+                headlineContent = { Text("OpenGL Network Remote Rendering", fontWeight = FontWeight.SemiBold) },
+                supportingContent = { Text("Offscreen OpenGL GPU rendering streamed over network interface") },
+                leadingContent = { SettingsIconBadge(Icons.Default.DeveloperBoard) },
+                trailingContent = {
+                    Switch(
+                        checked = prefs.useOpenGlNetworkRemote,
+                        onCheckedChange = { viewModel.updateCastSettings(useOpenGlNetworkRemote = it) }
+                    )
+                }
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(start = 68.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+
+            // OpenGL Render Engine Dropdown
+            ListItem(
+                headlineContent = { Text("OpenGL Render Engine Mode", fontWeight = FontWeight.SemiBold) },
+                supportingContent = { Text(prefs.openGlRenderMode) },
+                leadingContent = { SettingsIconBadge(Icons.Default.Memory) },
+                trailingContent = {
+                    Box {
+                        TextButton(onClick = { onChangeOpenGlRenderMenu(true) }) {
+                            Text("Engine")
+                            Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                        }
+                        DropdownMenu(expanded = showOpenGlRenderMenu, onDismissRequest = { onChangeOpenGlRenderMenu(false) }) {
+                            listOf(
+                                "Hardware Accelerated GL (Network ES 3.0)",
+                                "Network Texture Stream (GL ES 2.0)",
+                                "Software Offscreen GL Pipe"
+                            ).forEach { mode ->
+                                DropdownMenuItem(
+                                    text = { Text(mode) },
+                                    onClick = {
+                                        viewModel.updateCastSettings(openGlRenderMode = mode)
+                                        onChangeOpenGlRenderMenu(false)
+                                    }
+                                )
+                            }
+                        }
+                    }
+                },
+                modifier = Modifier.clickable { onChangeOpenGlRenderMenu(true) }
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(start = 68.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+
+            // Screen Sleep Pause Switch
+            ListItem(
+                headlineContent = { Text("Pause Playback on Screen Sleep", fontWeight = FontWeight.SemiBold) },
+                supportingContent = { Text("Automatically pause playback when screen turns off or goes to sleep mode") },
+                leadingContent = { SettingsIconBadge(Icons.Default.PowerSettingsNew) },
+                trailingContent = {
+                    Switch(
+                        checked = prefs.pauseOnScreenSleep,
+                        onCheckedChange = { viewModel.updateCastSettings(pauseOnScreenSleep = it) }
+                    )
+                }
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(start = 68.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+
+            // Keep Casting Active on Screen Sleep Switch
+            ListItem(
+                headlineContent = { Text("Keep Casting Active in Sleep Mode", fontWeight = FontWeight.SemiBold) },
+                supportingContent = { Text("Supply media through cast without pausing when screen enters sleep mode") },
+                leadingContent = { SettingsIconBadge(Icons.Default.CastConnected) },
+                trailingContent = {
+                    Switch(
+                        checked = prefs.keepCastingOnScreenSleep,
+                        onCheckedChange = { viewModel.updateCastSettings(keepCastingOnScreenSleep = it) }
+                    )
+                }
             )
         }
     }

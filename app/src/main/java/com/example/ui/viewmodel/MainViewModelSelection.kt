@@ -88,7 +88,10 @@ fun MainViewModel.deleteSelectedItems() {
         if (sel.selectedFolderPaths.isNotEmpty()) {
             val foldersToDelete = list.filter { item ->
                 val parentName = java.io.File(item.path).parentFile?.name ?: "Root Folder"
-                sel.selectedFolderPaths.contains(parentName)
+                sel.selectedFolderPaths.contains(parentName) ||
+                sel.selectedFolderPaths.contains(item.album) ||
+                sel.selectedFolderPaths.contains(item.artist) ||
+                sel.selectedFolderPaths.any { folder -> item.path.contains(folder) }
             }
             itemsToDelete.addAll(foldersToDelete)
         }

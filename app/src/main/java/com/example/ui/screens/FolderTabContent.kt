@@ -8,6 +8,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -54,6 +56,7 @@ fun FolderTabContent(
         historyList.associate { it.uriString to (it.progressMs.toFloat() / it.duration.coerceAtLeast(1L).toFloat()).coerceIn(0f, 1f) }
     }
     var currentPathSegments by remember { mutableStateOf<List<String>>(emptyList()) }
+    var folderMenuExpanded by remember { mutableStateOf(false) }
     val accentOrange = MaterialTheme.colorScheme.primary
     val context = androidx.compose.ui.platform.LocalContext.current
     val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
@@ -141,64 +144,291 @@ fun FolderTabContent(
 
     Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
+            val isAllFolderItemsSelected = remember(selectionState, subDirectories, files) {
+                val selDirs = selectionState.selectedFolderPaths
+                val selFiles = selectionState.selectedVideoIds
+                (subDirectories.isNotEmpty() || files.isNotEmpty()) &&
+                    subDirectories.all { selDirs.contains(it) } &&
+                    files.all { selFiles.contains(it.uriString) }
+            }
+
+            val isAllFoldersSelected = remember(selectionState, subDirectories) {
+                subDirectories.isNotEmpty() && subDirectories.all { selectionState.selectedFolderPaths.contains(it) }
+            }
+
+            // Top Folder Header Row with Navigation & Dedicated Folder Options Menu Button
             Row(
                 modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp)
-                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f), RoundedCornerShape(8.dp))
-                .padding(10.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            if (currentPathSegments.isNotEmpty()) {
-                IconButton(
-                    onClick = { currentPathSegments = currentPathSegments.dropLast(1) },
-                    modifier = Modifier.size(24.dp)
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 6.dp)
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f), RoundedCornerShape(10.dp))
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f)
                 ) {
+                    if (currentPathSegments.isNotEmpty()) {
+                        IconButton(
+                            onClick = { currentPathSegments = currentPathSegments.dropLast(1) },
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.ArrowBack,
+                                contentDescription = "Back",
+                                tint = accentOrange,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(4.dp))
+                    }
+                    
                     Icon(
-                        imageVector = Icons.Default.ArrowBack,
-                        contentDescription = "Back",
+                        imageVector = Icons.Default.FolderOpen,
+                        contentDescription = null,
                         tint = accentOrange,
-                        modifier = Modifier.size(16.dp)
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    
+                    Text(
+                        text = if (currentPathSegments.isEmpty()) "Root Folder" else currentPathSegments.last(),
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
-                Spacer(modifier = Modifier.width(8.dp))
+
+                Box {
+                    IconButton(
+                        onClick = { folderMenuExpanded = true },
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.MoreVert,
+                            contentDescription = "Folder Options Menu",
+                            tint = accentOrange,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+
+                    DropdownMenu(
+                        expanded = folderMenuExpanded,
+                        onDismissRequest = { folderMenuExpanded = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text(if (isAllFolderItemsSelected) "Deselect All Items" else "Select All Folders & Files") },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = if (isAllFolderItemsSelected) Icons.Default.CheckCircle else Icons.Default.SelectAll,
+                                    contentDescription = null,
+                                    tint = accentOrange
+                                )
+                            },
+                            onClick = {
+                                folderMenuExpanded = false
+                                if (isAllFolderItemsSelected) {
+                                    viewModel.clearSelection()
+                                } else {
+                                    viewModel.selectAllFoldersAndFiles(subDirectories, files.map { it.uriString })
+                                }
+                            }
+                        )
+
+                        DropdownMenuItem(
+                            text = { Text(if (isAllFoldersSelected) "Deselect All Folders" else "Select All Folders Only") },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = if (isAllFoldersSelected) Icons.Default.Folder else Icons.Default.FolderOpen,
+                                    contentDescription = null,
+                                    tint = accentOrange
+                                )
+                            },
+                            enabled = subDirectories.isNotEmpty(),
+                            onClick = {
+                                folderMenuExpanded = false
+                                if (isAllFoldersSelected) {
+                                    subDirectories.forEach { dir ->
+                                        if (selectionState.selectedFolderPaths.contains(dir)) {
+                                            viewModel.toggleFolderSelection(dir)
+                                        }
+                                    }
+                                } else {
+                                    subDirectories.forEach { dir ->
+                                        if (!selectionState.selectedFolderPaths.contains(dir)) {
+                                            viewModel.toggleFolderSelection(dir)
+                                        }
+                                    }
+                                }
+                            }
+                        )
+
+                        val currentFolder = currentPathSegments.lastOrNull() ?: "Root Folder"
+                        val isFav = prefs.favoriteFoldersJson.contains(currentFolder)
+
+                        DropdownMenuItem(
+                            text = { Text(if (isFav) "Remove Folder from Favorites" else "Favorite Current Folder") },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = if (isFav) Icons.Default.Star else Icons.Default.StarBorder,
+                                    contentDescription = null,
+                                    tint = accentOrange
+                                )
+                            },
+                            onClick = {
+                                folderMenuExpanded = false
+                                viewModel.toggleFavoriteFolder(currentFolder)
+                                android.widget.Toast.makeText(context, if (isFav) "Removed $currentFolder from favorites" else "Added $currentFolder to favorites", android.widget.Toast.LENGTH_SHORT).show()
+                            }
+                        )
+
+                        DropdownMenuItem(
+                            text = { Text("Play All Videos") },
+                            leadingIcon = { Icon(Icons.Default.PlayArrow, contentDescription = null, tint = accentOrange) },
+                            enabled = allFilesInFolderAndSubfolders.isNotEmpty(),
+                            onClick = {
+                                folderMenuExpanded = false
+                                viewModel.playAll(allFilesInFolderAndSubfolders)
+                            }
+                        )
+
+                        DropdownMenuItem(
+                            text = { Text("Shuffle Play Folder") },
+                            leadingIcon = { Icon(Icons.Default.Shuffle, contentDescription = null, tint = accentOrange) },
+                            enabled = allFilesInFolderAndSubfolders.isNotEmpty(),
+                            onClick = {
+                                folderMenuExpanded = false
+                                viewModel.playAll(allFilesInFolderAndSubfolders.shuffled())
+                            }
+                        )
+
+                        DropdownMenuItem(
+                            text = { Text("Queue All Videos") },
+                            leadingIcon = { Icon(Icons.Default.PlaylistAdd, contentDescription = null, tint = accentOrange) },
+                            enabled = allFilesInFolderAndSubfolders.isNotEmpty(),
+                            onClick = {
+                                folderMenuExpanded = false
+                                val count = allFilesInFolderAndSubfolders.size
+                                viewModel.addToQueue(allFilesInFolderAndSubfolders)
+                                android.widget.Toast.makeText(context, "Queued $count files", android.widget.Toast.LENGTH_SHORT).show()
+                            }
+                        )
+
+                        HorizontalDivider()
+
+                        DropdownMenuItem(
+                            text = { Text(if (prefs.useGroupWiseFolderStyle) "Switch to List View" else "Switch to Grid View") },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = if (prefs.useGroupWiseFolderStyle) Icons.Default.List else Icons.Default.GridView,
+                                    contentDescription = null,
+                                    tint = accentOrange
+                                )
+                            },
+                            onClick = {
+                                folderMenuExpanded = false
+                                viewModel.updateUseGroupWiseFolderStyle(!prefs.useGroupWiseFolderStyle)
+                            }
+                        )
+
+                        if (currentPathSegments.isNotEmpty()) {
+                            DropdownMenuItem(
+                                text = { Text("Hide / Ban Folder") },
+                                leadingIcon = { Icon(Icons.Default.Block, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+                                onClick = {
+                                    folderMenuExpanded = false
+                                    viewModel.toggleBannedFolder(currentFolder)
+                                    currentPathSegments = currentPathSegments.dropLast(1)
+                                    android.widget.Toast.makeText(context, "Folder $currentFolder hidden", android.widget.Toast.LENGTH_SHORT).show()
+                                }
+                            )
+                        }
+                    }
+                }
             }
-            
-            Icon(
-                imageVector = Icons.Default.FolderOpen,
-                contentDescription = null,
-                tint = accentOrange,
-                modifier = Modifier.size(18.dp)
-            )
-            Spacer(modifier = Modifier.width(6.dp))
-            
-            Text(
-                text = if (currentPathSegments.isEmpty()) "Root" else currentPathSegments.last(),
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Bold,
-                color = accentOrange
-            )
-        }
 
-        val isAllFolderItemsSelected = remember(selectionState, subDirectories, files) {
-            val selDirs = selectionState.selectedFolderPaths
-            val selFiles = selectionState.selectedVideoIds
-            (subDirectories.isNotEmpty() || files.isNotEmpty()) &&
-                subDirectories.all { selDirs.contains(it) } &&
-                files.all { selFiles.contains(it.uriString) }
-        }
-
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 4.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
+            // Folder Action & Selection Bar (All Folder Selector + Quick Options)
             Row(
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 12.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                // All Folder Selector Button
+                OutlinedButton(
+                    onClick = {
+                        if (isAllFoldersSelected) {
+                            subDirectories.forEach { dir ->
+                                if (selectionState.selectedFolderPaths.contains(dir)) {
+                                    viewModel.toggleFolderSelection(dir)
+                                }
+                            }
+                        } else {
+                            subDirectories.forEach { dir ->
+                                if (!selectionState.selectedFolderPaths.contains(dir)) {
+                                    viewModel.toggleFolderSelection(dir)
+                                }
+                            }
+                        }
+                    },
+                    enabled = subDirectories.isNotEmpty(),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        containerColor = if (isAllFoldersSelected) accentOrange.copy(alpha = 0.2f) else Color.Transparent,
+                        contentColor = accentOrange
+                    ),
+                    border = BorderStroke(1.dp, accentOrange),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.height(32.dp)
+                ) {
+                    Icon(
+                        imageVector = if (isAllFoldersSelected) Icons.Default.Folder else Icons.Default.FolderOpen,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = if (isAllFoldersSelected) "Deselect Folders (${subDirectories.size})" else "Select All Folders (${subDirectories.size})",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                // Select All Items (Folders + Files) Button
+                OutlinedButton(
+                    onClick = {
+                        if (isAllFolderItemsSelected) {
+                            viewModel.clearSelection()
+                        } else {
+                            viewModel.selectAllFoldersAndFiles(subDirectories, files.map { it.uriString })
+                        }
+                    },
+                    enabled = subDirectories.isNotEmpty() || files.isNotEmpty(),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        containerColor = if (isAllFolderItemsSelected) accentOrange.copy(alpha = 0.2f) else Color.Transparent,
+                        contentColor = accentOrange
+                    ),
+                    border = BorderStroke(1.dp, accentOrange),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.height(32.dp)
+                ) {
+                    Icon(
+                        imageVector = if (isAllFolderItemsSelected) Icons.Default.CheckCircle else Icons.Default.SelectAll,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(if (isAllFolderItemsSelected) "Deselect All" else "Select All Items", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                }
+
+                // Play All Button
                 Button(
                     onClick = { viewModel.playAll(allFilesInFolderAndSubfolders) },
                     enabled = allFilesInFolderAndSubfolders.isNotEmpty(),
@@ -212,9 +442,10 @@ fun FolderTabContent(
                 ) {
                     Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onPrimary)
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("Play All", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimary)
+                    Text("Play All (${allFilesInFolderAndSubfolders.size})", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                 }
 
+                // Queue All Button
                 OutlinedButton(
                     onClick = {
                         val count = allFilesInFolderAndSubfolders.size
@@ -233,46 +464,19 @@ fun FolderTabContent(
                     Text("Queue All", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                 }
 
-                OutlinedButton(
-                    onClick = {
-                        if (isAllFolderItemsSelected) {
-                            viewModel.clearSelection()
-                        } else {
-                            viewModel.selectAllFoldersAndFiles(subDirectories, files.map { it.uriString })
-                        }
-                    },
-                    enabled = subDirectories.isNotEmpty() || files.isNotEmpty(),
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        containerColor = if (isAllFolderItemsSelected) accentOrange.copy(alpha = 0.15f) else Color.Transparent,
-                        contentColor = accentOrange
-                    ),
-                    border = BorderStroke(1.dp, accentOrange),
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                    shape = RoundedCornerShape(8.dp),
-                    modifier = Modifier.height(32.dp)
+                // Grid / List Toggle
+                IconButton(
+                    onClick = { viewModel.updateUseGroupWiseFolderStyle(!prefs.useGroupWiseFolderStyle) },
+                    modifier = Modifier.size(32.dp)
                 ) {
                     Icon(
-                        imageVector = if (isAllFolderItemsSelected) Icons.Default.CheckCircle else Icons.Default.SelectAll,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp)
+                        imageVector = if (prefs.useGroupWiseFolderStyle) Icons.Default.List else Icons.Default.GridView,
+                        contentDescription = "Toggle Grid/List View",
+                        tint = accentOrange,
+                        modifier = Modifier.size(20.dp)
                     )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(if (isAllFolderItemsSelected) "Deselect" else "Select All", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                 }
             }
-
-            IconButton(
-                onClick = { viewModel.updateUseGroupWiseFolderStyle(!prefs.useGroupWiseFolderStyle) },
-                modifier = Modifier.size(32.dp)
-            ) {
-                Icon(
-                    imageVector = if (prefs.useGroupWiseFolderStyle) Icons.Default.List else Icons.Default.GridView,
-                    contentDescription = "Toggle Grid/List View",
-                    tint = accentOrange,
-                    modifier = Modifier.size(20.dp)
-                )
-            }
-        }
 
         if (subDirectories.isEmpty() && files.isEmpty()) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -608,7 +812,7 @@ fun FolderTabContent(
                                         fontWeight = FontWeight.Bold,
                                         fontSize = 14.sp,
                                         color = MaterialTheme.colorScheme.onSurface,
-                                        maxLines = 1,
+                                        maxLines = 2,
                                         overflow = TextOverflow.Ellipsis
                                     )
                                     Spacer(modifier = Modifier.height(4.dp))
@@ -711,35 +915,55 @@ fun FolderTabContent(
                                         if (isSelected) accentOrange else Color.Transparent
                                     )
                                 ) {
-                                    Column(
-                                        modifier = Modifier
-                                            .fillMaxSize()
-                                            .padding(8.dp),
-                                        verticalArrangement = Arrangement.SpaceBetween,
-                                        horizontalAlignment = Alignment.CenterHorizontally
-                                    ) {
-                                        FolderThumbnail(
-                                            folderFiles = folderVideos,
+                                    Box(modifier = Modifier.fillMaxSize()) {
+                                        Column(
                                             modifier = Modifier
-                                                .fillMaxWidth()
-                                                .aspectRatio(1.2f)
-                                        )
-                                        Spacer(modifier = Modifier.height(4.dp))
-                                        Text(
-                                            text = dir,
-                                            fontSize = 11.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = MaterialTheme.colorScheme.onSurface,
-                                            maxLines = 2,
-                                            overflow = TextOverflow.Ellipsis,
-                                            textAlign = TextAlign.Center
-                                        )
-                                        Text(
-                                            text = "${folderVideos.size} files",
-                                            fontSize = 9.sp,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                                            textAlign = TextAlign.Center
-                                        )
+                                                .fillMaxSize()
+                                                .padding(8.dp),
+                                            verticalArrangement = Arrangement.SpaceBetween,
+                                            horizontalAlignment = Alignment.CenterHorizontally
+                                        ) {
+                                            FolderThumbnail(
+                                                folderFiles = folderVideos,
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .aspectRatio(1.2f)
+                                            )
+                                            Spacer(modifier = Modifier.height(4.dp))
+                                            Text(
+                                                text = dir,
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = MaterialTheme.colorScheme.onSurface,
+                                                maxLines = 2,
+                                                overflow = TextOverflow.Ellipsis,
+                                                textAlign = TextAlign.Center
+                                            )
+                                            Text(
+                                                text = "${folderVideos.size} files",
+                                                fontSize = 9.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                                textAlign = TextAlign.Center
+                                            )
+                                        }
+                                        if (isSelected) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .align(Alignment.TopEnd)
+                                                    .padding(6.dp)
+                                                    .size(22.dp)
+                                                    .clip(CircleShape)
+                                                    .background(accentOrange),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Check,
+                                                    contentDescription = "Selected",
+                                                    tint = Color.White,
+                                                    modifier = Modifier.size(14.dp)
+                                                )
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -796,12 +1020,29 @@ fun FolderTabContent(
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                                             )
                                         }
-                                        Icon(
-                                            imageVector = Icons.Default.KeyboardArrowRight,
-                                            contentDescription = null,
-                                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
-                                            modifier = Modifier.size(18.dp)
-                                        )
+                                        if (isSelected) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(22.dp)
+                                                    .clip(CircleShape)
+                                                    .background(accentOrange),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Check,
+                                                    contentDescription = "Selected",
+                                                    tint = Color.White,
+                                                    modifier = Modifier.size(14.dp)
+                                                )
+                                            }
+                                        } else {
+                                            Icon(
+                                                imageVector = Icons.Default.KeyboardArrowRight,
+                                                contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -875,7 +1116,7 @@ fun FolderTabContent(
                                             fontSize = 11.sp,
                                             fontWeight = FontWeight.Bold,
                                             color = MaterialTheme.colorScheme.onSurface,
-                                            maxLines = 1,
+                                            maxLines = 2,
                                             overflow = TextOverflow.Ellipsis
                                         )
                                         Row(
@@ -977,7 +1218,7 @@ fun FolderTabContent(
                                                 fontWeight = FontWeight.Bold,
                                                 fontSize = 14.sp,
                                                 color = MaterialTheme.colorScheme.onSurface,
-                                                maxLines = 1,
+                                                maxLines = 2,
                                                 overflow = TextOverflow.Ellipsis
                                             )
                                             Spacer(modifier = Modifier.height(4.dp))

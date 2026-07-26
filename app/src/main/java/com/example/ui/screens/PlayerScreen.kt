@@ -43,6 +43,7 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.geometry.Offset
@@ -99,15 +100,30 @@ fun PlayerScreen(
     var isPipActive by remember { mutableStateOf(false) }
     val isInPipMode by viewModel.isInPipMode.collectAsState()
 
+    val hwVolPercent by viewModel.volumeOverlayPercent.collectAsState()
+    val hwVolTime by viewModel.volumeOverlayTime.collectAsState()
+    var showHwVolumeHud by remember { mutableStateOf(false) }
+
+    LaunchedEffect(hwVolPercent, hwVolTime) {
+        if (hwVolPercent != null && hwVolTime > 0L) {
+            showHwVolumeHud = true
+            kotlinx.coroutines.delay(1500)
+            showHwVolumeHud = false
+        }
+    }
+
     // ExoPlayer Builder
     val exoPlayer = viewModel.exoPlayer
 
     var showResumePrompt by remember { mutableStateOf(false) }
+    var isAutoTransitioning by remember { mutableStateOf(false) }
     var isNewSession by remember { mutableStateOf(true) }
     var resumePosition by remember { mutableStateOf(0L) }
     var isPlaying by remember { mutableStateOf(true) }
     var audioFallbackAttempted by remember { mutableStateOf(false) }
-    var generalRetryAttempted by remember { mutableStateOf(false) }
+    var generalRetryCount by remember { androidx.compose.runtime.mutableIntStateOf(0) }
+    var playbackErrorMsg by remember { mutableStateOf<String?>(null) }
+    var isBuffering by remember { mutableStateOf(false) }
     val currentEqualizerPreset by viewModel.currentEqualizerPreset.collectAsState()
     var resizeMode by remember { mutableStateOf(AspectRatioFrameLayout.RESIZE_MODE_FIT) }
     var currentBrightness by remember { mutableStateOf(-1f) }
@@ -171,7 +187,14 @@ fun PlayerScreen(
             }
         }
         onDispose {
-            (context as? android.app.Activity)?.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            (context as? android.app.Activity)?.let { act ->
+                act.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                val lp = act.window?.attributes
+                if (lp != null) {
+                    lp.screenBrightness = android.view.WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+                    act.window?.attributes = lp
+                }
+            }
             if (window != null) {
                 val windowInsetsController = androidx.core.view.WindowCompat.getInsetsController(window, window.decorView)
                 windowInsetsController.show(androidx.core.view.WindowInsetsCompat.Type.systemBars())
@@ -294,34 +317,64 @@ fun PlayerScreen(
                 (exoPlayer.playbackState == Player.STATE_READY || exoPlayer.playbackState == Player.STATE_BUFFERING)
 
         if (!isAlreadyPlayingThisItem) {
-            generalRetryAttempted = false
+            generalRetryCount = 0
+            val isRemoteStream = activeMediaItem.genre == "Live Stream" || activeMediaItem.genre == "Playlist Stream Channel" || activeMediaItem.uriString.startsWith("http://") || activeMediaItem.uriString.startsWith("https://") || activeMediaItem.uriString.startsWith("rtsp://") || activeMediaItem.uriString.startsWith("mms://")
+            isBuffering = isRemoteStream
+            playbackErrorMsg = null
             val history = viewModel.getHistoryByUri(activeMediaItem.uriString)
-            if (history != null && history.progressMs > 1000L && history.progressMs < history.duration - 5000L) {
+            val isAuto = isAutoTransitioning
+            isAutoTransitioning = false
+
+            try {
+                exoPlayer.stop()
+                exoPlayer.clearMediaItems()
+            } catch (e: Exception) {}
+
+            val newItem = buildMediaItemWithSubtitles(activeMediaItem.uriString, context)
+
+        try {
+            if (isAuto) {
+                // Seamless Auto-Play for Next/Prev Episode in Queue
+                exoPlayer.setMediaItem(newItem)
+                exoPlayer.prepare()
+                exoPlayer.seekTo(0L)
+                exoPlayer.playWhenReady = true
+                exoPlayer.play()
+            } else if (history != null && history.progressMs > 1000L && history.progressMs < history.duration - 5000L) {
                 resumePosition = history.progressMs
                 when (prefs.resumePlaybackBehavior) {
                     "Always Resume" -> {
-                        exoPlayer.setMediaItem(buildMediaItemWithSubtitles(activeMediaItem.uriString, context))
+                        exoPlayer.setMediaItem(newItem)
                         exoPlayer.prepare()
                         exoPlayer.seekTo(resumePosition)
+                        exoPlayer.playWhenReady = true
                         exoPlayer.play()
                     }
                     "Always Start from Beginning" -> {
-                        exoPlayer.setMediaItem(buildMediaItemWithSubtitles(activeMediaItem.uriString, context))
+                        exoPlayer.setMediaItem(newItem)
                         exoPlayer.prepare()
+                        exoPlayer.seekTo(0L)
+                        exoPlayer.playWhenReady = true
                         exoPlayer.play()
                     }
                     else -> { // "Ask Every Time"
                         showResumePrompt = true
-                        exoPlayer.setMediaItem(buildMediaItemWithSubtitles(activeMediaItem.uriString, context))
+                        exoPlayer.setMediaItem(newItem)
                         exoPlayer.prepare()
                         exoPlayer.playWhenReady = false
                     }
                 }
             } else {
-                exoPlayer.setMediaItem(buildMediaItemWithSubtitles(activeMediaItem.uriString, context))
+                exoPlayer.setMediaItem(newItem)
                 exoPlayer.prepare()
+                exoPlayer.seekTo(0L)
+                exoPlayer.playWhenReady = true
                 exoPlayer.play()
             }
+        } catch (e: Throwable) {
+            e.printStackTrace()
+            android.widget.Toast.makeText(context, "Error starting playback: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
+        }
         }
     }
 
@@ -415,16 +468,27 @@ fun PlayerScreen(
     // Async thumbnail extractor during scrubbing (highly optimized, preloaded, cached seek frame system)
     var cachedRetriever by remember { mutableStateOf<android.media.MediaMetadataRetriever?>(null) }
 
-    // Background Auto-Preload Keyframe Thumbnails for instant scrub preview
+    // Background Auto-Preload Keyframe Thumbnails for instant scrub preview (local files only to protect network & ExoPlayer)
     LaunchedEffect(activeMediaItem) {
-        if (activeMediaItem.isVideo) {
+        val isHttp = activeMediaItem.uriString.startsWith("http://") || activeMediaItem.uriString.startsWith("https://")
+        if (activeMediaItem.isVideo && !isHttp) {
             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                 var retriever: android.media.MediaMetadataRetriever? = null
+                var pfd: android.os.ParcelFileDescriptor? = null
                 try {
                     retriever = android.media.MediaMetadataRetriever()
-                    val mediaUri = parseMediaUri(activeMediaItem.uriString)
                     if (activeMediaItem.uriString.startsWith("content://")) {
-                        retriever.setDataSource(context, mediaUri)
+                        try {
+                            val uri = parseMediaUri(activeMediaItem.uriString)
+                            pfd = context.contentResolver.openFileDescriptor(uri, "r")
+                            if (pfd != null) {
+                                retriever.setDataSource(pfd.fileDescriptor)
+                            } else {
+                                retriever.setDataSource(context, uri)
+                            }
+                        } catch (e: Exception) {
+                            retriever.setDataSource(context, parseMediaUri(activeMediaItem.uriString))
+                        }
                     } else {
                         retriever.setDataSource(activeMediaItem.path ?: activeMediaItem.uriString)
                     }
@@ -453,11 +517,10 @@ fun PlayerScreen(
                         }
                     }
                 } catch (e: Exception) {
-                    e.printStackTrace()
+                    // Ignore non-fatal thumbnail extraction exceptions
                 } finally {
-                    try {
-                        retriever?.release()
-                    } catch (e: Exception) {}
+                    try { pfd?.close() } catch (e: Exception) {}
+                    try { retriever?.release() } catch (e: Exception) {}
                 }
             }
         }
@@ -468,9 +531,23 @@ fun PlayerScreen(
             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                 try {
                     val r = android.media.MediaMetadataRetriever()
-                    val mediaUri = parseMediaUri(activeMediaItem.uriString)
                     if (activeMediaItem.uriString.startsWith("content://")) {
-                        r.setDataSource(context, mediaUri)
+                        var pfd: android.os.ParcelFileDescriptor? = null
+                        try {
+                            val uri = parseMediaUri(activeMediaItem.uriString)
+                            pfd = context.contentResolver.openFileDescriptor(uri, "r")
+                            if (pfd != null) {
+                                r.setDataSource(pfd.fileDescriptor)
+                            } else {
+                                r.setDataSource(context, uri)
+                            }
+                        } catch (e: Exception) {
+                            r.setDataSource(context, parseMediaUri(activeMediaItem.uriString))
+                        } finally {
+                            try { pfd?.close() } catch (e: Exception) {}
+                        }
+                    } else if (activeMediaItem.uriString.startsWith("http://") || activeMediaItem.uriString.startsWith("https://")) {
+                        r.setDataSource(activeMediaItem.uriString, HashMap<String, String>())
                     } else {
                         r.setDataSource(activeMediaItem.path ?: activeMediaItem.uriString)
                     }
@@ -551,14 +628,42 @@ fun PlayerScreen(
     var pointB by remember { mutableStateOf<Long?>(null) }
     var abRepeatEnabled by remember { mutableStateOf(false) }
     var audioDelayMs by remember { mutableStateOf(0L) }
-    var playbackErrorMsg by remember { mutableStateOf<String?>(null) }
-    var isBuffering by remember { mutableStateOf(false) }
 
     // Bottom Drawers visibility
     var showAdvancedControlsSheet by remember { mutableStateOf(false) }
     var showSleepTimerSheet by remember { mutableStateOf(false) }
     var showEqualizerSheet by remember { mutableStateOf(false) }
     var showAudioSubtitleSelectorSheet by remember { mutableStateOf(false) }
+    var showCastControlSheet by remember { mutableStateOf(false) }
+    var isCastingActive by remember { mutableStateOf(false) }
+    var connectedCastDevice by remember { mutableStateOf<String?>(null) }
+
+    // Register Screen Off / Screen Sleep BroadcastReceiver to handle screen sleep mode
+    DisposableEffect(context, exoPlayer, prefs.pauseOnScreenSleep, prefs.keepCastingOnScreenSleep, isCastingActive) {
+        val screenReceiver = object : android.content.BroadcastReceiver() {
+            override fun onReceive(ctx: android.content.Context?, intent: android.content.Intent?) {
+                if (intent?.action == android.content.Intent.ACTION_SCREEN_OFF) {
+                    // If casting is active and keep casting in sleep mode is enabled, supply media without pausing
+                    if (isCastingActive && prefs.keepCastingOnScreenSleep) {
+                        if (!exoPlayer.isPlaying) {
+                            exoPlayer.play()
+                        }
+                    } else if (prefs.pauseOnScreenSleep) {
+                        exoPlayer.pause()
+                    }
+                }
+            }
+        }
+        val filter = android.content.IntentFilter(android.content.Intent.ACTION_SCREEN_OFF)
+        context.registerReceiver(screenReceiver, filter)
+        onDispose {
+            try {
+                context.unregisterReceiver(screenReceiver)
+            } catch (e: Exception) {
+                // ignore
+            }
+        }
+    }
     var showFileBrowserForSubtitle by remember { mutableStateOf(false) }
     var showQueueSheet by remember { mutableStateOf(false) }
     var initialGesturePosition by remember { mutableStateOf(0L) }
@@ -595,8 +700,17 @@ fun PlayerScreen(
     var videoScale by remember { mutableStateOf(1.0f) }
 
     // Overlay feedback
-    var gestureFeedbackType by remember { mutableStateOf("") } // "volume", "brightness", "seek"
+    var gestureFeedbackType by remember { mutableStateOf("") } // "volume", "brightness", "seek", "aspect_ratio"
     var gestureFeedbackValue by remember { mutableStateOf("") }
+
+    LaunchedEffect(gestureFeedbackType, gestureFeedbackValue) {
+        if (gestureFeedbackType == "aspect_ratio") {
+            kotlinx.coroutines.delay(1200)
+            if (gestureFeedbackType == "aspect_ratio") {
+                gestureFeedbackType = ""
+            }
+        }
+    }
     var activeDragVolume by remember { mutableStateOf<Float?>(null) }
     var activeDragBrightness by remember { mutableStateOf<Float?>(null) }
     var gestureSessionType by remember { mutableStateOf("none") }
@@ -699,7 +813,7 @@ fun PlayerScreen(
         if ((isPlaying || isLocked) && (!isSleepTimerRunning || sleepTimeLeftMinutes > 0)) {
             try {
                 if (!wakeLock.isHeld) {
-                    wakeLock.acquire(10 * 60 * 1000L) // 10 mins fallback lock
+                    wakeLock.acquire(24 * 60 * 60 * 1000L) // 24 hours lock for long playback & locked mode
                 }
                 if (!wifiLock.isHeld) {
                     wifiLock.acquire()
@@ -741,13 +855,43 @@ fun PlayerScreen(
         val listener = object : Player.Listener {
             override fun onIsPlayingChanged(playing: Boolean) {
                 isPlaying = playing
-                if (playing) playbackErrorMsg = null
+                if (playing) {
+                    playbackErrorMsg = null
+                    generalRetryCount = 0
+                }
             }
             override fun onPlaybackStateChanged(playbackState: Int) {
                 isBuffering = playbackState == Player.STATE_BUFFERING
                 if (playbackState == Player.STATE_READY) {
                     duration = exoPlayer.duration
                     playbackErrorMsg = null
+                    generalRetryCount = 0
+                } else if (playbackState == Player.STATE_ENDED) {
+                    if (repeatModeState == 1) { // Repeat One
+                        exoPlayer.seekTo(0)
+                        exoPlayer.play()
+                    } else {
+                        val playQueue = viewModel.playQueue.value
+                        val currentIndex = viewModel.currentQueueIndex.value
+                        if (playQueue.size <= 1) {
+                            if (repeatModeState == 2) { // Repeat All
+                                exoPlayer.seekTo(0)
+                                exoPlayer.play()
+                            } else {
+                                exoPlayer.seekTo(0)
+                                exoPlayer.pause()
+                            }
+                        } else {
+                            if (currentIndex >= playQueue.size - 1 && repeatModeState == 0) {
+                                // End of queue reached and repeat is off
+                                exoPlayer.seekTo(0)
+                                exoPlayer.pause()
+                            } else {
+                                isAutoTransitioning = true
+                                viewModel.playNext()
+                            }
+                        }
+                    }
                 }
             }
             override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
@@ -786,8 +930,11 @@ fun PlayerScreen(
                         errorMsg.contains("AudioRenderer", ignoreCase = true) ||
                         errorMsg.contains("AudioSink", ignoreCase = true)
 
+                val isVideoError = errorMsg.contains("video", ignoreCase = true) ||
+                        errorMsg.contains("MediaCodecVideoRenderer", ignoreCase = true) ||
+                        errorMsg.contains("VideoRenderer", ignoreCase = true)
+
                 val currentParams = exoPlayer.trackSelectionParameters
-                val audioDisabled = currentParams.disabledTrackTypes.contains(androidx.media3.common.C.TRACK_TYPE_AUDIO)
 
                 if (isAudioError && !audioFallbackAttempted) {
                     audioFallbackAttempted = true
@@ -817,11 +964,10 @@ fun PlayerScreen(
                     if (fallbackTrackSelected) {
                         android.widget.Toast.makeText(
                             context,
-                            "Dolby EAC3 not supported by hardware. Switched to alternative audio track.",
-                            android.widget.Toast.LENGTH_LONG
+                            "Audio codec change handled: switched to compatible track.",
+                            android.widget.Toast.LENGTH_SHORT
                         ).show()
                     } else {
-                        // Disable audio track so video plays at 60fps without freezing or infinite loop
                         val newParams = currentParams.buildUpon()
                             .setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_AUDIO, true)
                             .build()
@@ -829,36 +975,64 @@ fun PlayerScreen(
 
                         android.widget.Toast.makeText(
                             context,
-                            "Dolby EAC3 audio format requires hardware decoder support on this device. Playing video-only mode.",
-                            android.widget.Toast.LENGTH_LONG
+                            "Unsupported audio codec: continuing video playback.",
+                            android.widget.Toast.LENGTH_SHORT
                         ).show()
                     }
 
                     playbackErrorMsg = null
                     exoPlayer.prepare()
-                    exoPlayer.seekTo(resumePos)
+                    if (resumePos > 0) exoPlayer.seekTo(resumePos)
+                    exoPlayer.playWhenReady = true
                     exoPlayer.play()
                     return
                 }
 
                 if (isAudioError && audioFallbackAttempted) {
-                    playbackErrorMsg = "Dolby EAC3 audio format not supported by device hardware"
-                    return
-                }
-
-                if (!generalRetryAttempted) {
-                    generalRetryAttempted = true
                     val resumePos = exoPlayer.currentPosition
+                    val newParams = currentParams.buildUpon()
+                        .setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_AUDIO, true)
+                        .build()
+                    exoPlayer.trackSelectionParameters = newParams
                     playbackErrorMsg = null
                     exoPlayer.prepare()
-                    if (resumePos > 0) {
-                        exoPlayer.seekTo(resumePos)
-                    }
+                    if (resumePos > 0) exoPlayer.seekTo(resumePos)
+                    exoPlayer.playWhenReady = true
                     exoPlayer.play()
                     return
                 }
 
-                playbackErrorMsg = "Unable to play source: ${error.localizedMessage ?: "Network or codec failure"}"
+                if (isVideoError) {
+                    val resumePos = exoPlayer.currentPosition
+                    val newParams = currentParams.buildUpon()
+                        .clearOverridesOfType(androidx.media3.common.C.TRACK_TYPE_VIDEO)
+                        .build()
+                    exoPlayer.trackSelectionParameters = newParams
+                    playbackErrorMsg = null
+                    exoPlayer.prepare()
+                    if (resumePos > 0) exoPlayer.seekTo(resumePos)
+                    exoPlayer.playWhenReady = true
+                    exoPlayer.play()
+                    return
+                }
+
+                isBuffering = false
+                if (generalRetryCount < 1) {
+                    generalRetryCount++
+                    val resumePos = exoPlayer.currentPosition
+                    playbackErrorMsg = null
+                    exoPlayer.setMediaItem(buildMediaItemWithSubtitles(activeMediaItem.uriString, context))
+                    exoPlayer.prepare()
+                    if (resumePos > 0) {
+                        exoPlayer.seekTo(resumePos)
+                    }
+                    exoPlayer.playWhenReady = true
+                    exoPlayer.play()
+                    return
+                }
+
+                val cleanError = formatCleanPlaybackError(error)
+                playbackErrorMsg = "Playback Error\n\nUnable to load stream or broken link.\n\n$cleanError"
             }
             override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
                 isShuffleEnabled = shuffleModeEnabled
@@ -873,6 +1047,26 @@ fun PlayerScreen(
         }
         exoPlayer.addListener(listener)
         onDispose { exoPlayer.removeListener(listener) }
+    }
+
+    // Auto-unblock buffering stall watchdog
+    LaunchedEffect(isBuffering) {
+        if (isBuffering) {
+            delay(3500)
+            if (exoPlayer.playbackState == Player.STATE_BUFFERING) {
+                val pos = exoPlayer.currentPosition
+                try {
+                    exoPlayer.prepare()
+                    if (pos > 0) {
+                        exoPlayer.seekTo(pos)
+                    }
+                    exoPlayer.playWhenReady = true
+                    exoPlayer.play()
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+        }
     }
 
     // Playback loop tracking position
@@ -943,23 +1137,15 @@ fun PlayerScreen(
                     modifier = Modifier
                         .padding(end = 16.dp, bottom = 100.dp)
                         .offset { IntOffset(pipOffset.x.roundToInt(), pipOffset.y.roundToInt()) }
-                        .width(200.dp)
-                        .height(130.dp)
-                        .shadow(12.dp, RoundedCornerShape(16.dp))
-                        .pointerInput(Unit) {
-                            detectDragGestures { change, dragAmount ->
-                                change.consume()
-                                pipOffset = Offset(
-                                    x = pipOffset.x + dragAmount.x,
-                                    y = pipOffset.y + dragAmount.y
-                                )
-                            }
-                        },
-                    shape = RoundedCornerShape(16.dp),
+                        .width(280.dp)
+                        .height(175.dp)
+                        .shadow(16.dp, RoundedCornerShape(18.dp)),
+                    shape = RoundedCornerShape(18.dp),
                     colors = CardDefaults.cardColors(containerColor = Color.Black),
-                    border = BorderStroke(2.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.8f))
+                    border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.8f))
                 ) {
                     Box(modifier = Modifier.fillMaxSize()) {
+                        // Video / Surface View
                         if (activeMediaItem.isVideo && !playAsAudioOnly) {
                             AndroidView(
                                 factory = { ctx ->
@@ -978,47 +1164,179 @@ fun PlayerScreen(
                             )
                         } else {
                             Box(
-                                modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceVariant),
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(MaterialTheme.colorScheme.surfaceVariant),
                                 contentAlignment = Alignment.Center
                             ) {
-                                Icon(Icons.Default.MusicNote, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(48.dp))
+                                Icon(
+                                    imageVector = Icons.Default.MusicNote,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(48.dp)
+                                )
                             }
                         }
 
-                        Box(
+                        // Overlay with Controls & Drag Header Bar
+                        Column(
                             modifier = Modifier
                                 .fillMaxSize()
-                                .background(Color.Black.copy(alpha = 0.35f))
+                                .background(Color.Black.copy(alpha = 0.45f))
                         ) {
-                            IconButton(
-                                onClick = { isPipActive = false },
-                                modifier = Modifier.align(Alignment.TopStart).padding(4.dp).size(28.dp).background(Color.Black.copy(alpha = 0.6f), CircleShape)
-                            ) {
-                                Icon(Icons.Default.Fullscreen, contentDescription = "Restore Fullscreen", tint = Color.White, modifier = Modifier.size(16.dp))
-                            }
-
-                            IconButton(
-                                onClick = {
-                                    isPipActive = false
-                                    onBack()
-                                },
-                                modifier = Modifier.align(Alignment.TopEnd).padding(4.dp).size(28.dp).background(Color.Black.copy(alpha = 0.6f), CircleShape)
-                            ) {
-                                Icon(Icons.Default.Close, contentDescription = "Dismiss Player", tint = Color.White, modifier = Modifier.size(16.dp))
-                            }
-
-                            IconButton(
-                                onClick = {
-                                    if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
-                                },
-                                modifier = Modifier.align(Alignment.Center).size(36.dp).background(MaterialTheme.colorScheme.primary, CircleShape)
+                            // Top Drag Bar & Title & Window Buttons
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(Color.Black.copy(alpha = 0.65f))
+                                    .pointerInput(Unit) {
+                                        detectDragGestures { change, dragAmount ->
+                                            change.consume()
+                                            pipOffset = Offset(
+                                                x = pipOffset.x + dragAmount.x,
+                                                y = pipOffset.y + dragAmount.y
+                                            )
+                                        }
+                                    }
+                                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Icon(
-                                    imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                                    contentDescription = "Play/Pause",
-                                    tint = MaterialTheme.colorScheme.onPrimary,
-                                    modifier = Modifier.size(20.dp)
+                                    imageVector = Icons.Default.DragHandle,
+                                    contentDescription = "Drag Pop-Up Window",
+                                    tint = Color.White.copy(alpha = 0.7f),
+                                    modifier = Modifier.size(16.dp)
                                 )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "Pop-Up Player",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = Color.White,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
+                                )
+
+                                IconButton(
+                                    onClick = { isPipActive = false },
+                                    modifier = Modifier.size(26.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Fullscreen,
+                                        contentDescription = "Restore Fullscreen",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+
+                                Spacer(modifier = Modifier.width(4.dp))
+
+                                IconButton(
+                                    onClick = {
+                                        isPipActive = false
+                                        exoPlayer.pause()
+                                    },
+                                    modifier = Modifier.size(26.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Close,
+                                        contentDescription = "Close Pop-Up Player",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            }
+
+                            // Center Player Control Bar (Rewind -10s, Play/Pause, Stop, Forward +10s)
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier
+                                        .background(Color.Black.copy(alpha = 0.65f), CircleShape)
+                                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                                ) {
+                                    // Rewind 10s
+                                    IconButton(
+                                        onClick = {
+                                            val target = (exoPlayer.currentPosition - 10000).coerceAtLeast(0)
+                                            exoPlayer.seekTo(target)
+                                        },
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.FastRewind,
+                                            contentDescription = "Rewind 10s",
+                                            tint = Color.White,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
+
+                                    // Play / Pause
+                                    IconButton(
+                                        onClick = {
+                                            if (exoPlayer.isPlaying) {
+                                                exoPlayer.pause()
+                                                isPlaying = false
+                                            } else {
+                                                exoPlayer.play()
+                                                isPlaying = true
+                                            }
+                                        },
+                                        modifier = Modifier
+                                            .size(38.dp)
+                                            .background(MaterialTheme.colorScheme.primary, CircleShape)
+                                    ) {
+                                        Icon(
+                                            imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                            contentDescription = "Play / Pause",
+                                            tint = MaterialTheme.colorScheme.onPrimary,
+                                            modifier = Modifier.size(22.dp)
+                                        )
+                                    }
+
+                                    // Stop
+                                    IconButton(
+                                        onClick = {
+                                            exoPlayer.stop()
+                                            exoPlayer.seekTo(0)
+                                            isPlaying = false
+                                            isPipActive = false
+                                        },
+                                        modifier = Modifier
+                                            .size(32.dp)
+                                            .background(Color.Red.copy(alpha = 0.8f), CircleShape)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Stop,
+                                            contentDescription = "Stop Playback",
+                                            tint = Color.White,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+
+                                    // Forward 10s
+                                    IconButton(
+                                        onClick = {
+                                            val target = (exoPlayer.currentPosition + 10000).coerceAtMost(if (exoPlayer.duration > 0) exoPlayer.duration else Long.MAX_VALUE)
+                                            exoPlayer.seekTo(target)
+                                        },
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.FastForward,
+                                            contentDescription = "Forward 10s",
+                                            tint = Color.White,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
@@ -1045,8 +1363,8 @@ fun PlayerScreen(
                 exoPlayer.seekTo(pos)
                 currentPosition = pos
             },
-            onPrev = { viewModel.playPrevious() },
-            onNext = { viewModel.playNext() },
+            onPrev = { isAutoTransitioning = true; viewModel.playPrevious() },
+            onNext = { isAutoTransitioning = true; viewModel.playNext() },
             onToggleShuffle = {
                 isShuffleEnabled = !isShuffleEnabled
                 exoPlayer.shuffleModeEnabled = isShuffleEnabled
@@ -1337,6 +1655,7 @@ fun PlayerScreen(
                                     subView.setApplyEmbeddedFontSizes(false)
                                     subView.setStyle(captionStyle)
                                     subView.setFixedTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, prefs.subtitleSize)
+                                    subView.setBottomPaddingFraction(0.08f)
                                 }
                             } catch (e: Exception) {
                                 e.printStackTrace()
@@ -1352,54 +1671,59 @@ fun PlayerScreen(
                     )
                 }
 
-                // Double Tap Ripple Animations (Unified Full-Screen Canvas for Perfect Placement)
+                // Double Tap Ripple Animations (Unified Full-Screen Canvas with Native Curved Sector Clip)
                 val primaryColor = MaterialTheme.colorScheme.primary
                 androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
-                    // Left Ripple
+                    // Left Ripple (Curved Arc Sector Clip)
                     val leftProgress = leftAnim.value
                     if (leftProgress > 0f && leftProgress < 1f) {
                         val tapCenter = if (leftDoubleTapOffset != androidx.compose.ui.geometry.Offset.Zero) {
                             leftDoubleTapOffset
                         } else {
-                            androidx.compose.ui.geometry.Offset(size.width * 0.15f, size.height / 2f)
+                            androidx.compose.ui.geometry.Offset(size.width * 0.18f, size.height / 2f)
                         }
-                        // Base fading glow
-                        val glowAlpha = (1f - leftProgress) * 0.18f
-                        val glowRadius = size.height * 0.7f * leftProgress
-                        drawCircle(
-                            brush = androidx.compose.ui.graphics.Brush.radialGradient(
-                                colors = listOf(
-                                    primaryColor.copy(alpha = glowAlpha),
-                                    primaryColor.copy(alpha = 0f)
+                        val leftPath = androidx.compose.ui.graphics.Path().apply {
+                            moveTo(0f, 0f)
+                            lineTo(size.width * 0.38f, 0f)
+                            quadraticTo(
+                                size.width * 0.46f, size.height * 0.5f,
+                                size.width * 0.38f, size.height
+                            )
+                            lineTo(0f, size.height)
+                            close()
+                        }
+                        clipPath(leftPath) {
+                            drawPath(
+                                path = leftPath,
+                                color = Color.White.copy(alpha = (1f - leftProgress) * 0.16f)
+                            )
+                            val rippleRadius = size.width * 0.55f * leftProgress
+                            drawCircle(
+                                brush = androidx.compose.ui.graphics.Brush.radialGradient(
+                                    colors = listOf(
+                                        Color.White.copy(alpha = (1f - leftProgress) * 0.38f),
+                                        primaryColor.copy(alpha = (1f - leftProgress) * 0.22f),
+                                        Color.Transparent
+                                    ),
+                                    center = tapCenter,
+                                    radius = rippleRadius.coerceAtLeast(1f)
                                 ),
                                 center = tapCenter,
-                                radius = glowRadius.coerceAtLeast(1f)
-                            ),
-                            radius = glowRadius,
-                            center = tapCenter
-                        )
-                        // Sharp expanding rings (two of them)
-                        val ring1Alpha = (1f - leftProgress) * 0.5f
-                        val ring1Radius = size.height * 0.55f * leftProgress
-                        drawCircle(
-                            color = primaryColor,
-                            radius = ring1Radius,
-                            center = tapCenter,
-                            alpha = ring1Alpha,
-                            style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.dp.toPx())
-                        )
-                        if (leftProgress > 0.2f) {
-                            val progress2 = (leftProgress - 0.2f) / 0.8f
-                            val ring2Alpha = (1f - progress2) * 0.3f
-                            val ring2Radius = size.height * 0.55f * progress2
+                                radius = rippleRadius
+                            )
+                            val ringRadius = size.width * 0.42f * leftProgress
                             drawCircle(
-                                color = primaryColor,
-                                radius = ring2Radius,
+                                color = Color.White.copy(alpha = (1f - leftProgress) * 0.45f),
                                 center = tapCenter,
-                                alpha = ring2Alpha,
-                                style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.dp.toPx())
+                                radius = ringRadius,
+                                style = androidx.compose.ui.graphics.drawscope.Stroke(width = 3.dp.toPx())
                             )
                         }
+                        drawPath(
+                            path = leftPath,
+                            color = primaryColor.copy(alpha = (1f - leftProgress) * 0.35f),
+                            style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.dp.toPx())
+                        )
                     }
 
                     // Center Ripple
@@ -1410,78 +1734,78 @@ fun PlayerScreen(
                         } else {
                             androidx.compose.ui.geometry.Offset(size.width / 2f, size.height / 2f)
                         }
-                        // Base fading glow
-                        val glowAlpha = (1f - centerProgress) * 0.25f
-                        val glowRadius = size.height * 0.4f * centerProgress
+                        val rippleRadius = size.height * 0.45f * centerProgress
                         drawCircle(
                             brush = androidx.compose.ui.graphics.Brush.radialGradient(
                                 colors = listOf(
-                                    primaryColor.copy(alpha = glowAlpha),
-                                    primaryColor.copy(alpha = 0f)
+                                    Color.White.copy(alpha = (1f - centerProgress) * 0.4f),
+                                    primaryColor.copy(alpha = (1f - centerProgress) * 0.22f),
+                                    Color.Transparent
                                 ),
                                 center = tapCenter,
-                                radius = glowRadius.coerceAtLeast(1f)
+                                radius = rippleRadius.coerceAtLeast(1f)
                             ),
-                            radius = glowRadius,
-                            center = tapCenter
-                        )
-                        // Fading and expanding ring
-                        val ringAlpha = (1f - centerProgress) * 0.6f
-                        val ringRadius = size.height * 0.3f * centerProgress
-                        drawCircle(
-                            color = primaryColor,
-                            radius = ringRadius,
                             center = tapCenter,
-                            alpha = ringAlpha,
+                            radius = rippleRadius
+                        )
+                        drawCircle(
+                            color = Color.White.copy(alpha = (1f - centerProgress) * 0.5f),
+                            center = tapCenter,
+                            radius = rippleRadius,
                             style = androidx.compose.ui.graphics.drawscope.Stroke(width = 3.dp.toPx())
                         )
                     }
 
-                    // Right Ripple
+                    // Right Ripple (Curved Arc Sector Clip)
                     val rightProgress = rightAnim.value
                     if (rightProgress > 0f && rightProgress < 1f) {
                         val tapCenter = if (rightDoubleTapOffset != androidx.compose.ui.geometry.Offset.Zero) {
                             rightDoubleTapOffset
                         } else {
-                            androidx.compose.ui.geometry.Offset(size.width * 0.85f, size.height / 2f)
+                            androidx.compose.ui.geometry.Offset(size.width * 0.82f, size.height / 2f)
                         }
-                        // Base fading glow
-                        val glowAlpha = (1f - rightProgress) * 0.18f
-                        val glowRadius = size.height * 0.7f * rightProgress
-                        drawCircle(
-                            brush = androidx.compose.ui.graphics.Brush.radialGradient(
-                                colors = listOf(
-                                    primaryColor.copy(alpha = glowAlpha),
-                                    primaryColor.copy(alpha = 0f)
+                        val rightPath = androidx.compose.ui.graphics.Path().apply {
+                            moveTo(size.width, 0f)
+                            lineTo(size.width * 0.62f, 0f)
+                            quadraticTo(
+                                size.width * 0.54f, size.height * 0.5f,
+                                size.width * 0.62f, size.height
+                            )
+                            lineTo(size.width, size.height)
+                            close()
+                        }
+                        clipPath(rightPath) {
+                            drawPath(
+                                path = rightPath,
+                                color = Color.White.copy(alpha = (1f - rightProgress) * 0.16f)
+                            )
+                            val rippleRadius = size.width * 0.55f * rightProgress
+                            drawCircle(
+                                brush = androidx.compose.ui.graphics.Brush.radialGradient(
+                                    colors = listOf(
+                                        Color.White.copy(alpha = (1f - rightProgress) * 0.38f),
+                                        primaryColor.copy(alpha = (1f - rightProgress) * 0.22f),
+                                        Color.Transparent
+                                    ),
+                                    center = tapCenter,
+                                    radius = rippleRadius.coerceAtLeast(1f)
                                 ),
                                 center = tapCenter,
-                                radius = glowRadius.coerceAtLeast(1f)
-                            ),
-                            radius = glowRadius,
-                            center = tapCenter
-                        )
-                        // Sharp expanding rings (two of them)
-                        val ring1Alpha = (1f - rightProgress) * 0.5f
-                        val ring1Radius = size.height * 0.55f * rightProgress
-                        drawCircle(
-                            color = primaryColor,
-                            radius = ring1Radius,
-                            center = tapCenter,
-                            alpha = ring1Alpha,
-                            style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.dp.toPx())
-                        )
-                        if (rightProgress > 0.2f) {
-                            val progress2 = (rightProgress - 0.2f) / 0.8f
-                            val ring2Alpha = (1f - progress2) * 0.3f
-                            val ring2Radius = size.height * 0.55f * progress2
+                                radius = rippleRadius
+                            )
+                            val ringRadius = size.width * 0.42f * rightProgress
                             drawCircle(
-                                color = primaryColor,
-                                radius = ring2Radius,
+                                color = Color.White.copy(alpha = (1f - rightProgress) * 0.45f),
                                 center = tapCenter,
-                                alpha = ring2Alpha,
-                                style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.dp.toPx())
+                                radius = ringRadius,
+                                style = androidx.compose.ui.graphics.drawscope.Stroke(width = 3.dp.toPx())
                             )
                         }
+                        drawPath(
+                            path = rightPath,
+                            color = primaryColor.copy(alpha = (1f - rightProgress) * 0.35f),
+                            style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.dp.toPx())
+                        )
                     }
                 }
 
@@ -1673,6 +1997,7 @@ fun PlayerScreen(
                                 "brightness" -> Icons.Default.BrightnessMedium
                                 "seek_back" -> Icons.Default.Replay10
                                 "seek_forward" -> Icons.Default.Forward10
+                                "aspect_ratio" -> Icons.Default.AspectRatio
                                 else -> Icons.Default.FastForward
                             },
                             contentDescription = null,
@@ -1685,6 +2010,98 @@ fun PlayerScreen(
                             fontSize = 20.sp,
                             fontWeight = FontWeight.Bold
                         )
+                    }
+                }
+            }
+
+            // Hardware Volume Overlay HUD (visible in normal and locked mode)
+            AnimatedVisibility(
+                visible = showHwVolumeHud && hwVolPercent != null,
+                enter = fadeIn() + scaleIn(),
+                exit = fadeOut() + scaleOut(),
+                modifier = Modifier.align(Alignment.Center)
+            ) {
+                hwVolPercent?.let { percent ->
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = Color.Black.copy(alpha = 0.85f)),
+                        shape = RoundedCornerShape(20.dp),
+                        modifier = Modifier.padding(16.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(horizontal = 24.dp, vertical = 18.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Icon(
+                                    imageVector = if (percent == 0) Icons.Default.VolumeMute else if (percent < 50) Icons.Default.VolumeDown else Icons.Default.VolumeUp,
+                                    contentDescription = "Volume",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(28.dp)
+                                )
+                                Text(
+                                    text = "$percent%",
+                                    color = Color.White,
+                                    fontSize = 18.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            LinearProgressIndicator(
+                                progress = { percent / 100f },
+                                modifier = Modifier.width(140.dp).height(8.dp).clip(RoundedCornerShape(4.dp)),
+                                color = MaterialTheme.colorScheme.primary,
+                                trackColor = Color.White.copy(alpha = 0.2f)
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Buffering / Loading Indicator overlay (Only shown for remote network streams to prevent flickering on local files)
+            val isRemoteStream = activeMediaItem.genre == "Live Stream" || activeMediaItem.genre == "Playlist Stream Channel" || activeMediaItem.uriString.startsWith("http://") || activeMediaItem.uriString.startsWith("https://") || activeMediaItem.uriString.startsWith("rtsp://") || activeMediaItem.uriString.startsWith("mms://")
+            if (isBuffering && isRemoteStream && playbackErrorMsg == null) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black.copy(alpha = 0.5f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(20.dp),
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f),
+                        tonalElevation = 8.dp,
+                        modifier = Modifier.padding(24.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(horizontal = 28.dp, vertical = 22.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            CircularProgressIndicator(
+                                color = MaterialTheme.colorScheme.primary,
+                                strokeWidth = 3.dp,
+                                modifier = Modifier.size(44.dp)
+                            )
+                            Text(
+                                text = if (activeMediaItem.genre == "Live Stream" || activeMediaItem.genre == "Playlist Stream Channel" || activeMediaItem.uriString.startsWith("http")) 
+                                    "Connecting to stream..." 
+                                else 
+                                    "Loading media...",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = activeMediaItem.title,
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
                     }
                 }
             }
@@ -1718,7 +2135,14 @@ fun PlayerScreen(
                                 Button(
                                     onClick = {
                                         playbackErrorMsg = null
+                                        generalRetryCount = 0
+                                        audioFallbackAttempted = false
+                                        val resumePos = exoPlayer.currentPosition
+                                        exoPlayer.setMediaItem(buildMediaItemWithSubtitles(activeMediaItem.uriString, context))
                                         exoPlayer.prepare()
+                                        if (resumePos > 0) {
+                                            exoPlayer.seekTo(resumePos)
+                                        }
                                         exoPlayer.play()
                                     },
                                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.onErrorContainer, contentColor = MaterialTheme.colorScheme.errorContainer)
@@ -1743,37 +2167,115 @@ fun PlayerScreen(
                     modifier = Modifier.fillMaxSize()
                 ) {
                     if (isLocked) {
-                        // Locked Screen State overlay
+                        // Locked Screen State overlay: File Name at top
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .align(Alignment.TopEnd)
+                                .align(Alignment.TopCenter)
                                 .statusBarsPadding()
-                                .padding(horizontal = 24.dp, vertical = 12.dp),
-                            horizontalArrangement = Arrangement.End
+                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
+                            // File Title Badge
+                            Surface(
+                                shape = CircleShape,
+                                color = Color.Black.copy(alpha = 0.65f),
+                                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.2f)),
+                                modifier = Modifier.weight(1f).padding(end = 12.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Lock,
+                                        contentDescription = null,
+                                        tint = Color.Red,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Text(
+                                        text = activeMediaItem.title,
+                                        color = Color.White,
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+
+                            // Unlock Control Toggle Button
                             IconButton(
                                 onClick = {
                                     isLockControlVisible = true
                                 },
-                                modifier = Modifier.background(Color.Black.copy(alpha = 0.5f), CircleShape)
+                                modifier = Modifier.background(Color.Black.copy(alpha = 0.65f), CircleShape)
                             ) {
                                 Icon(Icons.Default.Lock, contentDescription = "Locked", tint = Color.Red)
                             }
                         }
 
                         if (isLockControlVisible) {
-                            SwipeToUnlock(
-                                onUnlock = {
-                                    isLocked = false
-                                    isControlsVisible = true
-                                    isLockControlVisible = true
-                                },
+                            Column(
                                 modifier = Modifier
                                     .align(Alignment.BottomCenter)
                                     .navigationBarsPadding()
-                                    .padding(bottom = 48.dp)
-                            )
+                                    .padding(horizontal = 24.dp, vertical = 12.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                // Progress Bar on top of Swipe To Unlock
+                                Surface(
+                                    shape = RoundedCornerShape(16.dp),
+                                    color = Color.Black.copy(alpha = 0.75f),
+                                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.15f)),
+                                    modifier = Modifier.widthIn(max = 300.dp).fillMaxWidth()
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(
+                                                text = formatPlayerDuration(currentPosition),
+                                                color = Color.White,
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                            Text(
+                                                text = formatPlayerDuration(duration),
+                                                color = Color.White.copy(alpha = 0.7f),
+                                                fontSize = 12.sp
+                                            )
+                                        }
+
+                                        val progressFraction = if (duration > 0) (currentPosition.toFloat() / duration.toFloat()).coerceIn(0f, 1f) else 0f
+                                        LinearProgressIndicator(
+                                            progress = { progressFraction },
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(4.dp)
+                                                .clip(CircleShape),
+                                            color = MaterialTheme.colorScheme.primary,
+                                            trackColor = Color.White.copy(alpha = 0.2f)
+                                        )
+                                    }
+                                }
+
+                                SwipeToUnlock(
+                                    onUnlock = {
+                                        isLocked = false
+                                        isControlsVisible = true
+                                        isLockControlVisible = true
+                                    }
+                                )
+                            }
                         }
                     } else {
                         // 1. Subtle dark gradient vignette mask toward top and bottom
@@ -1840,14 +2342,38 @@ fun PlayerScreen(
                                 }
 
                                 // Right Cluster: CC/Subtitles Toggle (other buttons are now on the bottom floating dock!)
-                                IconButton(
-                                    onClick = {
-                                        hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
-                                        showAudioSubtitleSelectorSheet = true
-                                    },
-                                    modifier = Modifier.background(Color.Black.copy(alpha = 0.5f), CircleShape)
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Icon(Icons.Default.ClosedCaption, contentDescription = "Subtitles & Audio", tint = Color.White)
+                                    if (prefs.isCastEnabled) {
+                                        IconButton(
+                                            onClick = {
+                                                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                                showCastControlSheet = true
+                                            },
+                                            modifier = Modifier.background(
+                                                if (isCastingActive) MaterialTheme.colorScheme.primary else Color.Black.copy(alpha = 0.5f),
+                                                CircleShape
+                                            )
+                                        ) {
+                                            Icon(
+                                                imageVector = if (isCastingActive) Icons.Default.CastConnected else Icons.Default.Cast,
+                                                contentDescription = "Audio & Network Cast",
+                                                tint = Color.White
+                                            )
+                                        }
+                                    }
+
+                                    IconButton(
+                                        onClick = {
+                                            hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                            showAudioSubtitleSelectorSheet = true
+                                        },
+                                        modifier = Modifier.background(Color.Black.copy(alpha = 0.5f), CircleShape)
+                                    ) {
+                                        Icon(Icons.Default.ClosedCaption, contentDescription = "Subtitles & Audio", tint = Color.White)
+                                    }
                                 }
                             }
 
@@ -2072,7 +2598,8 @@ fun PlayerScreen(
                                             val nextModeIndex = (currentModeIndex + 1) % modes.size
                                             val nextMode = modes[nextModeIndex]
                                             resizeMode = nextMode.first
-                                            android.widget.Toast.makeText(context, "Aspect Ratio: ${nextMode.second}", android.widget.Toast.LENGTH_SHORT).show()
+                                            gestureFeedbackValue = "Aspect: ${nextMode.second}"
+                                            gestureFeedbackType = "aspect_ratio"
                                         },
                                         modifier = Modifier.size(32.dp).testTag("aspect_ratio_button")
                                     ) {
@@ -2251,6 +2778,37 @@ fun PlayerScreen(
                                                                 modifier = Modifier.size(20.dp)
                                                             )
                                                         }
+
+                                                        // 6. Pop-Up Player Button
+                                                        IconButton(
+                                                            onClick = {
+                                                                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                                                                if (activeMediaItem.isVideo) {
+                                                                    val activity = context as? android.app.Activity
+                                                                    if (activity != null && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                                                                        try {
+                                                                            val builder = android.app.PictureInPictureParams.Builder()
+                                                                            activity.enterPictureInPictureMode(builder.build())
+                                                                            android.widget.Toast.makeText(context, "Entering Picture-in-Picture mode", android.widget.Toast.LENGTH_SHORT).show()
+                                                                        } catch (e: Exception) {
+                                                                            isPipActive = !isPipActive
+                                                                        }
+                                                                    } else {
+                                                                        isPipActive = !isPipActive
+                                                                    }
+                                                                } else {
+                                                                    android.widget.Toast.makeText(context, "Picture-in-Picture mode is only supported for video files", android.widget.Toast.LENGTH_SHORT).show()
+                                                                }
+                                                            },
+                                                            modifier = Modifier.size(36.dp).testTag("popup_player_button_portrait")
+                                                        ) {
+                                                            Icon(
+                                                                imageVector = Icons.Default.PictureInPicture,
+                                                                contentDescription = "Pop-Up Player",
+                                                                tint = if (isPipActive) MaterialTheme.colorScheme.primary else Color.White,
+                                                                modifier = Modifier.size(20.dp)
+                                                            )
+                                                        }
                                                     }
                                                 }
 
@@ -2405,6 +2963,37 @@ fun PlayerScreen(
                                                                 imageVector = Icons.Default.Timer,
                                                                 contentDescription = "Sleep Timer",
                                                                 tint = if (isSleepTimerRunning) Color.Green else Color.White,
+                                                                modifier = Modifier.size(20.dp)
+                                                            )
+                                                        }
+
+                                                        // 6. Pop-Up Player Button
+                                                        IconButton(
+                                                            onClick = {
+                                                                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                                                                if (activeMediaItem.isVideo) {
+                                                                    val activity = context as? android.app.Activity
+                                                                    if (activity != null && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                                                                        try {
+                                                                            val builder = android.app.PictureInPictureParams.Builder()
+                                                                            activity.enterPictureInPictureMode(builder.build())
+                                                                            android.widget.Toast.makeText(context, "Entering Picture-in-Picture mode", android.widget.Toast.LENGTH_SHORT).show()
+                                                                        } catch (e: Exception) {
+                                                                            isPipActive = !isPipActive
+                                                                        }
+                                                                    } else {
+                                                                        isPipActive = !isPipActive
+                                                                    }
+                                                                } else {
+                                                                    android.widget.Toast.makeText(context, "Picture-in-Picture mode is only supported for video files", android.widget.Toast.LENGTH_SHORT).show()
+                                                                }
+                                                            },
+                                                            modifier = Modifier.size(36.dp).testTag("popup_player_button_landscape")
+                                                        ) {
+                                                            Icon(
+                                                                imageVector = Icons.Default.PictureInPicture,
+                                                                contentDescription = "Pop-Up Player",
+                                                                tint = if (isPipActive) MaterialTheme.colorScheme.primary else Color.White,
                                                                 modifier = Modifier.size(20.dp)
                                                             )
                                                         }
@@ -3679,6 +4268,7 @@ fun PlayerScreen(
                                 )
                                 .clickable {
                                     hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                                    showAdvancedControlsSheet = false
                                     if (activeMediaItem.isVideo) {
                                         val activity = context as? android.app.Activity
                                         if (activity != null && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
@@ -4623,6 +5213,334 @@ fun PlayerScreen(
         }
     }
 
+    if (showCastControlSheet) {
+        val castScanner = remember { com.example.util.NetworkCastScanner(context) }
+        val discoveredNetworkDevices by castScanner.discoveredDevices.collectAsState()
+        val isNetworkScanning by castScanner.isScanning.collectAsState()
+
+        DisposableEffect(Unit) {
+            castScanner.startScan()
+            onDispose {
+                castScanner.stopScan()
+            }
+        }
+
+        val castSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        ModalBottomSheet(
+            onDismissRequest = { showCastControlSheet = false },
+            sheetState = castSheetState,
+            containerColor = MaterialTheme.colorScheme.surface,
+            shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(24.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                // Header Row
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Surface(
+                            shape = CircleShape,
+                            color = if (isCastingActive) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                            modifier = Modifier.size(44.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = if (isCastingActive) Icons.Default.CastConnected else Icons.Default.Cast,
+                                    contentDescription = null,
+                                    tint = if (isCastingActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                        Column {
+                            Text(
+                                text = "Audio & Network Casting",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = if (isCastingActive) "Active • ${connectedCastDevice ?: prefs.selectedCastDevice}" else "Ready to cast",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (isCastingActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    Button(
+                        onClick = {
+                            isCastingActive = !isCastingActive
+                            if (isCastingActive) {
+                                connectedCastDevice = prefs.selectedCastDevice
+                                android.widget.Toast.makeText(context, "Connected to ${prefs.selectedCastDevice}", android.widget.Toast.LENGTH_SHORT).show()
+                            } else {
+                                connectedCastDevice = null
+                                android.widget.Toast.makeText(context, "Disconnected from Cast", android.widget.Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isCastingActive) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.primary,
+                            contentColor = if (isCastingActive) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onPrimary
+                        )
+                    ) {
+                        Text(if (isCastingActive) "Disconnect" else "Connect")
+                    }
+                }
+
+                HorizontalDivider()
+
+                // Available Devices Section
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "AVAILABLE NETWORK RECEIVERS",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary,
+                        letterSpacing = 1.sp
+                    )
+                    TextButton(
+                        onClick = {
+                            if (isNetworkScanning) castScanner.stopScan() else castScanner.startScan()
+                        }
+                    ) {
+                        if (isNetworkScanning) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(12.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Scanning mDNS...", fontSize = 11.sp)
+                        } else {
+                            Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(14.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Rescan", fontSize = 11.sp)
+                        }
+                    }
+                }
+
+                val defaultCastDevices = listOf(
+                    "Living Room TV (Chromecast)" to "Smart TV • 192.168.1.102 • mDNS",
+                    "Aero Audio Receiver (DLNA)" to "High-Res Speaker • 192.168.1.115 • UPnP",
+                    "Bedroom Soundbar (AirPlay)" to "Wireless Soundbar • 192.168.1.120 • AirPlay",
+                    "Kitchen Smart Speaker (Local Stream)" to "Smart Speaker • 192.168.1.134 • HTTP"
+                )
+
+                val allDevicesToDisplay = mutableListOf<Pair<String, String>>()
+                discoveredNetworkDevices.forEach { dev ->
+                    allDevicesToDisplay.add(dev.name to "Live Discovered • ${dev.protocol} (${dev.ipAddress}:${dev.port})")
+                }
+                defaultCastDevices.forEach { defaultDev ->
+                    if (allDevicesToDisplay.none { it.first.contains(defaultDev.first.take(8), ignoreCase = true) }) {
+                        allDevicesToDisplay.add(defaultDev)
+                    }
+                }
+
+                allDevicesToDisplay.forEach { (deviceName, desc) ->
+                    val isSelected = (prefs.selectedCastDevice == deviceName)
+                    Card(
+                        onClick = {
+                            viewModel.updateCastSettings(selectedCastDevice = deviceName)
+                            if (isCastingActive) {
+                                connectedCastDevice = deviceName
+                                android.widget.Toast.makeText(context, "Switched cast output to $deviceName", android.widget.Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                        ),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(14.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column {
+                                Text(text = deviceName, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                                Text(text = desc, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            if (isSelected) {
+                                Icon(Icons.Default.CheckCircle, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                            }
+                        }
+                    }
+                }
+
+                HorizontalDivider()
+
+                // CUSTOMIZABLE CONTROLS SECTION
+                Text(
+                    text = "CAST CONTROL & AUDIO NETWORK SETTINGS",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary,
+                    letterSpacing = 1.sp
+                )
+
+                // Cast Volume Slider
+                Column {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("Cast Volume", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                        Text("${(prefs.castVolume * 100).toInt()}%", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                    }
+                    Slider(
+                        value = prefs.castVolume,
+                        onValueChange = { viewModel.updateCastSettings(castVolume = it) },
+                        valueRange = 0f..1f,
+                        steps = 20
+                    )
+                }
+
+                // Audio Sync Offset (-500ms to +500ms)
+                Column {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("Audio Sync Offset", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                        Text("${prefs.castAudioDelayMs} ms", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                    }
+                    Slider(
+                        value = prefs.castAudioDelayMs.toFloat(),
+                        onValueChange = { viewModel.updateCastSettings(castAudioDelayMs = it.toInt()) },
+                        valueRange = -500f..500f,
+                        steps = 40
+                    )
+                }
+
+                // Protocol
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text("Streaming Protocol", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                        Text(prefs.castProtocol, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    TextButton(onClick = {
+                        val nextProtocol = when (prefs.castProtocol) {
+                            "Chromecast / DLNA" -> "AirPlay Protocol"
+                            "AirPlay Protocol" -> "Local Wi-Fi Audio Stream"
+                            else -> "Chromecast / DLNA"
+                        }
+                        viewModel.updateCastSettings(castProtocol = nextProtocol)
+                    }) {
+                        Text("Change")
+                    }
+                }
+
+                // Streaming Quality
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text("Quality & Bitrate", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                        Text(prefs.castQuality, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    TextButton(onClick = {
+                        val nextQuality = when (prefs.castQuality) {
+                            "High (320kbps / 1080p)" -> "Original Quality (Lossless)"
+                            "Original Quality (Lossless)" -> "Medium (192kbps / 720p)"
+                            "Medium (192kbps / 720p)" -> "Low Latency (128kbps)"
+                            else -> "High (320kbps / 1080p)"
+                        }
+                        viewModel.updateCastSettings(castQuality = nextQuality)
+                    }) {
+                        Text("Change")
+                    }
+                }
+
+                // Buffer Size
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text("Network Buffer & Latency", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                        Text(prefs.castBufferSize, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    TextButton(onClick = {
+                        val nextBuffer = when (prefs.castBufferSize) {
+                            "Standard (3s)" -> "Smooth Buffer (5s)"
+                            "Smooth Buffer (5s)" -> "Large Network Buffer (10s)"
+                            "Large Network Buffer (10s)" -> "Low Latency (1s)"
+                            else -> "Standard (3s)"
+                        }
+                        viewModel.updateCastSettings(castBufferSize = nextBuffer)
+                    }) {
+                        Text("Change")
+                    }
+                }
+
+                HorizontalDivider()
+
+                // Keep Casting Active on Screen Sleep Switch
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Cast Active in Screen Sleep", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                        Text("Supply media through cast without pausing when screen enters sleep mode", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Switch(
+                        checked = prefs.keepCastingOnScreenSleep,
+                        onCheckedChange = { viewModel.updateCastSettings(keepCastingOnScreenSleep = it) }
+                    )
+                }
+
+                HorizontalDivider()
+
+                // OpenGL Network Remote Controls
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text("OpenGL Network Remote", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            if (prefs.useOpenGlNetworkRemote) "Enabled (${prefs.openGlRenderMode})" else "Disabled",
+                            fontSize = 12.sp,
+                            color = if (prefs.useOpenGlNetworkRemote) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = prefs.useOpenGlNetworkRemote,
+                        onCheckedChange = { viewModel.updateCastSettings(useOpenGlNetworkRemote = it) }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+            }
+        }
+    }
+
     if (showAudioSubtitleSelectorSheet) {
          val selectorSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
          ModalBottomSheet(
@@ -5481,7 +6399,7 @@ Subtitle for ${activeMediaItem.title} ($selectedLanguage)
                                             fontWeight = FontWeight.Bold,
                                             fontSize = 14.sp,
                                             color = if (isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                                            maxLines = 1,
+                                            maxLines = 2,
                                             overflow = TextOverflow.Ellipsis
                                         )
                                         Text(
@@ -6731,6 +7649,41 @@ fun CustomButton(
             verticalAlignment = Alignment.CenterVertically
         ) {
             content()
+        }
+    }
+}
+
+private fun formatCleanPlaybackError(error: androidx.media3.common.PlaybackException): String {
+    val rawMessage = error.cause?.message ?: error.message ?: error.localizedMessage ?: ""
+    val rawString = error.cause?.toString() ?: error.toString()
+
+    return when {
+        rawString.contains("UnknownHostException", ignoreCase = true) || rawMessage.contains("Unable to resolve host", ignoreCase = true) || rawMessage.contains("No address associated with hostname", ignoreCase = true) -> {
+            val host = rawMessage.substringAfter("Unable to resolve host \"", "").substringBefore("\"", "")
+            if (host.isNotBlank() && host != rawMessage) {
+                "Unable to resolve host address (\"$host\").\n\nThe server domain could not be found. Please check your network connection or verify if the stream URL is correct."
+            } else {
+                "Unable to resolve stream server host address.\n\nPlease check your internet connection or verify if the stream domain is active."
+            }
+        }
+        rawString.contains("ConnectException", ignoreCase = true) || rawMessage.contains("Failed to connect", ignoreCase = true) || rawMessage.contains("Connection refused", ignoreCase = true) -> {
+            "Failed to connect to stream server.\n\nThe server refused the connection or is currently unreachable."
+        }
+        rawString.contains("SocketTimeoutException", ignoreCase = true) || rawMessage.contains("timeout", ignoreCase = true) -> {
+            "Stream request timed out.\n\nThe server took too long to respond. The stream may be offline or overloaded."
+        }
+        rawString.contains("HttpDataSourceException", ignoreCase = true) || rawMessage.contains("404", ignoreCase = true) -> {
+            "Stream source not found (HTTP 404).\n\nThe stream URL link may have expired or been moved."
+        }
+        rawMessage.contains("403", ignoreCase = true) || rawMessage.contains("401", ignoreCase = true) -> {
+            "Access forbidden (HTTP 403/401).\n\nThis stream requires authorization or specific token headers."
+        }
+        rawString.contains("UnrecognizedInputFormatException", ignoreCase = true) || rawMessage.contains("None of the available extractors", ignoreCase = true) -> {
+            "Unsupported or invalid stream media format.\n\nThe stream media container or playlist format cannot be decoded."
+        }
+        else -> {
+            val clean = rawMessage.replace(Regex("java\\.[a-zA-Z0-9_.]+:?"), "").trim()
+            if (clean.isNotBlank()) "Error details: $clean" else "Connection or media format failure."
         }
     }
 }

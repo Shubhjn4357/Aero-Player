@@ -1,5 +1,13 @@
 package com.example.ui.screens
 
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.draw.clip
+
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -19,6 +27,7 @@ import androidx.compose.ui.unit.sp
 import com.example.data.database.MediaEntity
 import com.example.ui.viewmodel.*
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun PlaylistTabContent(
     viewModel: MainViewModel,
@@ -30,6 +39,9 @@ fun PlaylistTabContent(
     var showCreateDialog by remember { mutableStateOf(false) }
     var newPlaylistName by remember { mutableStateOf("") }
     var playlistToManageFiles by remember { mutableStateOf<String?>(null) }
+
+    val selectionState by viewModel.selectionState.collectAsState()
+    val accentOrange = Color(0xFFFF7A00)
 
     val playlists = remember(prefs.playlistsJson) {
         try {
@@ -99,15 +111,33 @@ fun PlaylistTabContent(
             ) {
                 playlists.forEach { (name, tracks) ->
                     item {
+                        val isSelected = selectionState.selectedFolderPaths.contains(name)
                         Card(
-                            onClick = {
-                                expandedPlaylistName = if (expandedPlaylistName == name) null else name
-                            },
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .combinedClickable(
+                                    onClick = {
+                                        if (selectionState.isInSelectionMode) {
+                                            viewModel.toggleFolderSelection(name)
+                                        } else {
+                                            expandedPlaylistName = if (expandedPlaylistName == name) null else name
+                                        }
+                                    },
+                                    onLongClick = {
+                                        viewModel.toggleFolderSelection(name)
+                                    }
+                                ),
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (isSelected) accentOrange.copy(alpha = 0.25f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                            ),
                             shape = RoundedCornerShape(16.dp),
-                            modifier = Modifier.fillMaxWidth()
+                            border = BorderStroke(
+                                if (isSelected) 2.dp else 0.dp,
+                                if (isSelected) accentOrange else Color.Transparent
+                            )
                         ) {
-                            Column(modifier = Modifier.padding(16.dp)) {
+                            Box(modifier = Modifier.fillMaxWidth()) {
+                                Column(modifier = Modifier.padding(16.dp)) {
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -187,6 +217,24 @@ fun PlaylistTabContent(
                                             }
                                         }
                                     }
+                                }
+                            }
+                            if (isSelected) {
+                                Box(
+                                    modifier = Modifier
+                                        .align(Alignment.TopEnd)
+                                        .padding(10.dp)
+                                        .size(24.dp)
+                                        .clip(CircleShape)
+                                        .background(accentOrange),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Check,
+                                        contentDescription = "Selected",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(16.dp)
+                                    )
                                 }
                             }
                         }
@@ -287,7 +335,7 @@ fun PlaylistTabContent(
                                     modifier = Modifier.size(18.dp)
                                 )
                                 Column(modifier = Modifier.weight(1f)) {
-                                    Text(media.title, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    Text(media.title, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
                                     Text(if (media.isVideo) "Video" else "Audio", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                             }
@@ -313,4 +361,5 @@ fun PlaylistTabContent(
             }
         )
     }
+}
 }

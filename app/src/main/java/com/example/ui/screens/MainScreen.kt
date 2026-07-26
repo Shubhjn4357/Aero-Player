@@ -68,7 +68,7 @@ import androidx.compose.ui.layout.ContentScale
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Dispatchers
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun MainScreen(
     viewModel: MainViewModel,
@@ -115,6 +115,7 @@ fun MainScreen(
     var showResumeOrStartDialog by remember { mutableStateOf<MediaEntity?>(null) }
     var showAboutDialog by remember { mutableStateOf(false) }
     var showAboutAppSection by remember { mutableStateOf(false) }
+    var showRenameDialogForMedia by remember { mutableStateOf<MediaEntity?>(null) }
     
     var mediaToDelete by remember { mutableStateOf<MediaEntity?>(null) }
     var multiMediaToDelete by remember { mutableStateOf<List<MediaEntity>?>(null) }
@@ -428,7 +429,12 @@ fun MainScreen(
                     val context = LocalContext.current
                     val getFilesForFolder = { folderName: String ->
                         mediaList.filter { item ->
-                            item.genre != "Live Stream" && (java.io.File(item.path).parentFile?.name ?: "Root Folder") == folderName
+                            item.genre != "Live Stream" && (
+                                (java.io.File(item.path).parentFile?.name ?: "Root Folder") == folderName ||
+                                item.album == folderName ||
+                                item.artist == folderName ||
+                                item.path.contains(folderName)
+                            )
                         }
                     }
                     val isSelectionActive = isSelectModeActive || selectionState.isInSelectionMode
@@ -798,7 +804,7 @@ fun MainScreen(
                                             )
                                         }
                                         DropdownMenu(
-                                            expanded = false,
+                                            expanded = showSortMenu,
                                             onDismissRequest = { showSortMenu = false }
                                         ) {
                                             // VIEW LAYOUT TOGGLE
@@ -1241,47 +1247,81 @@ fun MainScreen(
                                                     ) {
                                                         items(foldersList) { folderName ->
                                                             val folderVideos = nonStreamGroupedMediaMap[folderName] ?: emptyList()
+                                                            val isFolderSelected = selectionState.selectedFolderPaths.contains(folderName) || (isSelectModeActive && selectedMediaSet.any { (java.io.File(it.path).parentFile?.name ?: "Root Folder") == folderName || it.album == folderName || it.artist == folderName })
                                                             Card(
-                                                                onClick = {
-                                                                    activeFolderGroup = folderName
-                                                                },
                                                                 modifier = Modifier
                                                                     .fillMaxWidth()
-                                                                    .aspectRatio(0.82f),
+                                                                    .aspectRatio(0.82f)
+                                                                    .combinedClickable(
+                                                                        onClick = {
+                                                                            if (selectionState.isInSelectionMode || isSelectModeActive) {
+                                                                                viewModel.toggleFolderSelection(folderName)
+                                                                            } else {
+                                                                                activeFolderGroup = folderName
+                                                                            }
+                                                                        },
+                                                                        onLongClick = {
+                                                                            viewModel.toggleFolderSelection(folderName)
+                                                                        }
+                                                                    ),
                                                                 shape = RoundedCornerShape(12.dp),
                                                                 colors = CardDefaults.cardColors(
-                                                                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                                                                    containerColor = if (isFolderSelected) accentOrange.copy(alpha = 0.25f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                                                                ),
+                                                                border = BorderStroke(
+                                                                    if (isFolderSelected) 2.dp else 0.dp,
+                                                                    if (isFolderSelected) accentOrange else Color.Transparent
                                                                 )
                                                             ) {
-                                                                Column(
-                                                                    modifier = Modifier
-                                                                        .fillMaxSize()
-                                                                        .padding(8.dp),
-                                                                    verticalArrangement = Arrangement.SpaceBetween,
-                                                                    horizontalAlignment = Alignment.CenterHorizontally
-                                                                ) {
-                                                                    FolderThumbnail(
-                                                                        folderFiles = folderVideos,
+                                                                Box(modifier = Modifier.fillMaxSize()) {
+                                                                    Column(
                                                                         modifier = Modifier
-                                                                            .fillMaxWidth()
-                                                                            .aspectRatio(1.2f)
-                                                                    )
-                                                                     Spacer(modifier = Modifier.height(4.dp))
-                                                                    Text(
-                                                                        text = folderName,
-                                                                        fontSize = 12.sp,
-                                                                        fontWeight = FontWeight.Bold,
-                                                                        color = MaterialTheme.colorScheme.onSurface,
-                                                                        maxLines = 2,
-                                                                        overflow = TextOverflow.Ellipsis,
-                                                                        textAlign = TextAlign.Center
-                                                                    )
-                                                                    Text(
-                                                                        text = "${folderVideos.size} files",
-                                                                        fontSize = 10.sp,
-                                                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                                                                        textAlign = TextAlign.Center
-                                                                    )
+                                                                            .fillMaxSize()
+                                                                            .padding(8.dp),
+                                                                        verticalArrangement = Arrangement.SpaceBetween,
+                                                                        horizontalAlignment = Alignment.CenterHorizontally
+                                                                    ) {
+                                                                        FolderThumbnail(
+                                                                            folderFiles = folderVideos,
+                                                                            modifier = Modifier
+                                                                                .fillMaxWidth()
+                                                                                .aspectRatio(1.2f)
+                                                                        )
+                                                                        Spacer(modifier = Modifier.height(4.dp))
+                                                                        Text(
+                                                                            text = folderName,
+                                                                            fontSize = 12.sp,
+                                                                            fontWeight = FontWeight.Bold,
+                                                                            color = MaterialTheme.colorScheme.onSurface,
+                                                                            maxLines = 2,
+                                                                            overflow = TextOverflow.Ellipsis,
+                                                                            textAlign = TextAlign.Center
+                                                                        )
+                                                                        Text(
+                                                                            text = "${folderVideos.size} files",
+                                                                            fontSize = 10.sp,
+                                                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                                                            textAlign = TextAlign.Center
+                                                                        )
+                                                                    }
+                                                                    if (isFolderSelected) {
+                                                                        Box(
+                                                                            modifier = Modifier
+                                                                                .align(Alignment.TopEnd)
+                                                                                .padding(6.dp)
+                                                                                .size(24.dp)
+                                                                                .clip(CircleShape)
+                                                                                .background(accentOrange),
+                                                                            contentAlignment = Alignment.Center
+                                                                        ) {
+                                                                            Icon(
+                                                                                imageVector = Icons.Default.Check,
+                                                                                contentDescription = "Selected",
+                                                                                tint = Color.White,
+                                                                                modifier = Modifier.size(16.dp)
+                                                                            )
+                                                                        }
+                                                                    }
                                                                 }
                                                             }
                                                         }
@@ -1295,15 +1335,29 @@ fun MainScreen(
                                                     ) {
                                                         items(foldersList) { folderName ->
                                                             val folderVideos = nonStreamGroupedMediaMap[folderName] ?: emptyList()
+                                                            val isFolderSelected = selectionState.selectedFolderPaths.contains(folderName) || (isSelectModeActive && selectedMediaSet.any { (java.io.File(it.path).parentFile?.name ?: "Root Folder") == folderName || it.album == folderName || it.artist == folderName })
                                                             Card(
-                                                                onClick = {
-                                                                    activeFolderGroup = folderName
-                                                                },
                                                                 modifier = Modifier
-                                                                    .fillMaxWidth(),
+                                                                    .fillMaxWidth()
+                                                                    .combinedClickable(
+                                                                        onClick = {
+                                                                            if (selectionState.isInSelectionMode || isSelectModeActive) {
+                                                                                viewModel.toggleFolderSelection(folderName)
+                                                                            } else {
+                                                                                activeFolderGroup = folderName
+                                                                            }
+                                                                        },
+                                                                        onLongClick = {
+                                                                            viewModel.toggleFolderSelection(folderName)
+                                                                        }
+                                                                    ),
                                                                 shape = RoundedCornerShape(8.dp),
                                                                 colors = CardDefaults.cardColors(
-                                                                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.2f)
+                                                                    containerColor = if (isFolderSelected) accentOrange.copy(alpha = 0.25f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.2f)
+                                                                ),
+                                                                border = BorderStroke(
+                                                                    if (isFolderSelected) 2.dp else 0.dp,
+                                                                    if (isFolderSelected) accentOrange else Color.Transparent
                                                                 )
                                                             ) {
                                                                 Row(
@@ -1330,12 +1384,29 @@ fun MainScreen(
                                                                             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                                                                         )
                                                                     }
-                                                                    Icon(
-                                                                        imageVector = Icons.Default.KeyboardArrowRight,
-                                                                        contentDescription = null,
-                                                                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
-                                                                        modifier = Modifier.size(18.dp)
-                                                                    )
+                                                                    if (isFolderSelected) {
+                                                                        Box(
+                                                                            modifier = Modifier
+                                                                                .size(24.dp)
+                                                                                .clip(CircleShape)
+                                                                                .background(accentOrange),
+                                                                            contentAlignment = Alignment.Center
+                                                                        ) {
+                                                                            Icon(
+                                                                                imageVector = Icons.Default.Check,
+                                                                                contentDescription = "Selected",
+                                                                                tint = Color.White,
+                                                                                modifier = Modifier.size(16.dp)
+                                                                            )
+                                                                        }
+                                                                    } else {
+                                                                        Icon(
+                                                                            imageVector = Icons.Default.KeyboardArrowRight,
+                                                                            contentDescription = null,
+                                                                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                                                                            modifier = Modifier.size(18.dp)
+                                                                        )
+                                                                    }
                                                                 }
                                                             }
                                                         }
@@ -1805,7 +1876,7 @@ fun MainScreen(
         ) {
             var streamName by remember { mutableStateOf("") }
             var streamUrl by remember { mutableStateOf("") }
-            var streamIsVideo by remember { mutableStateOf(true) }
+            var streamMode by remember { mutableStateOf("Video") } // "Video", "Audio", "Playlist"
 
             Column(
                 modifier = Modifier
@@ -1829,7 +1900,7 @@ fun MainScreen(
                     value = streamName,
                     onValueChange = { streamName = it },
                     label = { Text("Stream Label / Name") },
-                    placeholder = { Text("e.g. Live Sports Stream") },
+                    placeholder = { Text("e.g. Live Sports Stream or M3U Playlist") },
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier.fillMaxWidth(),
                     colors = OutlinedTextFieldDefaults.colors(
@@ -1844,7 +1915,7 @@ fun MainScreen(
                     value = streamUrl,
                     onValueChange = { streamUrl = it },
                     label = { Text("Network Address (URL)") },
-                    placeholder = { Text("https://example.com/stream.m3u8") },
+                    placeholder = { Text("https://example.com/playlist.m3u8") },
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier.fillMaxWidth(),
                     colors = OutlinedTextFieldDefaults.colors(
@@ -1861,16 +1932,21 @@ fun MainScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text("Source Type:", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         FilterChip(
-                            selected = streamIsVideo,
-                            onClick = { streamIsVideo = true },
-                            label = { Text("Video") }
+                            selected = (streamMode == "Video"),
+                            onClick = { streamMode = "Video" },
+                            label = { Text("Video", fontSize = 11.sp) }
                         )
                         FilterChip(
-                            selected = !streamIsVideo,
-                            onClick = { streamIsVideo = false },
-                            label = { Text("Audio Only") }
+                            selected = (streamMode == "Audio"),
+                            onClick = { streamMode = "Audio" },
+                            label = { Text("Audio", fontSize = 11.sp) }
+                        )
+                        FilterChip(
+                            selected = (streamMode == "Playlist"),
+                            onClick = { streamMode = "Playlist" },
+                            label = { Text("Playlist / IPTV", fontSize = 11.sp) }
                         )
                     }
                 }
@@ -1880,7 +1956,8 @@ fun MainScreen(
                 Button(
                     onClick = {
                         if (streamUrl.isNotEmpty() && streamName.isNotEmpty()) {
-                            viewModel.addNetworkStream(streamName, streamUrl, streamIsVideo)
+                            val isVideo = (streamMode != "Audio")
+                            viewModel.addNetworkStream(streamName, streamUrl, isVideo)
                             showAddStreamDrawer = false
                         }
                     },
@@ -2278,7 +2355,7 @@ fun MainScreen(
                             fontWeight = FontWeight.Bold,
                             fontSize = 16.sp,
                             color = MaterialTheme.colorScheme.primary,
-                            maxLines = 1,
+                            maxLines = 2,
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
@@ -2383,8 +2460,18 @@ fun MainScreen(
                         selectedMediaForOptions = null
                     }))
                     
+                    list.add(Triple("Share File", Icons.Default.Share, {
+                        viewModel.shareMediaItems(context, listOf(media))
+                        selectedMediaForOptions = null
+                    }))
+                    
+                    list.add(Triple("Rename File", Icons.Default.Edit, {
+                        showRenameDialogForMedia = media
+                        selectedMediaForOptions = null
+                    }))
+
                     list.add(Triple("Set as Ringtone", Icons.Default.RingVolume, {
-                        android.widget.Toast.makeText(context, "WRITE_SYSTEM_RINGTONE: Set as ringtone successfully", android.widget.Toast.LENGTH_SHORT).show()
+                        viewModel.setAsRingtone(context, media)
                         selectedMediaForOptions = null
                     }))
                     
@@ -2450,6 +2537,44 @@ fun MainScreen(
         )
     }
 
+    if (showRenameDialogForMedia != null) {
+        val media = showRenameDialogForMedia!!
+        var newName by remember { mutableStateOf(media.title) }
+        AlertDialog(
+            onDismissRequest = { showRenameDialogForMedia = null },
+            title = { Text("Rename File", fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Enter new file name:")
+                    OutlinedTextField(
+                        value = newName,
+                        onValueChange = { newName = it },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val target = showRenameDialogForMedia
+                        showRenameDialogForMedia = null
+                        if (target != null && newName.isNotBlank()) {
+                            viewModel.renameMediaFile(context, target, newName)
+                        }
+                    }
+                ) {
+                    Text("Rename")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRenameDialogForMedia = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
     if (selectedFolderForOptions != null) {
         val (folderName, items) = selectedFolderForOptions!!
         val context = LocalContext.current
@@ -2468,7 +2593,7 @@ fun MainScreen(
                 emptyList<String>()
             }
         }
-        val isPinned = favoriteFolders.contains(folderName)
+        val isPinned = favoriteFolders.contains(folderName) || (folderPath.isNotEmpty() && favoriteFolders.contains(folderPath))
 
         // Parse banned folders to check status
         val bannedFolders = remember(prefs.bannedFoldersJson) {
@@ -2483,7 +2608,7 @@ fun MainScreen(
                 emptyList<String>()
             }
         }
-        val isBanned = bannedFolders.contains(folderPath)
+        val isBanned = bannedFolders.contains(folderName) || (folderPath.isNotEmpty() && bannedFolders.contains(folderPath))
 
         ModalBottomSheet(
             onDismissRequest = { selectedFolderForOptions = null },
@@ -2665,10 +2790,9 @@ fun MainScreen(
                             icon = Icons.Default.Block,
                             description = if (isBanned) "Allows files in this folder to be shown in your library." else "Blacklists this directory and ignores all files within it during scanning.",
                             onClick = {
-                                if (folderPath.isNotEmpty()) {
-                                    viewModel.toggleBannedFolder(folderPath)
-                                    android.widget.Toast.makeText(context, if (isBanned) "Folder unbanned. Rescan to see files." else "Folder blacklisted. Rescan to apply.", android.widget.Toast.LENGTH_SHORT).show()
-                                }
+                                val targetToBan = if (folderPath.isNotEmpty()) folderPath else folderName
+                                viewModel.toggleBannedFolder(targetToBan)
+                                android.widget.Toast.makeText(context, if (isBanned) "Folder unbanned." else "Folder blacklisted.", android.widget.Toast.LENGTH_SHORT).show()
                                 selectedFolderForOptions = null
                             }
                         )
@@ -3787,7 +3911,7 @@ fun MediaGridCard(
                     fontWeight = FontWeight.Bold,
                     fontSize = 13.sp,
                     color = MaterialTheme.colorScheme.primary,
-                    maxLines = 1,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
                 Spacer(modifier = Modifier.height(2.dp))
@@ -3900,7 +4024,7 @@ fun MediaListRow(
                     fontWeight = FontWeight.Bold,
                     fontSize = 14.sp,
                     color = MaterialTheme.colorScheme.primary,
-                    maxLines = 1,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
                 Spacer(modifier = Modifier.height(4.dp))
@@ -4270,6 +4394,7 @@ fun GroupHeaderRow(
 
 
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun BrowseTabContent(
     viewModel: MainViewModel,
@@ -4277,6 +4402,9 @@ fun BrowseTabContent(
 ) {
     val mediaList by viewModel.filteredMediaList.collectAsState()
     val prefs by viewModel.preferencesState.collectAsState()
+    val selectionState by viewModel.selectionState.collectAsState()
+    val isSelectModeActive = selectionState.isInSelectionMode
+    val accentOrange = MaterialTheme.colorScheme.primary
     val context = LocalContext.current
 
     val favoriteFolders = remember(prefs.favoriteFoldersJson) {
@@ -4461,45 +4589,74 @@ fun BrowseTabContent(
                     val ext = file.extension.lowercase()
                     val isVideo = ext in setOf("mp4", "mkv", "webm", "avi", "mov", "3gp")
                     val isAudio = ext in setOf("mp3", "wav", "m4a", "ogg", "flac", "aac")
+                    val isItemSelected = if (isDir) {
+                        selectionState.selectedFolderPaths.contains(file.name) || selectionState.selectedFolderPaths.contains(file.absolutePath)
+                    } else {
+                        selectionState.selectedVideoIds.contains(file.absolutePath) || mediaList.find { it.path == file.absolutePath }?.let { selectionState.selectedVideoIds.contains(it.uriString) } == true
+                    }
                     
                     if (isDir || isVideo || isAudio) {
                         Card(
-                            onClick = {
-                                if (isDir) {
-                                    searchQuery = ""
-                                    currentBrowseFolder = file
-                                } else {
-                                    val matchedMedia = mediaList.find { it.path == file.absolutePath }
-                                    if (matchedMedia != null) {
-                                        onPlayItem(matchedMedia)
-                                    } else {
-                                        val mediaItem = MediaEntity(
-                                            uriString = "file://${file.absolutePath}",
-                                            title = file.nameWithoutExtension,
-                                            artist = "Local File",
-                                            album = file.parentFile?.name ?: "Storage",
-                                            duration = 0L,
-                                            size = file.length(),
-                                            dateAdded = file.lastModified(),
-                                            isVideo = isVideo,
-                                            path = file.absolutePath,
-                                            mimeType = if (isVideo) "video/*" else "audio/*"
-                                        )
-                                        onPlayItem(mediaItem)
-                                    }
-                                    android.widget.Toast.makeText(context, "Playing: ${file.nameWithoutExtension}", android.widget.Toast.LENGTH_SHORT).show()
-                                }
-                            },
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.12f), RoundedCornerShape(12.dp)),
+                                .combinedClickable(
+                                    onClick = {
+                                        if (selectionState.isInSelectionMode || isSelectModeActive) {
+                                            if (isDir) {
+                                                viewModel.toggleFolderSelection(file.name)
+                                            } else {
+                                                val matched = mediaList.find { it.path == file.absolutePath }
+                                                val targetUri = matched?.uriString ?: "file://${file.absolutePath}"
+                                                viewModel.toggleVideoSelection(targetUri)
+                                            }
+                                        } else {
+                                            if (isDir) {
+                                                searchQuery = ""
+                                                currentBrowseFolder = file
+                                            } else {
+                                                val matchedMedia = mediaList.find { it.path == file.absolutePath }
+                                                if (matchedMedia != null) {
+                                                    onPlayItem(matchedMedia)
+                                                } else {
+                                                    val mediaItem = MediaEntity(
+                                                        uriString = "file://${file.absolutePath}",
+                                                        title = file.nameWithoutExtension,
+                                                        artist = "Local File",
+                                                        album = file.parentFile?.name ?: "Storage",
+                                                        duration = 0L,
+                                                        size = file.length(),
+                                                        dateAdded = file.lastModified(),
+                                                        isVideo = isVideo,
+                                                        path = file.absolutePath,
+                                                        mimeType = if (isVideo) "video/*" else "audio/*"
+                                                    )
+                                                    onPlayItem(mediaItem)
+                                                }
+                                                android.widget.Toast.makeText(context, "Playing: ${file.nameWithoutExtension}", android.widget.Toast.LENGTH_SHORT).show()
+                                            }
+                                        }
+                                    },
+                                        onLongClick = {
+                                            if (isDir) {
+                                                viewModel.toggleFolderSelection(file.name)
+                                            } else {
+                                                val matched = mediaList.find { it.path == file.absolutePath }
+                                                val targetUri = matched?.uriString ?: "file://${file.absolutePath}"
+                                                viewModel.toggleVideoSelection(targetUri)
+                                            }
+                                        }
+                                    ),
                             shape = RoundedCornerShape(12.dp),
                             colors = CardDefaults.cardColors(
-                                containerColor = if (isDir) {
+                                containerColor = if (isItemSelected) accentOrange.copy(alpha = 0.25f) else if (isDir) {
                                     MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.2f)
                                 } else {
                                     MaterialTheme.colorScheme.surface.copy(alpha = 0.7f)
                                 }
+                            ),
+                            border = BorderStroke(
+                                if (isItemSelected) 2.dp else 1.dp,
+                                if (isItemSelected) accentOrange else MaterialTheme.colorScheme.outline.copy(alpha = 0.12f)
                             )
                         ) {
                             Row(
@@ -4526,7 +4683,7 @@ fun BrowseTabContent(
                                         text = file.name,
                                         fontWeight = FontWeight.SemiBold,
                                         fontSize = 13.sp,
-                                        maxLines = 1,
+                                        maxLines = 2,
                                         overflow = TextOverflow.Ellipsis
                                     )
                                     val detailsText = if (isDir) {
@@ -4542,7 +4699,17 @@ fun BrowseTabContent(
                                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
                                     )
                                 }
-                                if (isDir) {
+                                if (isItemSelected) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(22.dp)
+                                            .clip(CircleShape)
+                                            .background(accentOrange),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(Icons.Default.Check, contentDescription = "Selected", tint = Color.White, modifier = Modifier.size(14.dp))
+                                    }
+                                } else if (isDir) {
                                     Icon(
                                         imageVector = Icons.Default.KeyboardArrowRight,
                                         contentDescription = null,
@@ -4575,36 +4742,62 @@ fun BrowseTabContent(
                     )
 
                     favoriteFolders.forEach { folderName ->
+                        val folderFileObj = remember(folderName) { java.io.File(folderName) }
+                        val isFullPath = folderFileObj.isAbsolute
+                        val folderShortName = if (isFullPath) folderFileObj.name else folderName
+
                         val filesInFolder = remember(mediaList, folderName) {
                             val nonStream = mediaList.filter { it.genre != "Live Stream" }
-                            nonStream.filter {
-                                val f = java.io.File(it.path)
-                                (f.parentFile?.name ?: "").contains(folderName, ignoreCase = true)
+                            nonStream.filter { item ->
+                                val f = java.io.File(item.path)
+                                val parentName = f.parentFile?.name ?: ""
+                                val parentPath = f.parentFile?.absolutePath ?: ""
+                                parentName.equals(folderShortName, ignoreCase = true) ||
+                                parentPath.equals(folderName, ignoreCase = true) ||
+                                (isFullPath && parentPath.startsWith(folderName))
                             }
                         }
+                        val isFavSelected = selectionState.selectedFolderPaths.contains(folderName)
 
                         Card(
-                            onClick = {
-                                val f = java.io.File("/storage/emulated/0/$folderName")
-                                if (f.exists() && f.isDirectory) {
-                                    currentBrowseFolder = f
-                                } else if (filesInFolder.isNotEmpty()) {
-                                    val parentFile = java.io.File(filesInFolder.first().path).parentFile
-                                    if (parentFile != null && parentFile.exists()) {
-                                        currentBrowseFolder = parentFile
-                                    } else {
-                                        viewModel.playAll(filesInFolder)
-                                        android.widget.Toast.makeText(context, "Playing all files in $folderName", android.widget.Toast.LENGTH_SHORT).show()
-                                    }
-                                } else {
-                                    android.widget.Toast.makeText(context, "No local files indexed under $folderName yet", android.widget.Toast.LENGTH_SHORT).show()
-                                }
-                            },
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(vertical = 4.dp),
+                                .padding(vertical = 4.dp)
+                                .combinedClickable(
+                                    onClick = {
+                                        if (selectionState.isInSelectionMode || isSelectModeActive) {
+                                            viewModel.toggleFolderSelection(folderName)
+                                        } else {
+                                            val fDirect = java.io.File(folderName)
+                                            val fEmulated = java.io.File("/storage/emulated/0/$folderName")
+                                            val targetFolder = when {
+                                                fDirect.exists() && fDirect.isDirectory -> fDirect
+                                                fEmulated.exists() && fEmulated.isDirectory -> fEmulated
+                                                filesInFolder.isNotEmpty() -> java.io.File(filesInFolder.first().path).parentFile
+                                                else -> null
+                                            }
+                                            if (targetFolder != null && targetFolder.exists()) {
+                                                currentBrowseFolder = targetFolder
+                                            } else if (filesInFolder.isNotEmpty()) {
+                                                viewModel.playAll(filesInFolder)
+                                                android.widget.Toast.makeText(context, "Playing all files in $folderShortName", android.widget.Toast.LENGTH_SHORT).show()
+                                            } else {
+                                                android.widget.Toast.makeText(context, "No local files indexed under $folderShortName yet", android.widget.Toast.LENGTH_SHORT).show()
+                                            }
+                                        }
+                                    },
+                                    onLongClick = {
+                                        viewModel.toggleFolderSelection(folderName)
+                                    }
+                                ),
                             shape = RoundedCornerShape(12.dp),
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.2f))
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (isFavSelected) accentOrange.copy(alpha = 0.25f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.2f)
+                            ),
+                            border = BorderStroke(
+                                if (isFavSelected) 2.dp else 0.dp,
+                                if (isFavSelected) accentOrange else Color.Transparent
+                            )
                         ) {
                             Row(
                                 modifier = Modifier
@@ -4613,12 +4806,36 @@ fun BrowseTabContent(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.weight(1f)) {
                                     Icon(Icons.Default.FolderSpecial, contentDescription = null, tint = MaterialTheme.colorScheme.secondary)
-                                    Text(folderName, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                    Column {
+                                        Text(folderShortName, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                        Text("${filesInFolder.size} files available", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
                                 }
-
-
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    if (isFavSelected) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(22.dp)
+                                                .clip(CircleShape)
+                                                .background(accentOrange),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(Icons.Default.Check, contentDescription = "Selected", tint = Color.White, modifier = Modifier.size(14.dp))
+                                        }
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                    }
+                                    IconButton(
+                                        onClick = {
+                                            viewModel.toggleFavoriteFolder(folderName)
+                                            android.widget.Toast.makeText(context, "Removed $folderShortName from favorites", android.widget.Toast.LENGTH_SHORT).show()
+                                        },
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
+                                        Icon(Icons.Default.Star, contentDescription = "Unpin Folder", tint = accentOrange, modifier = Modifier.size(20.dp))
+                                    }
+                                }
                             }
                         }
                     }
@@ -4689,6 +4906,10 @@ fun BrowseTabContent(
 
             item {
                 Column {
+                    val networkScanner = remember { com.example.util.NetworkCastScanner(context) }
+                    val discoveredDevices by networkScanner.discoveredDevices.collectAsState()
+                    val isScanning by networkScanner.isScanning.collectAsState()
+
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -4701,32 +4922,27 @@ fun BrowseTabContent(
                             color = MaterialTheme.colorScheme.primary
                         )
                         IconButton(onClick = {
-                            isNetworkScanning = true
-                            scope.launch {
-                                kotlinx.coroutines.delay(2000)
-                                isNetworkScanning = false
-                                android.widget.Toast.makeText(context, "Network scan completed. No active SMB/FTP hosts found.", android.widget.Toast.LENGTH_SHORT).show()
-                            }
+                            networkScanner.startScan()
                         }) {
                             Icon(Icons.Default.Sync, contentDescription = "Scan network", tint = MaterialTheme.colorScheme.secondary)
                         }
                     }
 
-                    if (isNetworkScanning) {
+                    if (isScanning) {
                         Card(
                             modifier = Modifier.fillMaxWidth(),
                             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.3f))
                         ) {
                             Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                                 CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                                Text("Samba / FTP / DLNA scanner active...", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                Text("Scanning local network for SMB, FTP, DLNA and Remote OpenGL hosts...", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                             }
                         }
-                    } else {
+                    } else if (discoveredDevices.isEmpty()) {
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(150.dp)
+                                .height(130.dp)
                                 .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.15f), RoundedCornerShape(16.dp))
                                 .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f), RoundedCornerShape(16.dp)),
                             contentAlignment = Alignment.Center
@@ -4740,22 +4956,53 @@ fun BrowseTabContent(
                                     imageVector = Icons.Default.Dns,
                                     contentDescription = null,
                                     tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f),
-                                    modifier = Modifier.size(40.dp)
+                                    modifier = Modifier.size(36.dp)
                                 )
-                                Spacer(modifier = Modifier.height(8.dp))
+                                Spacer(modifier = Modifier.height(6.dp))
                                 Text(
-                                    text = "No Active Network Servers",
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 13.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
-                                )
-                                Spacer(modifier = Modifier.height(2.dp))
-                                Text(
-                                    text = "Start SMB, FTP or DLNA discovery thread to scan your local subnet endpoints.",
-                                    fontSize = 11.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                                    text = "Tap sync icon to scan SMB, FTP, DLNA, or OpenGL hosts",
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
                                     textAlign = TextAlign.Center
                                 )
+                            }
+                        }
+                    } else {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            discoveredDevices.forEach { dev ->
+                                Card(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)),
+                                    onClick = {
+                                        android.widget.Toast.makeText(context, "Connected to ${dev.name} (${dev.ipAddress}:${dev.port})", android.widget.Toast.LENGTH_SHORT).show()
+                                    }
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(12.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Icon(
+                                                imageVector = if (dev.protocol.contains("SMB") || dev.serviceType.contains("smb")) Icons.Default.FolderShared
+                                                else if (dev.protocol.contains("FTP") || dev.serviceType.contains("ftp")) Icons.Default.CloudSync
+                                                else Icons.Default.CastConnected,
+                                                contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.primary
+                                            )
+                                            Column {
+                                                Text(dev.name, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                                Text("${dev.protocol} • ${dev.ipAddress}:${dev.port}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                            }
+                                        }
+                                        Icon(Icons.Default.ChevronRight, contentDescription = "Connect", tint = MaterialTheme.colorScheme.primary)
+                                    }
+                                }
                             }
                         }
                     }
@@ -4855,7 +5102,7 @@ fun FavoritesTabContent(
                                     text = item.title,
                                     fontWeight = FontWeight.SemiBold,
                                     fontSize = 14.sp,
-                                    maxLines = 1,
+                                    maxLines = 2,
                                     overflow = TextOverflow.Ellipsis
                                 )
                                 Text(
@@ -4891,7 +5138,16 @@ fun StreamOnlyTabContent(
 ) {
     val mediaList by viewModel.filteredMediaList.collectAsState()
     val streamItems = remember(mediaList) {
-        mediaList.filter { it.genre == "Live Stream" }
+        mediaList.filter { it.genre == "Live Stream" || it.genre == "Playlist Stream Channel" }
+    }
+    var playlistSheetStream by remember { mutableStateOf<MediaEntity?>(null) }
+
+    if (playlistSheetStream != null) {
+        com.example.ui.components.StreamPlaylistViewerSheet(
+            streamItem = playlistSheetStream!!,
+            onDismiss = { playlistSheetStream = null },
+            onPlayItem = onPlayItem
+        )
     }
 
     Column(
@@ -4961,7 +5217,13 @@ fun StreamOnlyTabContent(
             ) {
                 items(streamItems, key = { streamItem -> streamItem.uriString }) { streamItem ->
                     Card(
-                        onClick = { onPlayItem(streamItem) },
+                        onClick = {
+                            if (com.example.util.StreamPlaylistParser.isPlaylistUrl(streamItem.uriString, streamItem.mimeType)) {
+                                playlistSheetStream = streamItem
+                            } else {
+                                onPlayItem(streamItem)
+                            }
+                        },
                         modifier = Modifier
                             .fillMaxWidth()
                             .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.1f), RoundedCornerShape(16.dp)),
@@ -4985,7 +5247,7 @@ fun StreamOnlyTabContent(
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Icon(
-                                        imageVector = Icons.Default.Tv,
+                                        imageVector = if (com.example.util.StreamPlaylistParser.isPlaylistUrl(streamItem.uriString, streamItem.mimeType)) Icons.Default.PlaylistPlay else Icons.Default.Tv,
                                         contentDescription = null,
                                         tint = MaterialTheme.colorScheme.primary,
                                         modifier = Modifier.size(20.dp)
@@ -4997,28 +5259,40 @@ fun StreamOnlyTabContent(
                                         fontWeight = FontWeight.Bold,
                                         fontSize = 14.sp,
                                         color = MaterialTheme.colorScheme.onSurface,
-                                        maxLines = 1,
+                                        maxLines = 2,
                                         overflow = TextOverflow.Ellipsis
                                     )
                                     Text(
-                                        text = streamItem.uriString,
+                                        text = if (com.example.util.StreamPlaylistParser.isPlaylistUrl(streamItem.uriString, streamItem.mimeType)) "Playlist Stream • Tap to view all channels" else streamItem.uriString,
                                         fontSize = 11.sp,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
                                     )
                                 }
                             }
-                            IconButton(
-                                onClick = { onPlayItem(streamItem) },
-                                modifier = Modifier.background(MaterialTheme.colorScheme.primaryContainer, CircleShape)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.PlayArrow,
-                                    contentDescription = "Play Stream",
-                                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                                    modifier = Modifier.size(24.dp)
-                                )
+                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                IconButton(
+                                    onClick = { playlistSheetStream = streamItem }
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.FormatListBulleted,
+                                        contentDescription = "View Playlist Channels",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                                IconButton(
+                                    onClick = { onPlayItem(streamItem) },
+                                    modifier = Modifier.background(MaterialTheme.colorScheme.primaryContainer, CircleShape)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.PlayArrow,
+                                        contentDescription = "Play Stream",
+                                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                        modifier = Modifier.size(24.dp)
+                                    )
+                                }
                             }
                         }
                     }
