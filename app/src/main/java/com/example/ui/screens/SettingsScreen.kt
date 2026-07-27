@@ -2,6 +2,7 @@ package com.example.ui.screens
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -27,6 +28,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.data.database.displayArtist
 import com.example.ui.viewmodel.*
 import com.example.data.database.PreferenceEntity
 
@@ -37,6 +39,7 @@ enum class NativeSettingsCategory(
 ) {
     DISPLAY("Display & Theme", "App theme, dynamic colors, and media list layout", Icons.Default.Palette),
     PLAYBACK("Playback Engine", "Hardware acceleration, seek intervals, orientation, and PiP mode", Icons.Default.PlayCircle),
+    WIDGETS("App Widgets & Previews", "Home screen widget controls, live dynamic theme previews & launcher shortcuts", Icons.Default.Widgets),
     SUBTITLES("Subtitles & Captions", "Language, font size, text colors, encodings, and shadow effects", Icons.Default.Subtitles),
     CASTING("Audio & Network Casting", "Chromecast, DLNA, stream quality, buffer latency, and audio delay", Icons.Default.Cast),
     STORAGE("Storage & Scanner", "Library folders, all files permission, and database index rebuild", Icons.Default.Storage),
@@ -106,10 +109,7 @@ fun SettingsScreen(
 
     if (showAboutScreen) {
         AboutScreen(
-            onBack = { showAboutScreen = false },
-            showPrivacy = { showPrivacyPolicyDialog = true },
-            showTerms = { showTermsDialog = true },
-            showChangelog = { showChangelogDialog = true }
+            onBack = { showAboutScreen = false }
         )
         return
     }
@@ -247,6 +247,12 @@ fun SettingsScreen(
                                 onChangeResumeMenu = { showResumeMenu = it },
                                 showSaveVolBrightMenu = showSaveVolBrightMenu,
                                 onChangeSaveVolBrightMenu = { showSaveVolBrightMenu = it }
+                            )
+                        }
+                        NativeSettingsCategory.WIDGETS -> {
+                            WidgetsSettingsGroup(
+                                viewModel = viewModel,
+                                prefs = prefs
                             )
                         }
                         NativeSettingsCategory.SUBTITLES -> {
@@ -864,6 +870,324 @@ private fun DisplaySettingsGroup(
                     Switch(
                         checked = prefs.useGroupWiseFolderStyle,
                         onCheckedChange = { viewModel.updateGroupWiseFolderStyle(it) }
+                    )
+                }
+            )
+        }
+    }
+}
+
+// --- CATEGORY APP WIDGETS & PREVIEWS ---
+@Composable
+private fun WidgetsSettingsGroup(
+    viewModel: MainViewModel,
+    prefs: com.example.data.database.PreferenceEntity
+) {
+    val context = LocalContext.current
+    val activeMediaItem by viewModel.currentPlayingItem.collectAsState()
+    val isPlaying by viewModel.isPlaying.collectAsState()
+
+    val currentTitle = activeMediaItem?.title ?: "Aero Media Player"
+    val currentArtist = activeMediaItem?.displayArtist ?: "Select audio/video to play"
+
+    var selectedPreviewTab by remember { mutableStateOf("4x1") } // "4x1" or "2x2"
+
+    Text(
+        text = "HOME WIDGETS & DYNAMIC PREVIEWS",
+        fontSize = 11.sp,
+        fontWeight = FontWeight.Bold,
+        color = MaterialTheme.colorScheme.primary,
+        letterSpacing = 1.sp
+    )
+
+    // Widget Size Selector Tabs
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        FilterChip(
+            selected = selectedPreviewTab == "4x1",
+            onClick = { selectedPreviewTab = "4x1" },
+            label = { Text("4x1 Compact Widget") },
+            leadingIcon = { Icon(Icons.Default.ViewStream, contentDescription = null, modifier = Modifier.size(16.dp)) },
+            modifier = Modifier.weight(1f)
+        )
+        FilterChip(
+            selected = selectedPreviewTab == "2x2",
+            onClick = { selectedPreviewTab = "2x2" },
+            label = { Text("2x2 Expanded Widget") },
+            leadingIcon = { Icon(Icons.Default.GridView, contentDescription = null, modifier = Modifier.size(16.dp)) },
+            modifier = Modifier.weight(1f)
+        )
+    }
+
+    // Interactive Widget Preview Container
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)),
+        shape = RoundedCornerShape(24.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                    ) {
+                        Text(
+                            text = "LIVE PREVIEW",
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                        )
+                    }
+                    Text(
+                        text = if (prefs.useDynamicColor) "Dynamic M3 Colors" else "Classic Theme",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                IconButton(
+                    onClick = {
+                        viewModel.updateWidgets()
+                        android.widget.Toast.makeText(context, "Synced home widgets", android.widget.Toast.LENGTH_SHORT).show()
+                    },
+                    modifier = Modifier.size(28.dp)
+                ) {
+                    Icon(Icons.Default.Sync, contentDescription = "Force Sync", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            if (selectedPreviewTab == "4x1") {
+                // 4x1 Compact Widget Preview Card
+                Surface(
+                    shape = RoundedCornerShape(20.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+                    shadowElevation = 4.dp,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(72.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        // Art
+                        Box(
+                            modifier = Modifier
+                                .size(48.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(MaterialTheme.colorScheme.primaryContainer),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.MusicNote,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+
+                        // Text
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = currentTitle,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = currentArtist,
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+
+                        // Controls
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                            IconButton(onClick = { viewModel.previous() }, modifier = Modifier.size(32.dp)) {
+                                Icon(Icons.Default.SkipPrevious, contentDescription = "Previous", tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(20.dp))
+                            }
+                            IconButton(onClick = { PlayerControlBridge.playPause() }, modifier = Modifier.size(38.dp)) {
+                                Icon(
+                                    imageVector = if (isPlaying) Icons.Default.PauseCircle else Icons.Default.PlayCircle,
+                                    contentDescription = "Play/Pause",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(32.dp)
+                                )
+                            }
+                            IconButton(onClick = { viewModel.next() }, modifier = Modifier.size(32.dp)) {
+                                Icon(Icons.Default.SkipNext, contentDescription = "Next", tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(20.dp))
+                            }
+                        }
+                    }
+                }
+            } else {
+                // 2x2 Expanded Widget Preview Card
+                Surface(
+                    shape = RoundedCornerShape(24.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+                    shadowElevation = 6.dp,
+                    modifier = Modifier
+                        .fillMaxWidth(0.92f)
+                        .height(180.dp)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(14.dp),
+                        verticalArrangement = Arrangement.SpaceBetween,
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(56.dp)
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .background(MaterialTheme.colorScheme.secondaryContainer),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Album,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                                    modifier = Modifier.size(30.dp)
+                                )
+                            }
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = currentTitle,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = currentArtist,
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+
+                        // Animated progress indicator preview
+                        LinearProgressIndicator(
+                            progress = { if (isPlaying) 0.45f else 0.15f },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(4.dp)
+                                .clip(CircleShape),
+                            color = MaterialTheme.colorScheme.primary,
+                            trackColor = MaterialTheme.colorScheme.surfaceVariant
+                        )
+
+                        // Transport Row
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceEvenly,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            IconButton(onClick = { viewModel.previous() }) {
+                                Icon(Icons.Default.SkipPrevious, contentDescription = "Previous", tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(24.dp))
+                            }
+                            FilledIconButton(
+                                onClick = { PlayerControlBridge.playPause() },
+                                modifier = Modifier.size(44.dp),
+                                colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.primary)
+                            ) {
+                                Icon(
+                                    imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                    contentDescription = "Play/Pause",
+                                    tint = MaterialTheme.colorScheme.onPrimary,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            }
+                            IconButton(onClick = { viewModel.next() }) {
+                                Icon(Icons.Default.SkipNext, contentDescription = "Next", tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(24.dp))
+                            }
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // Pin Widget Action Button
+            Button(
+                onClick = {
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                        try {
+                            val appWidgetManager = android.appwidget.AppWidgetManager.getInstance(context)
+                            val myProvider = android.content.ComponentName(context, if (selectedPreviewTab == "4x1") com.example.widget.PlayerWidget4x1::class.java else com.example.widget.PlayerWidget2x2::class.java)
+                            if (appWidgetManager.isRequestPinAppWidgetSupported) {
+                                appWidgetManager.requestPinAppWidget(myProvider, null, null)
+                            } else {
+                                android.widget.Toast.makeText(context, "Long-press home screen to add Aero Player widget", android.widget.Toast.LENGTH_LONG).show()
+                            }
+                        } catch (e: Exception) {
+                            android.widget.Toast.makeText(context, "Long-press home screen to add Aero Player widget", android.widget.Toast.LENGTH_LONG).show()
+                        }
+                    } else {
+                        android.widget.Toast.makeText(context, "Long-press home screen to add Aero Player widget", android.widget.Toast.LENGTH_LONG).show()
+                    }
+                },
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                modifier = Modifier.fillMaxWidth(0.95f)
+            ) {
+                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Pin ${if (selectedPreviewTab == "4x1") "4x1 Compact" else "2x2 Expanded"} Widget to Home", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+
+    Spacer(modifier = Modifier.height(12.dp))
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)),
+        shape = RoundedCornerShape(20.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column {
+            ListItem(
+                headlineContent = { Text("Widget Dynamic Color Theme", fontWeight = FontWeight.SemiBold) },
+                supportingContent = { Text("Synchronize widget colors dynamically with app palette") },
+                leadingContent = { SettingsIconBadge(Icons.Default.Palette) },
+                trailingContent = {
+                    Switch(
+                        checked = prefs.useDynamicColor,
+                        onCheckedChange = { viewModel.updateDynamicColor(it) }
                     )
                 }
             )
@@ -1746,7 +2070,7 @@ private fun AboutSettingsGroup(
         Column {
             ListItem(
                 headlineContent = { Text("About Aero Player", fontWeight = FontWeight.Bold) },
-                supportingContent = { Text("System diagnostics, media decoders & build info") },
+                supportingContent = { Text("App info, release notes & legal documentation") },
                 leadingContent = { SettingsIconBadge(Icons.Default.Info) },
                 trailingContent = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null) },
                 modifier = Modifier.clickable { showAbout() }
@@ -1912,7 +2236,7 @@ private fun SearchResultsView(
                 matchCount++
                 ListItem(
                     headlineContent = { Text("About Aero Player", fontWeight = FontWeight.Bold) },
-                    supportingContent = { Text("System diagnostics, FFmpeg audio decoder & build info") },
+                    supportingContent = { Text("App info, release notes & legal documentation") },
                     leadingContent = { SettingsIconBadge(Icons.Default.Info) },
                     trailingContent = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null) },
                     modifier = Modifier.clickable { onOpenAbout() }

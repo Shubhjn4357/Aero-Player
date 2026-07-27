@@ -511,6 +511,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application), A
             .setOngoing(isPlaying)
             .setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setColor(try { app.getColor(android.R.color.system_accent1_500) } catch (e: Exception) { 0xFF00F0FF.toInt() })
+            .setColorized(true)
 
         mediaSession?.let { session ->
             try {

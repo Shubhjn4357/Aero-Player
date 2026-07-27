@@ -128,12 +128,12 @@ fun MoreTabContent(
 
             UtilityCard(
                 modifier = Modifier.weight(1f),
-                title = "About Player",
-                subtitle = "Diagnostics & Specs",
-                icon = Icons.Default.Info,
-                accentColor = MaterialTheme.colorScheme.primary,
-                onClick = onOpenAbout,
-                testTag = "quick_tool_about"
+                title = "App Widgets",
+                subtitle = "Live Previews & Pinning",
+                icon = Icons.Default.Widgets,
+                accentColor = MaterialTheme.colorScheme.tertiary,
+                onClick = onNavigateToSettings,
+                testTag = "quick_tool_widgets"
             )
         }
 

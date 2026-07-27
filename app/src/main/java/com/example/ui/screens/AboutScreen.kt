@@ -44,9 +44,9 @@ fun AboutScreen(
     var internalShowTerms by remember { mutableStateOf(false) }
     var internalShowChangelog by remember { mutableStateOf(false) }
 
-    val onPrivacyClick = showPrivacy ?: { internalShowPrivacy = true }
-    val onTermsClick = showTerms ?: { internalShowTerms = true }
-    val onChangelogClick = showChangelog ?: { internalShowChangelog = true }
+    val onPrivacyClick = { internalShowPrivacy = true }
+    val onTermsClick = { internalShowTerms = true }
+    val onChangelogClick = { internalShowChangelog = true }
 
     Scaffold(
         topBar = {
@@ -131,54 +131,6 @@ fun AboutScreen(
                     lineHeight = 18.sp,
                     modifier = Modifier.padding(16.dp)
                 )
-            }
-
-            // System & Audio Diagnostics Section
-            Text(
-                text = "SYSTEM & ENGINE DIAGNOSTICS",
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Bold,
-                fontFamily = FontFamily.Monospace,
-                color = MaterialTheme.colorScheme.primary,
-                letterSpacing = 1.sp
-            )
-
-            Card(
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
-                ),
-                shape = RoundedCornerShape(20.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(8.dp)) {
-                    DiagnosticItem(
-                        icon = Icons.Default.Memory,
-                        title = "Media Engine",
-                        value = "ExoPlayer Media3 v1.5.0",
-                        subtitle = "Native Google Media3 Playback Pipeline"
-                    )
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
-                    DiagnosticItem(
-                        icon = Icons.Default.GraphicEq,
-                        title = "Software Audio Decoders",
-                        value = "FFmpeg Extension Active",
-                        subtitle = "Dolby AC-3, EAC-3 & DTS Software Fallback Supported"
-                    )
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
-                    DiagnosticItem(
-                        icon = Icons.Default.PhoneAndroid,
-                        title = "Operating System",
-                        value = "Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})",
-                        subtitle = "Device Model: ${Build.MANUFACTURER.capitalize()} ${Build.MODEL}"
-                    )
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
-                    DiagnosticItem(
-                        icon = Icons.Default.Storage,
-                        title = "Local Indexer",
-                        value = "Room DB SQLite Engine",
-                        subtitle = "Real-time folder tree indexing and progress persistence"
-                    )
-                }
             }
 
             // Core Architectural Capabilities

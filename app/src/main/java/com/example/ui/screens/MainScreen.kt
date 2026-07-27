@@ -3880,31 +3880,15 @@ fun MediaGridCard(
                         )
                     }
                 }
-
-                // Progress bar overlay at the bottom of the thumbnail
-                if (progress != null && progress > 0f && progress <= 1f) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(4.dp)
-                            .align(Alignment.BottomStart)
-                            .background(Color.White.copy(alpha = 0.3f))
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth(progress)
-                                .fillMaxHeight()
-                                .background(MaterialTheme.colorScheme.primary)
-                        )
-                    }
-                }
             }
 
             // Info Section
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 10.dp)
+                    .weight(1f)
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.Center
             ) {
                 Text(
                     text = item.title,
@@ -3922,6 +3906,23 @@ fun MediaGridCard(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+            }
+
+            // Full Card Bottom Progress Bar for clear view of file playback progress
+            if (progress != null && progress > 0f && progress <= 1f) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(4.dp)
+                        .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.2f))
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth(progress)
+                            .fillMaxHeight()
+                            .background(MaterialTheme.colorScheme.primary)
+                    )
+                }
             }
         }
     }
@@ -3953,101 +3954,102 @@ fun MediaListRow(
                  else androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)),
         shape = RoundedCornerShape(16.dp)
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            Box(
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Row(
                 modifier = Modifier
-                    .width(75.dp)
-                    .height(50.dp)
-                    .clip(RoundedCornerShape(2.dp))
+                    .fillMaxWidth()
+                    .padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(16.dp)
             ) {
-                MediaThumbnail(item = item, modifier = Modifier.fillMaxSize())
+                Box(
+                    modifier = Modifier
+                        .width(75.dp)
+                        .height(50.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                ) {
+                    MediaThumbnail(item = item, modifier = Modifier.fillMaxSize())
 
-                if (isActive) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(Color.Black.copy(alpha = 0.5f)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        EqualizerAnimation(modifier = Modifier.size(24.dp), color = Color(0xFFFF7A00))
-                    }
-                }
-
-                // Quality badge overlay on bottom-right of thumbnail
-                if (item.isVideo) {
-                    val quality = getVideoQualityLabel(item)
-                    if (quality != null) {
-                        Surface(
-                            shape = RoundedCornerShape(2.dp),
-                            color = Color.Black.copy(alpha = 0.8f),
-                            modifier = Modifier.align(Alignment.BottomEnd)
+                    if (isActive) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(Color.Black.copy(alpha = 0.5f)),
+                            contentAlignment = Alignment.Center
                         ) {
-                            Text(
-                                text = quality,
-                                color = Color.White,
-                                fontSize = 8.sp,
-                                fontWeight = FontWeight.ExtraBold,
-                                modifier = Modifier.padding(horizontal = 3.dp, vertical = 1.dp)
-                            )
+                            EqualizerAnimation(modifier = Modifier.size(24.dp), color = Color(0xFFFF7A00))
+                        }
+                    }
+
+                    // Quality badge overlay on bottom-right of thumbnail
+                    if (item.isVideo) {
+                        val quality = getVideoQualityLabel(item)
+                        if (quality != null) {
+                            Surface(
+                                shape = RoundedCornerShape(2.dp),
+                                color = Color.Black.copy(alpha = 0.8f),
+                                modifier = Modifier.align(Alignment.BottomEnd)
+                            ) {
+                                Text(
+                                    text = quality,
+                                    color = Color.White,
+                                    fontSize = 8.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    modifier = Modifier.padding(horizontal = 3.dp, vertical = 1.dp)
+                                )
+                            }
                         }
                     }
                 }
 
-                // Progress bar overlay at the bottom of the thumbnail
-                if (progress != null && progress > 0f && progress <= 1f) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(3.dp)
-                            .align(Alignment.BottomStart)
-                            .background(Color.White.copy(alpha = 0.3f))
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth(progress)
-                                .fillMaxHeight()
-                                .background(MaterialTheme.colorScheme.primary)
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = item.title,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp,
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = item.displayArtist,
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+
+                if (isSelectModeActive) {
+                    Checkbox(
+                        checked = isSelected,
+                        onCheckedChange = { onClick() }
+                    )
+                } else {
+                    IconButton(onClick = onMenuClick) {
+                        Icon(
+                            imageVector = Icons.Default.MoreVert,
+                            contentDescription = "More options",
+                            tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f)
                         )
                     }
                 }
             }
 
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = item.title,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 14.sp,
-                    color = MaterialTheme.colorScheme.primary,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = item.displayArtist,
-                    fontSize = 11.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-
-            if (isSelectModeActive) {
-                Checkbox(
-                    checked = isSelected,
-                    onCheckedChange = { onClick() }
-                )
-            } else {
-                IconButton(onClick = onMenuClick) {
-                    Icon(
-                        imageVector = Icons.Default.MoreVert,
-                        contentDescription = "More options",
-                        tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f)
+            // Full Card Bottom Progress Bar for clear view of progress across the entire item card
+            if (progress != null && progress > 0f && progress <= 1f) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(4.dp)
+                        .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.2f))
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth(progress)
+                            .fillMaxHeight()
+                            .background(MaterialTheme.colorScheme.primary)
                     )
                 }
             }

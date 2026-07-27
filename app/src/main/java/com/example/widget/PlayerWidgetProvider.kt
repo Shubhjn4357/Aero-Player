@@ -90,6 +90,13 @@ object PlayerWidgetProvider {
             views.setTextViewText(R.id.widget_artist, lastArtist)
             views.setImageViewResource(R.id.widget_btn_play_pause, if (lastIsPlaying) R.drawable.ic_pause else R.drawable.ic_play)
 
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                try {
+                    val accentColor = context.getColor(android.R.color.system_accent1_100)
+                    views.setTextColor(R.id.widget_title, accentColor)
+                } catch (e: Exception) { e.printStackTrace() }
+            }
+
             if (lastArt != null) {
                 views.setImageViewBitmap(R.id.widget_art, lastArt)
             } else {
