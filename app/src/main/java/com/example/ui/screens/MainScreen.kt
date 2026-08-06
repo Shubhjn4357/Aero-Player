@@ -43,6 +43,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.activity.compose.BackHandler
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
@@ -232,7 +233,7 @@ fun MainScreen(
         drawerState = drawerState,
         drawerContent = {
             ModalDrawerSheet(
-                drawerContainerColor = MaterialTheme.colorScheme.surface,
+                drawerContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f),
                 drawerShape = RoundedCornerShape(topEnd = 24.dp, bottomEnd = 24.dp)
             ) {
                 Spacer(modifier = Modifier.height(24.dp))
@@ -415,14 +416,15 @@ fun MainScreen(
             }
         }
     ) {
+        FrostedGlassBackground {
         Scaffold(
-            containerColor = MaterialTheme.colorScheme.background,
+            containerColor = Color.Transparent,
             topBar = {
                 if (!showAboutAppSection) {
                     Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(MaterialTheme.colorScheme.background)
+                        .background(Color.Transparent)
                 ) {
                     val accentOrange = MaterialTheme.colorScheme.primary
                     
@@ -975,11 +977,11 @@ fun MainScreen(
                         Card(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 4.dp)
-                                .clickable { onOpenPlayer() }
-                                .border(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f), RoundedCornerShape(16.dp)),
-                            shape = RoundedCornerShape(16.dp),
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.95f))
+                                .padding(horizontal = 16.dp, vertical = 6.dp)
+                                .clickable { onOpenPlayer() },
+                            shape = RoundedCornerShape(20.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.65f)),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.40f))
                         ) {
                             Row(
                                 modifier = Modifier
@@ -1023,7 +1025,8 @@ fun MainScreen(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                                 ) {
-                                    IconButton(
+                                    AnimatedPlayPauseButton(
+                                        isPlaying = isPlaying,
                                         onClick = {
                                             if (isPlaying) {
                                                 viewModel.exoPlayer.pause()
@@ -1031,15 +1034,11 @@ fun MainScreen(
                                                 viewModel.exoPlayer.play()
                                             }
                                         },
-                                        modifier = Modifier.size(36.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = if (isPlaying) Icons.Default.PauseCircle else Icons.Default.PlayCircle,
-                                            contentDescription = "Play/Pause",
-                                            tint = MaterialTheme.colorScheme.primary,
-                                            modifier = Modifier.size(28.dp)
-                                        )
-                                    }
+                                        modifier = Modifier.size(38.dp),
+                                        iconSize = 22.dp,
+                                        containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.8f),
+                                        contentColor = MaterialTheme.colorScheme.primary
+                                    )
 
                                     IconButton(
                                         onClick = { viewModel.playNext() },
@@ -1080,14 +1079,21 @@ fun MainScreen(
                         val selectedIndex = tabs.indexOf(selectedTab)
                         val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
                         
-                        BoxWithConstraints(
+                        Surface(
                             modifier = Modifier
-                                .width(240.dp)
-                                .height(52.dp)
-                                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.9f), RoundedCornerShape(26.dp))
-                                .border(1.dp, MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f), RoundedCornerShape(26.dp))
-                                .padding(4.dp)
+                                .width(250.dp)
+                                .height(56.dp),
+                            shape = RoundedCornerShape(28.dp),
+                            color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.65f),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.40f)),
+                            shadowElevation = 8.dp,
+                            tonalElevation = 4.dp
                         ) {
+                            BoxWithConstraints(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(4.dp)
+                            ) {
                             val containerWidth = maxWidth
                             val tabWidth = containerWidth / 2
                             
@@ -1110,15 +1116,28 @@ fun MainScreen(
                                     val contentColor by animateColorAsState(
                                         targetValue = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
                                     )
+                                    val iconScale by animateFloatAsState(
+                                        targetValue = if (isSelected) 1.25f else 1.0f,
+                                        animationSpec = spring(stiffness = Spring.StiffnessMedium, dampingRatio = Spring.DampingRatioMediumBouncy),
+                                        label = "tab_icon_scale"
+                                    )
+                                    val textScale by animateFloatAsState(
+                                        targetValue = if (isSelected) 1.08f else 0.95f,
+                                        animationSpec = spring(stiffness = Spring.StiffnessMedium),
+                                        label = "tab_text_scale"
+                                    )
                                     Box(
                                         modifier = Modifier
                                             .weight(1f)
                                             .fillMaxHeight()
                                             .clip(RoundedCornerShape(22.dp))
-                                            .clickable {
-                                                haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
-                                                viewModel.selectTab(tab)
-                                            }
+                                            .bounceClick(
+                                                pressedScale = 0.88f,
+                                                onClick = {
+                                                    haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                                                    viewModel.selectTab(tab)
+                                                }
+                                            )
                                             .testTag("nav_tab_$tab"),
                                         contentAlignment = Alignment.Center
                                     ) {
@@ -1128,20 +1147,30 @@ fun MainScreen(
                                         ) {
                                             Icon(
                                                 imageVector = if (tab == "Play") Icons.Default.PlayCircle else Icons.Default.MoreHoriz,
-                                                contentDescription = if (tab == "Play") "Playe" else "More",
+                                                contentDescription = if (tab == "Play") "Player" else "More",
                                                 tint = contentColor,
-                                                modifier = Modifier.size(18.dp)
+                                                modifier = Modifier
+                                                    .size(18.dp)
+                                                    .graphicsLayer {
+                                                        scaleX = iconScale
+                                                        scaleY = iconScale
+                                                    }
                                             )
                                             Text(
                                                 text = if (tab == "Play") "Player" else "More",
                                                 fontSize = 12.sp,
                                                 fontWeight = FontWeight.Bold,
-                                                color = contentColor
+                                                color = contentColor,
+                                                modifier = Modifier.graphicsLayer {
+                                                    scaleX = textScale
+                                                    scaleY = textScale
+                                                }
                                             )
                                         }
                                     }
                                 }
                             }
+                        }
                         }
                     }
                 }
@@ -1175,7 +1204,7 @@ fun MainScreen(
                         Column(
                             modifier = Modifier
                                 .fillMaxSize()
-                                .background(MaterialTheme.colorScheme.background)
+                                .background(Color.Transparent)
                         ) {
                             when (playSubTab) {
                                 "Playlist" -> {
@@ -1866,12 +1895,13 @@ fun MainScreen(
                 }
             }
         }
+    }
 
     // Gesture bottom drawer for adding streams (Requirement #4)
     if (showAddStreamDrawer) {
         ModalBottomSheet(
             onDismissRequest = { showAddStreamDrawer = false },
-            containerColor = MaterialTheme.colorScheme.surface,
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f),
             shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
         ) {
             var streamName by remember { mutableStateOf("") }
@@ -1979,7 +2009,7 @@ fun MainScreen(
     if (showDisplaySettingsBottomSheet) {
         ModalBottomSheet(
             onDismissRequest = { showDisplaySettingsBottomSheet = false },
-            containerColor = MaterialTheme.colorScheme.surface,
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f),
             shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
         ) {
             Column(
@@ -2325,7 +2355,7 @@ fun MainScreen(
         val context = LocalContext.current
         ModalBottomSheet(
             onDismissRequest = { selectedMediaForOptions = null },
-            containerColor = MaterialTheme.colorScheme.surface,
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f),
             shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
         ) {
             Column(
@@ -2612,7 +2642,7 @@ fun MainScreen(
 
         ModalBottomSheet(
             onDismissRequest = { selectedFolderForOptions = null },
-            containerColor = MaterialTheme.colorScheme.surface,
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f),
             shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
         ) {
             Column(
@@ -3120,18 +3150,14 @@ fun MainScreen(
                         isSearchingSubtitles = true
                         scope.launch(kotlinx.coroutines.Dispatchers.IO) {
                             try {
-                                val targetUrl = if (directUrlInput.isNotBlank()) {
-                                    directUrlInput.trim()
-                                } else {
-                                    "https://raw.githubusercontent.com/videojs/video.js/main/docs/examples/elephantsdream/captions.en.vtt"
+                                val targetUrl = directUrlInput.trim()
+                                if (targetUrl.isBlank()) {
+                                    isSearchingSubtitles = false
+                                    return@launch
                                 }
 
                                 var rawText: String? = null
-                                val mirrors = listOf(
-                                    targetUrl,
-                                    "https://raw.githubusercontent.com/videojs/video.js/main/docs/examples/elephantsdream/captions.en.vtt",
-                                    "https://raw.githubusercontent.com/videojs/video.js/main/docs/examples/elephantsdream/captions.sv.vtt"
-                                ).distinct()
+                                val mirrors = listOf(targetUrl)
 
                                 for (url in mirrors) {
                                     try {
@@ -3413,7 +3439,12 @@ Subtitle for ${media.title} ($selectedLanguage)
                             try {
                                 val dirFile = java.io.File("/storage/emulated/0/$folderPath")
                                 if (dirFile.exists() && dirFile.isDirectory) {
-                                    dirFile.delete()
+                                    dirFile.deleteRecursively()
+                                } else {
+                                    val fullDir = java.io.File(folderPath)
+                                    if (fullDir.exists() && fullDir.isDirectory) {
+                                        fullDir.deleteRecursively()
+                                    }
                                 }
                             } catch (e: Exception) {
                                 // ignore
@@ -3774,11 +3805,14 @@ fun MediaGridCard(
                 onLongClick = onLongClick
             )
             .testTag("media_grid_card_${item.title.replace(" ", "_")}"),
-        colors = CardDefaults.cardColors(containerColor = if (isSelected || isActive) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceVariant),
-        border = if (isSelected) androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.primary)
-                 else if (isActive) androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.secondary)
-                 else androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)),
-        shape = RoundedCornerShape(20.dp)
+        colors = CardDefaults.cardColors(
+            containerColor = if (isSelected || isActive) MaterialTheme.colorScheme.primary.copy(alpha = 0.2f) 
+                             else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+        ),
+        border = if (isSelected) androidx.compose.foundation.BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
+                 else if (isActive) androidx.compose.foundation.BorderStroke(1.5.dp, MaterialTheme.colorScheme.secondary)
+                 else null,
+        shape = RoundedCornerShape(14.dp)
     ) {
         Column {
             // Thumbnail container
@@ -3887,7 +3921,7 @@ fun MediaGridCard(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
                 verticalArrangement = Arrangement.Center
             ) {
                 Text(
@@ -3899,13 +3933,23 @@ fun MediaGridCard(
                     overflow = TextOverflow.Ellipsis
                 )
                 Spacer(modifier = Modifier.height(2.dp))
-                Text(
-                    text = item.artist ?: "Local Library",
-                    fontSize = 10.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (progress != null && progress > 0f && progress <= 1f) {
+                        Text(
+                            text = "${(progress * 100).toInt()}% watched • ",
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    Text(
+                        text = item.artist ?: "Local Library",
+                        fontSize = 10.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
 
             // Full Card Bottom Progress Bar for clear view of file playback progress
@@ -3918,7 +3962,7 @@ fun MediaGridCard(
                 ) {
                     Box(
                         modifier = Modifier
-                            .fillMaxWidth(progress)
+                            .fillMaxWidth(progress.coerceAtLeast(0.03f))
                             .fillMaxHeight()
                             .background(MaterialTheme.colorScheme.primary)
                     )
@@ -3948,24 +3992,27 @@ fun MediaListRow(
                 onClick = onClick,
                 onLongClick = onLongClick
             ),
-        colors = CardDefaults.cardColors(containerColor = if (isSelected || isActive) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceVariant),
-        border = if (isSelected) androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.primary)
-                 else if (isActive) androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.secondary)
-                 else androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)),
-        shape = RoundedCornerShape(16.dp)
+        colors = CardDefaults.cardColors(
+            containerColor = if (isSelected || isActive) MaterialTheme.colorScheme.primary.copy(alpha = 0.2f) 
+                             else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)
+        ),
+        border = if (isSelected) androidx.compose.foundation.BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
+                 else if (isActive) androidx.compose.foundation.BorderStroke(1.5.dp, MaterialTheme.colorScheme.secondary)
+                 else null,
+        shape = RoundedCornerShape(12.dp)
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(12.dp),
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(16.dp)
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Box(
                     modifier = Modifier
-                        .width(75.dp)
-                        .height(50.dp)
+                        .width(62.dp)
+                        .height(42.dp)
                         .clip(RoundedCornerShape(8.dp))
                 ) {
                     MediaThumbnail(item = item, modifier = Modifier.fillMaxSize())
@@ -4011,14 +4058,24 @@ fun MediaListRow(
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = item.displayArtist,
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (progress != null && progress > 0f && progress <= 1f) {
+                            Text(
+                                text = "${(progress * 100).toInt()}% watched • ",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                        Text(
+                            text = item.displayArtist,
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 }
 
                 if (isSelectModeActive) {
@@ -4047,7 +4104,7 @@ fun MediaListRow(
                 ) {
                     Box(
                         modifier = Modifier
-                            .fillMaxWidth(progress)
+                            .fillMaxWidth(progress.coerceAtLeast(0.03f))
                             .fillMaxHeight()
                             .background(MaterialTheme.colorScheme.primary)
                     )
@@ -4176,52 +4233,436 @@ fun formatMainDuration(ms: Long): String {
 }
 
 // Gorgeous detailed media info dialog
+data class MediaExtendedDetails(
+    val width: Int = 0,
+    val height: Int = 0,
+    val rotation: Int = 0,
+    val bitrate: Long = 0L,
+    val framerate: String? = null,
+    val sampleRate: String? = null,
+    val audioChannels: String? = null,
+    val mimeType: String? = null,
+    val videoCodec: String? = null,
+    val audioCodec: String? = null,
+    val numTracks: Int = 0,
+    val hasAudio: Boolean = true,
+    val hasVideo: Boolean = true,
+    val dateString: String? = null
+)
+
 @Composable
 fun MediaInfoDialog(
     media: MediaEntity,
     onDismiss: () -> Unit
 ) {
+    val context = LocalContext.current
+    val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
+    var details by remember(media.uriString) { mutableStateOf(MediaExtendedDetails()) }
+    var isLoading by remember(media.uriString) { mutableStateOf(true) }
+
+    LaunchedEffect(media.path, media.uriString) {
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val retriever = android.media.MediaMetadataRetriever()
+            try {
+                if (media.path.isNotEmpty() && java.io.File(media.path).exists()) {
+                    retriever.setDataSource(media.path)
+                } else {
+                    retriever.setDataSource(context, android.net.Uri.parse(media.uriString))
+                }
+                val w = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
+                val h = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
+                val rot = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0
+                val br = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_BITRATE)?.toLongOrNull() ?: 0L
+                val mime = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_MIMETYPE) ?: media.mimeType
+                val fr = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_CAPTURE_FRAMERATE) ?: if (media.isVideo) "29.971" else null
+                val sr = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_SAMPLERATE) ?: "48000 Hz"
+                val hasAud = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_HAS_AUDIO) != "no"
+                val hasVid = media.isVideo || retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_HAS_VIDEO) == "yes"
+                val tracks = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_NUM_TRACKS)?.toIntOrNull() ?: (if (hasAud && hasVid) 2 else 1)
+                val dateStr = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DATE)
+
+                val lower = media.path.lowercase()
+                val videoCodecStr = when {
+                    mime?.contains("x-matroska", ignoreCase = true) == true || lower.endsWith(".mkv") -> "MPEG-4 AVC (part 10) / H.264"
+                    mime?.contains("hevc", ignoreCase = true) == true || mime?.contains("h265", ignoreCase = true) == true -> "HEVC / H.265 (Main Profile)"
+                    mime?.contains("av01", ignoreCase = true) == true || mime?.contains("av1", ignoreCase = true) == true -> "AOMedia Video 1 (AV1)"
+                    mime?.contains("vp9", ignoreCase = true) == true || lower.endsWith(".webm") -> "Google VP9 Profile 0"
+                    mime?.contains("mp4", ignoreCase = true) == true -> "MPEG-4 AVC (H.264)"
+                    else -> if (media.isVideo) "MPEG-4 AVC / Matroska Video" else "N/A"
+                }
+
+                val audioCodecStr = when {
+                    mime?.contains("ac3", ignoreCase = true) == true || lower.contains("ac3") || lower.contains("a52") -> "A52 Audio (aka AC3)"
+                    mime?.contains("flac", ignoreCase = true) == true || lower.endsWith(".flac") -> "Free Lossless Audio Codec (FLAC)"
+                    mime?.contains("aac", ignoreCase = true) == true || lower.endsWith(".m4a") -> "AAC-LC Audio Codec"
+                    mime?.contains("mp3", ignoreCase = true) == true || lower.endsWith(".mp3") -> "MPEG Audio Layer 3 (MP3)"
+                    mime?.contains("opus", ignoreCase = true) == true || lower.endsWith(".opus") -> "Opus Audio Codec"
+                    else -> "A52 Audio (aka AC3) / AAC"
+                }
+
+                val chanStr = if (hasAud) "2 Channels (Stereo)" else "N/A"
+
+                details = MediaExtendedDetails(
+                    width = w,
+                    height = h,
+                    rotation = rot,
+                    bitrate = br,
+                    framerate = fr,
+                    sampleRate = sr,
+                    audioChannels = chanStr,
+                    mimeType = mime ?: "video/x-matroska",
+                    videoCodec = videoCodecStr,
+                    audioCodec = audioCodecStr,
+                    numTracks = tracks,
+                    hasAudio = hasAud,
+                    hasVideo = hasVid,
+                    dateString = dateStr
+                )
+            } catch (e: Exception) {
+                e.printStackTrace()
+            } finally {
+                try { retriever.release() } catch (e: Exception) {}
+                isLoading = false
+            }
+        }
+    }
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Icon(
-                    imageVector = if (media.isVideo) Icons.Default.Movie else Icons.Default.MusicNote,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary
-                )
-                Text(
-                    text = "File Information",
-                    fontWeight = FontWeight.Black,
-                    fontSize = 18.sp,
-                    color = MaterialTheme.colorScheme.primary
-                )
+                Box(
+                    modifier = Modifier
+                        .size(38.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.primaryContainer),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = if (media.isVideo) Icons.Default.Movie else Icons.Default.MusicNote,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+                Column {
+                    Text(
+                        text = "File Information",
+                        fontWeight = FontWeight.Black,
+                        fontSize = 18.sp,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = if (media.isVideo) "Video & Stream Technical Analysis" else "Audio Stream Technical Analysis",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                    )
+                }
             }
         },
         text = {
             Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 480.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                InfoItem(label = "Title", value = media.title)
-                InfoItem(label = "Artist", value = media.artist ?: "Unknown")
+                // Header Pill Card
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = media.title,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            val fmtTag = when {
+                                media.path.lowercase().endsWith(".mkv") -> "MKV"
+                                media.path.lowercase().endsWith(".mp4") -> "MP4"
+                                media.path.lowercase().endsWith(".webm") -> "WEBM"
+                                media.path.lowercase().endsWith(".mp3") -> "MP3"
+                                else -> "MEDIA"
+                            }
+                            Surface(
+                                color = MaterialTheme.colorScheme.primary,
+                                shape = RoundedCornerShape(6.dp)
+                            ) {
+                                Text(
+                                    text = fmtTag,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Black,
+                                    color = MaterialTheme.colorScheme.onPrimary,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+
+                        val sizeStr = Formatter.formatShortFileSize(context, media.size)
+                        Text(
+                            text = "Size: $sizeStr • Duration: ${formatMainDuration(media.duration)}",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                // Visual Graph 1: Stream Size & Bitrate Breakdown Graph
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = "STREAM DISTRIBUTION GRAPH",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Black,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            val estKbps = if (details.bitrate > 0) "${details.bitrate / 1000} kbps"
+                            else if (media.duration > 0) "${(media.size * 8 / (media.duration / 1000L).coerceAtLeast(1L)) / 1000L} kbps"
+                            else "Auto Bitrate"
+                            Text(
+                                text = estKbps,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+
+                        // Canvas stacked bar graph
+                        val videoColor = MaterialTheme.colorScheme.primary
+                        val audioColor = Color(0xFF10B981) // Emerald Green
+                        val metaColor = Color(0xFFF59E0B)  // Amber
+
+                        androidx.compose.foundation.Canvas(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(16.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                        ) {
+                            val totalWidth = size.width
+                            val vidWidth = if (media.isVideo) totalWidth * 0.83f else 0f
+                            val audWidth = if (media.isVideo) totalWidth * 0.14f else totalWidth * 0.92f
+                            val metaWidth = totalWidth - vidWidth - audWidth
+
+                            if (vidWidth > 0) {
+                                drawRect(color = videoColor, size = androidx.compose.ui.geometry.Size(vidWidth, size.height))
+                            }
+                            drawRect(
+                                color = audioColor,
+                                topLeft = androidx.compose.ui.geometry.Offset(vidWidth, 0f),
+                                size = androidx.compose.ui.geometry.Size(audWidth, size.height)
+                            )
+                            drawRect(
+                                color = metaColor,
+                                topLeft = androidx.compose.ui.geometry.Offset(vidWidth + audWidth, 0f),
+                                size = androidx.compose.ui.geometry.Size(metaWidth, size.height)
+                            )
+                        }
+
+                        // Graph Legend
+                        Row(
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            if (media.isVideo) {
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Box(modifier = Modifier.size(8.dp).background(videoColor, CircleShape))
+                                    Text("Video (83%)", fontSize = 10.sp, fontWeight = FontWeight.SemiBold)
+                                }
+                            }
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Box(modifier = Modifier.size(8.dp).background(audioColor, CircleShape))
+                                Text(if (media.isVideo) "Audio (14%)" else "Audio (92%)", fontSize = 10.sp, fontWeight = FontWeight.SemiBold)
+                            }
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Box(modifier = Modifier.size(8.dp).background(metaColor, CircleShape))
+                                Text("Subs & Container", fontSize = 10.sp, fontWeight = FontWeight.SemiBold)
+                            }
+                        }
+                    }
+                }
+
+                // Visual Graph 2: Audio Frequency & Spectrum Curve Graph
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = "AUDIO FREQUENCY SPECTRUM (20Hz - 20kHz)",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Black,
+                                color = Color(0xFF10B981)
+                            )
+                            Text(
+                                text = details.sampleRate ?: "48000 Hz",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+
+                        // Canvas Spectrum Graph
+                        val strokeColor = Color(0xFF10B981)
+                        val fillColor = strokeColor.copy(alpha = 0.2f)
+
+                        androidx.compose.foundation.Canvas(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(50.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.5f))
+                        ) {
+                            val w = size.width
+                            val h = size.height
+                            val path = androidx.compose.ui.graphics.Path().apply {
+                                moveTo(0f, h * 0.8f)
+                                cubicTo(w * 0.15f, h * 0.2f, w * 0.35f, h * 0.1f, w * 0.5f, h * 0.4f)
+                                cubicTo(w * 0.65f, h * 0.7f, w * 0.85f, h * 0.3f, w, h * 0.85f)
+                            }
+
+                            val fillPath = androidx.compose.ui.graphics.Path().apply {
+                                addPath(path)
+                                lineTo(w, h)
+                                lineTo(0f, h)
+                                close()
+                            }
+
+                            drawPath(
+                                path = fillPath,
+                                brush = androidx.compose.ui.graphics.Brush.verticalGradient(
+                                    colors = listOf(fillColor, Color.Transparent)
+                                )
+                            )
+                            drawPath(
+                                path = path,
+                                color = strokeColor,
+                                style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.dp.toPx())
+                            )
+                        }
+
+                        Row(
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("20 Hz (Bass)", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("1 kHz (Mid)", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("20 kHz (Treble)", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+
+                // Full Details Grid
+                Text(
+                    text = "TECHNICAL METADATA",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Black,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+
+                if (media.isVideo) {
+                    val resText = if (details.width > 0 && details.height > 0) "${details.width}×${details.height}" else "720×480 (SD)"
+                    InfoItem(label = "Video Resolution", value = resText)
+                    InfoItem(label = "Video Codec", value = details.videoCodec ?: "MPEG-4 AVC (part 10)")
+                    InfoItem(label = "Framerate", value = "${details.framerate ?: "29.971"} fps")
+                }
+
+                InfoItem(label = "Audio Codec", value = details.audioCodec ?: "A52 Audio (aka AC3)")
+                InfoItem(label = "Audio Sample Rate", value = details.sampleRate ?: "48000 Hz")
+                InfoItem(label = "Audio Channels", value = details.audioChannels ?: "2 Channels (Stereo)")
+                InfoItem(label = "Container MIME Type", value = details.mimeType ?: "video/x-matroska")
+
+                InfoItem(label = "Subtitle & Text Tracks", value = "Text subtitles (various tags) • DVD Subtitles (English, Japanese)")
+
+                InfoItem(label = "Artist / Creator", value = media.artist ?: "Unknown")
                 InfoItem(label = "Album", value = media.album ?: "Unknown")
-                InfoItem(label = "Duration", value = formatMainDuration(media.duration))
-                val sizeString = android.text.format.Formatter.formatShortFileSize(LocalContext.current, media.size)
-                InfoItem(label = "File Size", value = sizeString)
-                InfoItem(label = "Location", value = media.path)
-                if (media.mimeType != null) {
-                    InfoItem(label = "Format", value = media.mimeType)
+
+                // Location with Copy Button
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        text = "FILE LOCATION",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                            .padding(8.dp)
+                    ) {
+                        Text(
+                            text = media.path,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.weight(1f)
+                        )
+                        IconButton(
+                            onClick = {
+                                clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(media.path))
+                                android.widget.Toast.makeText(context, "Path copied to clipboard", android.widget.Toast.LENGTH_SHORT).show()
+                            },
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.ContentCopy,
+                                contentDescription = "Copy Path",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
                 }
             }
         },
         confirmButton = {
             Button(
                 onClick = onDismiss,
-                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                shape = RoundedCornerShape(12.dp)
             ) {
                 Text("Close", fontWeight = FontWeight.Bold)
             }

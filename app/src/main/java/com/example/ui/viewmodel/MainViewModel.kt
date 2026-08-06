@@ -4,6 +4,7 @@ import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
+import android.content.Intent
 import android.os.Build
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -20,6 +21,8 @@ import com.example.data.repository.HistoryRepository
 import com.example.data.repository.MediaRepository
 import com.example.data.repository.PreferenceRepository
 import com.example.data.database.AppDatabase
+import com.example.R
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import com.example.data.model.VideoFile
@@ -90,7 +93,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), A
         var player: ExoPlayer? = null
         try {
             val renderersFactory = androidx.media3.exoplayer.DefaultRenderersFactory(application).apply {
-                setExtensionRendererMode(androidx.media3.exoplayer.DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
+                setExtensionRendererMode(androidx.media3.exoplayer.DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
                 setEnableDecoderFallback(true)
                 setAllowedVideoJoiningTimeMs(5000L)
                 setMediaCodecSelector(androidx.media3.exoplayer.mediacodec.MediaCodecSelector.DEFAULT)
@@ -101,7 +104,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), A
                     .setSelectUndeterminedTextLanguage(true)
                     .setExceedAudioConstraintsIfNecessary(true)
                     .setExceedVideoConstraintsIfNecessary(true)
-                    .setExceedRendererCapabilitiesIfNecessary(true)
+                    .setExceedRendererCapabilitiesIfNecessary(false)
                     .setAllowAudioMixedChannelCountAdaptiveness(true)
                     .setAllowAudioMixedMimeTypeAdaptiveness(true)
                     .setAllowAudioMixedSampleRateAdaptiveness(true)
@@ -114,13 +117,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application), A
 
             val loadControl = androidx.media3.exoplayer.DefaultLoadControl.Builder()
                 .setBufferDurationsMs(
-                    20000, // minBufferMs
-                    60000, // maxBufferMs
-                    2500,  // bufferForPlaybackMs
-                    5000   // bufferForPlaybackAfterRebufferMs
+                    1500,  // minBufferMs (ultra fast start)
+                    30000, // maxBufferMs
+                    200,   // bufferForPlaybackMs (start after 200ms buffering)
+                    500    // bufferForPlaybackAfterRebufferMs
                 )
                 .setPrioritizeTimeOverSizeThresholds(true)
-                .setBackBuffer(30000, true)
+                .setBackBuffer(10000, true)
                 .build()
 
             val httpDataSourceFactory = androidx.media3.datasource.DefaultHttpDataSource.Factory()
@@ -129,13 +132,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application), A
                 .setReadTimeoutMs(30000)
                 .setKeepPostFor302Redirects(true)
 
-            val dataSourceFactory = androidx.media3.datasource.DefaultDataSource.Factory(
+            val baseDataSourceFactory = androidx.media3.datasource.DefaultDataSource.Factory(
                 application,
                 httpDataSourceFactory
             )
+            val dataSourceFactory = com.example.util.SanitizingDataSourceFactory(baseDataSourceFactory)
 
-            val mediaSourceFactory = androidx.media3.exoplayer.source.DefaultMediaSourceFactory(dataSourceFactory)
-                .setLoadErrorHandlingPolicy(
+            val extractorsFactory = androidx.media3.extractor.DefaultExtractorsFactory()
+                .setConstantBitrateSeekingEnabled(true)
+                .setConstantBitrateSeekingAlwaysEnabled(true)
+
+            val mediaSourceFactory = androidx.media3.exoplayer.source.DefaultMediaSourceFactory(
+                dataSourceFactory,
+                extractorsFactory
+            ).setLoadErrorHandlingPolicy(
                     object : androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy() {
                         override fun getRetryDelayMsFor(loadErrorInfo: androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy.LoadErrorInfo): Long {
                             return if (loadErrorInfo.errorCount <= 6) (1000L * loadErrorInfo.errorCount) else androidx.media3.common.C.TIME_UNSET
@@ -165,7 +175,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), A
 
         finalPlayer.apply {
             playWhenReady = true
-            setSeekParameters(androidx.media3.exoplayer.SeekParameters.CLOSEST_SYNC)
+            setSeekParameters(androidx.media3.exoplayer.SeekParameters.EXACT)
             addListener(object : Player.Listener {
                 override fun onIsPlayingChanged(isPlaying: Boolean) {
                     updateNotificationState()
@@ -175,24 +185,111 @@ class MainViewModel(application: Application) : AndroidViewModel(application), A
                     updateNotificationState()
                 }
                 override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-                    updateNotificationState()
-                    val currentUri = mediaItem?.localConfiguration?.uri?.toString()
+                    val currentUri = mediaItem?.localConfiguration?.uri?.toString() ?: mediaItem?.mediaId
                     if (currentUri != null) {
                         val currentVideo = _currentQueue.value.find { it.id == currentUri }
-                        _currentPlayingVideo.value = currentVideo
+                        if (currentVideo != null) {
+                            _currentPlayingVideo.value = currentVideo
+                        }
                         
-                        val matchingMediaEntity = filteredMediaList.value.find { it.uriString == currentUri }
+                        val matchingMediaEntity = _playQueue.value.find { it.uriString == currentUri || it.path == currentUri }
+                            ?: filteredMediaList.value.find { it.uriString == currentUri || it.path == currentUri }
+                            ?: mediaItem?.let { mi ->
+                                com.example.data.database.MediaEntity(
+                                    uriString = currentUri,
+                                    title = mi.mediaMetadata.title?.toString() ?: currentUri.substringAfterLast('/'),
+                                    artist = mi.mediaMetadata.artist?.toString() ?: "Local Media",
+                                    album = mi.mediaMetadata.albumTitle?.toString() ?: "Local Album",
+                                    duration = 0L,
+                                    size = 0L,
+                                    dateAdded = System.currentTimeMillis(),
+                                    isVideo = true,
+                                    path = currentUri,
+                                    mimeType = "video/mp4"
+                                )
+                            }
                         if (matchingMediaEntity != null) {
                             _currentPlayingItem.value = matchingMediaEntity
+                            val qIdx = _playQueue.value.indexOfFirst { it.uriString == matchingMediaEntity.uriString }
+                            if (qIdx >= 0) {
+                                _currentQueueIndex.value = qIdx
+                            }
                         }
                     }
+                    updateNotificationState()
+                    updateWidgets()
                 }
                 override fun onAudioSessionIdChanged(audioSessionId: Int) {
                     initEqualizer(audioSessionId)
                 }
             })
             try {
-                mediaSession = androidx.media3.session.MediaSession.Builder(application, this).build()
+                val mediaSessionCallback = object : androidx.media3.session.MediaSession.Callback {
+                    override fun onMediaButtonEvent(
+                        session: androidx.media3.session.MediaSession,
+                        controllerInfo: androidx.media3.session.MediaSession.ControllerInfo,
+                        intent: Intent
+                    ): Boolean {
+                        val keyEvent = if (Build.VERSION.SDK_INT >= 33) {
+                            intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT, android.view.KeyEvent::class.java)
+                        } else {
+                            @Suppress("DEPRECATION")
+                            intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT) as? android.view.KeyEvent
+                        }
+                        if (keyEvent != null && keyEvent.action == android.view.KeyEvent.ACTION_DOWN) {
+                            when (keyEvent.keyCode) {
+                                android.view.KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+                                android.view.KeyEvent.KEYCODE_HEADSETHOOK,
+                                android.view.KeyEvent.KEYCODE_MEDIA_PLAY,
+                                android.view.KeyEvent.KEYCODE_MEDIA_PAUSE -> {
+                                    PlayerControlBridge.playPause()
+                                    return true
+                                }
+                                android.view.KeyEvent.KEYCODE_MEDIA_NEXT -> {
+                                    PlayerControlBridge.next()
+                                    return true
+                                }
+                                android.view.KeyEvent.KEYCODE_MEDIA_PREVIOUS -> {
+                                    PlayerControlBridge.prev()
+                                    return true
+                                }
+                                android.view.KeyEvent.KEYCODE_MEDIA_STOP -> {
+                                    PlayerControlBridge.playPause()
+                                    return true
+                                }
+                            }
+                        }
+                        return super.onMediaButtonEvent(session, controllerInfo, intent)
+                    }
+
+                    override fun onPlayerCommandRequest(
+                        session: androidx.media3.session.MediaSession,
+                        controllerInfo: androidx.media3.session.MediaSession.ControllerInfo,
+                        playerCommand: Int
+                    ): Int {
+                        when (playerCommand) {
+                            androidx.media3.common.Player.COMMAND_PLAY_PAUSE -> {
+                                PlayerControlBridge.playPause()
+                                return androidx.media3.session.SessionResult.RESULT_SUCCESS
+                            }
+                            androidx.media3.common.Player.COMMAND_SEEK_TO_NEXT,
+                            androidx.media3.common.Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM -> {
+                                PlayerControlBridge.next()
+                                return androidx.media3.session.SessionResult.RESULT_SUCCESS
+                            }
+                            androidx.media3.common.Player.COMMAND_SEEK_TO_PREVIOUS,
+                            androidx.media3.common.Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM -> {
+                                PlayerControlBridge.prev()
+                                return androidx.media3.session.SessionResult.RESULT_SUCCESS
+                            }
+                        }
+                        return super.onPlayerCommandRequest(session, controllerInfo, playerCommand)
+                    }
+                }
+
+                mediaSession = androidx.media3.session.MediaSession.Builder(application, this)
+                    .setCallback(mediaSessionCallback)
+                    .build()
             } catch (e: Throwable) {
                 Log.e("MainViewModel", "Error building MediaSession", e)
             }
@@ -205,7 +302,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application), A
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5000),
-            initialValue = PreferenceEntity()
+            initialValue = run {
+                val isCompleted = try {
+                    application.getSharedPreferences("app_prefs", android.content.Context.MODE_PRIVATE)
+                        .getBoolean("onboarding_completed", false)
+                } catch (e: Exception) { false }
+                PreferenceEntity(onboardingCompleted = isCompleted)
+            }
         )
 
     // Raw media from DB
@@ -254,6 +357,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application), A
         val filtered = media.filter { item ->
             // Exclude deleted items
             if (deletedUris.contains(item.uriString)) return@filter false
+
+            // Exclude local files physically deleted from storage
+            if (item.path.startsWith("/") && !item.uriString.startsWith("android.resource://") && !item.uriString.startsWith("http://") && !item.uriString.startsWith("https://") && !java.io.File(item.path).exists()) {
+                return@filter false
+            }
 
             // Exclude banned folders
             val isBanned = bannedFolders.any { banned ->
@@ -352,14 +460,62 @@ class MainViewModel(application: Application) : AndroidViewModel(application), A
     // Request flag for audio-only video playback
     var audioOnlyPlaybackRequested = false
 
+    private var mediaStoreObserver: android.database.ContentObserver? = null
+    private var autoScanDebounceJob: kotlinx.coroutines.Job? = null
+
+    fun registerMediaStoreObserver() {
+        if (mediaStoreObserver != null) return
+        val app = getApplication<Application>()
+        val handler = android.os.Handler(android.os.Looper.getMainLooper())
+        mediaStoreObserver = object : android.database.ContentObserver(handler) {
+            override fun onChange(selfChange: Boolean, uri: android.net.Uri?) {
+                super.onChange(selfChange, uri)
+                autoScanDebounceJob?.cancel()
+                autoScanDebounceJob = viewModelScope.launch {
+                    kotlinx.coroutines.delay(1500)
+                    Log.d("MainViewModel", "Dynamic ContentObserver triggered auto scan for URI: $uri")
+                    scanLocalMedia()
+                }
+            }
+        }
+        try {
+            val resolver = app.contentResolver
+            resolver.registerContentObserver(
+                android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                true,
+                mediaStoreObserver!!
+            )
+            resolver.registerContentObserver(
+                android.provider.MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+                true,
+                mediaStoreObserver!!
+            )
+            Log.d("MainViewModel", "Registered MediaStore ContentObserver successfully")
+        } catch (e: Exception) {
+            Log.e("MainViewModel", "Failed to register MediaStore ContentObserver", e)
+        }
+    }
+
+    fun unregisterMediaStoreObserver() {
+        mediaStoreObserver?.let { observer ->
+            try {
+                getApplication<Application>().contentResolver.unregisterContentObserver(observer)
+            } catch (e: Exception) {
+                Log.e("MainViewModel", "Failed to unregister ContentObserver", e)
+            }
+            mediaStoreObserver = null
+        }
+    }
+
     init {
         createNotificationChannel()
+        registerMediaStoreObserver()
         // Playback progress notification ticker
         viewModelScope.launch {
             while (true) {
                 kotlinx.coroutines.delay(1000)
                 try {
-                    if (_currentPlayingItem.value != null && exoPlayer.isPlaying) {
+                    if (_currentPlayingItem.value != null && _isPlaying.value) {
                         updateNotificationState()
                     }
                 } catch (e: Throwable) {
@@ -487,18 +643,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application), A
         )
 
         val prevAction = NotificationCompat.Action.Builder(
-            com.example.R.drawable.ic_prev, "Previous", prevIntent
+            android.R.drawable.ic_media_previous, "Previous", prevIntent
         ).build()
 
         val playPauseAction = NotificationCompat.Action.Builder(
-            if (isPlaying) com.example.R.drawable.ic_pause else com.example.R.drawable.ic_play,
+            if (isPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play,
             if (isPlaying) "Pause" else "Play",
             playPauseIntent
         ).build()
 
         val nextAction = NotificationCompat.Action.Builder(
-            com.example.R.drawable.ic_next, "Next", nextIntent
+            android.R.drawable.ic_media_next, "Next", nextIntent
         ).build()
+
+        val progressPercent = if (durationMs > 0) ((progressMs * 1000) / durationMs).toInt().coerceIn(0, 1000) else 0
 
         val builder = NotificationCompat.Builder(app, CHANNEL_ID)
             .setSmallIcon(appIcon)
@@ -510,6 +668,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), A
             .addAction(nextAction)
             .setOngoing(isPlaying)
             .setOnlyAlertOnce(true)
+            .setProgress(1000, progressPercent, false)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setColor(try { app.getColor(android.R.color.system_accent1_500) } catch (e: Exception) { 0xFF00F0FF.toInt() })
             .setColorized(true)
@@ -525,8 +684,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application), A
             }
         }
 
+        val notification = builder.build()
+        com.example.service.MediaPlaybackService.activeNotification = notification
+
+        val serviceIntent = Intent(app, com.example.service.MediaPlaybackService::class.java)
         try {
-            notificationManager.notify(201, builder.build())
+            if (_currentPlayingItem.value != null) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    app.startForegroundService(serviceIntent)
+                } else {
+                    app.startService(serviceIntent)
+                }
+            } else {
+                com.example.service.MediaPlaybackService.activeNotification = null
+                app.stopService(serviceIntent)
+            }
+        } catch (e: Exception) {
+            Log.e("MainViewModel", "Service start/stop error", e)
+        }
+
+        try {
+            notificationManager.notify(201, notification)
         } catch (e: Exception) {
             Log.e("MainViewModel", "Playback Notification error", e)
         }
@@ -538,42 +716,82 @@ class MainViewModel(application: Application) : AndroidViewModel(application), A
         val item = _currentPlayingItem.value
         val title = item?.title ?: "Aero Player"
         val artist = item?.displayArtist ?: "Select track to play"
-        val isPlaying = exoPlayer.isPlaying
+        val isPlaying = if (PlayerControlBridge.isVlcActive && PlayerControlBridge.vlcPlayerRef != null) {
+            PlayerControlBridge.vlcPlayerRef!!.isPlaying
+        } else {
+            exoPlayer.isPlaying
+        }
+        val pos = if (PlayerControlBridge.isVlcActive && PlayerControlBridge.vlcPlayerRef != null) {
+            PlayerControlBridge.vlcPlayerRef!!.currentPositionMs
+        } else {
+            exoPlayer.currentPosition
+        }
+        val dur = if (PlayerControlBridge.isVlcActive && PlayerControlBridge.vlcPlayerRef != null) {
+            PlayerControlBridge.vlcPlayerRef!!.durationMs
+        } else {
+            exoPlayer.duration
+        }
         com.example.widget.PlayerWidgetProvider.updateAll(
             getApplication(),
             title,
             artist,
-            isPlaying
+            isPlaying,
+            art = null,
+            progressMs = if (pos > 0) pos else 0L,
+            durationMs = if (dur > 0) dur else (item?.duration ?: 0L)
         )
     }
 
+    fun updateVlcPlayingState(playing: Boolean) {
+        _isPlaying.value = playing
+        updateNotificationState()
+        updateWidgets()
+    }
+
     fun cancelPlaybackNotification() {
+        com.example.service.MediaPlaybackService.activeNotification = null
         try {
             notificationManager.cancel(201)
+        } catch (e: Exception) {}
+        try {
+            val app = getApplication<Application>()
+            app.stopService(Intent(app, com.example.service.MediaPlaybackService::class.java))
         } catch (e: Exception) {}
         updateWidgets()
     }
 
     fun updateNotificationState() {
         val item = _currentPlayingItem.value ?: run {
-            updateWidgets()
+            cancelPlaybackNotification()
             return
         }
-        val pos = exoPlayer.currentPosition
-        val dur = exoPlayer.duration
+        val isPlaying = if (PlayerControlBridge.isVlcActive && PlayerControlBridge.vlcPlayerRef != null) {
+            PlayerControlBridge.vlcPlayerRef!!.isPlaying
+        } else {
+            exoPlayer.isPlaying
+        }
+        val pos = if (PlayerControlBridge.isVlcActive && PlayerControlBridge.vlcPlayerRef != null) {
+            PlayerControlBridge.vlcPlayerRef!!.currentPositionMs
+        } else {
+            exoPlayer.currentPosition
+        }
+        val dur = if (PlayerControlBridge.isVlcActive && PlayerControlBridge.vlcPlayerRef != null) {
+            PlayerControlBridge.vlcPlayerRef!!.durationMs
+        } else {
+            exoPlayer.duration
+        }
         updatePlaybackNotification(
             title = item.title,
             artist = item.displayArtist,
             progressMs = pos,
             durationMs = if (dur > 0) dur else item.duration,
-            isPlaying = exoPlayer.isPlaying
+            isPlaying = isPlaying
         )
     }
 
     fun scanLocalMedia() {
-        if (_isScanning.value) return
-        viewModelScope.launch {
-            _isScanning.value = true
+        if (!_isScanning.compareAndSet(false, true)) return
+        viewModelScope.launch(Dispatchers.IO) {
             showScanningProgressNotification(0, 0)
             try {
                 mediaRepository.scanMedia(getApplication())
@@ -608,6 +826,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application), A
 
     fun deleteMediaBatch(items: List<MediaEntity>) {
         viewModelScope.launch {
+            val deletedUriSet = items.map { it.uriString }.toSet()
+            val deletedPathSet = items.map { it.path }.filter { it.isNotBlank() }.toSet()
+            val currentItem = _currentPlayingItem.value
+            if (currentItem != null) {
+                val isCurrentDeleted = deletedUriSet.contains(currentItem.uriString) ||
+                        deletedPathSet.contains(currentItem.path) ||
+                        deletedPathSet.any { folder -> folder.isNotBlank() && currentItem.path.startsWith(folder) }
+                if (isCurrentDeleted) {
+                    clearPlayingItem()
+                }
+            }
+            _playQueue.value = _playQueue.value.filterNot { item ->
+                deletedUriSet.contains(item.uriString) ||
+                        deletedPathSet.contains(item.path) ||
+                        deletedPathSet.any { folder -> folder.isNotBlank() && item.path.startsWith(folder) }
+            }
+
             try {
                 val currentPrefs = preferencesState.value
                 val array = try {
@@ -644,7 +879,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), A
                     try {
                         val file = java.io.File(item.path)
                         if (file.exists()) {
-                            val deleted = file.delete()
+                            val deleted = if (file.isDirectory) file.deleteRecursively() else file.delete()
                             Log.d("MainViewModel", "Direct physical file deletion for ${item.path}: $deleted")
                             if (deleted) {
                                 deletedSilently = true
@@ -759,6 +994,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), A
 
     override fun onCleared() {
         super.onCleared()
+        unregisterMediaStoreObserver()
         try {
             mediaSession?.release()
         } catch (e: Exception) {}
@@ -797,11 +1033,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application), A
             // Set playlist in ExoPlayer
             val context = getApplication<Application>().applicationContext
             val mediaItems = mediaEntities.map { entity ->
-                com.example.ui.screens.buildMediaItemWithSubtitles(entity.uriString, context)
+                com.example.ui.screens.buildMediaItemWithSubtitles(entity.uriString, context, entity.path)
             }
             exoPlayer.setMediaItems(mediaItems, startIndex, 0L)
             exoPlayer.prepare()
-            exoPlayer.play()
+            if (PlayerControlBridge.activeEngineName == "ExoPlayer") {
+                exoPlayer.play()
+            } else {
+                exoPlayer.pause()
+            }
         }
     }
 
@@ -959,13 +1199,41 @@ class MainViewModel(application: Application) : AndroidViewModel(application), A
 
 object PlayerControlBridge {
     var instance: MainViewModel? = null
+    var vlcPlayerRef: com.example.player.VlcPlayerWrapper? = null
+    var activeEngineName: String = "VLC"
+
+    val isVlcActive: Boolean
+        get() = activeEngineName == "VLC"
+
+    fun onPlayerStateChanged(isPlaying: Boolean) {
+        instance?.updateVlcPlayingState(isPlaying)
+    }
 
     fun playPause() {
         instance?.let { vm ->
-            if (vm.exoPlayer.isPlaying) {
-                vm.exoPlayer.pause()
+            if (isVlcActive && vlcPlayerRef != null) {
+                // Ensure ExoPlayer is paused so no double sound occurs
+                try {
+                    if (vm.exoPlayer.isPlaying) vm.exoPlayer.pause()
+                } catch (e: Exception) {}
+
+                val vlc = vlcPlayerRef!!
+                if (vlc.isPlaying) {
+                    vlc.pause()
+                } else {
+                    vlc.play()
+                }
             } else {
-                vm.exoPlayer.play()
+                // Ensure VLC is paused so no double sound occurs
+                try {
+                    if (vlcPlayerRef?.isPlaying == true) vlcPlayerRef?.pause()
+                } catch (e: Exception) {}
+
+                if (vm.exoPlayer.isPlaying) {
+                    vm.exoPlayer.pause()
+                } else {
+                    vm.exoPlayer.play()
+                }
             }
             vm.updateNotificationState()
             vm.updateWidgets()

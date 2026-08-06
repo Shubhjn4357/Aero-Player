@@ -4,10 +4,12 @@ import android.content.ContentUris
 import android.content.Context
 import android.provider.MediaStore
 import com.example.data.database.*
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class MediaRepository(private val mediaDao: MediaDao) {
@@ -28,6 +30,20 @@ class MediaRepository(private val mediaDao: MediaDao) {
 
     suspend fun scanMedia(context: Context) = withContext(Dispatchers.IO) {
         val mediaList = mutableListOf<MediaEntity>()
+
+        // Retain existing custom streams and non-MediaStore items from DB
+        val existingItems = try {
+            mediaDao.getAllMedia().firstOrNull() ?: emptyList()
+        } catch (e: Exception) {
+            emptyList()
+        }
+        val customItems = existingItems.filter { item ->
+            item.artist == "Custom Stream" ||
+            item.uriString.startsWith("http://") ||
+            item.uriString.startsWith("https://") ||
+            item.uriString.startsWith("rtsp://") ||
+            item.uriString.startsWith("mms://")
+        }
 
         // 1. Scan Videos
         val videoProjection = arrayOf(
@@ -51,53 +67,55 @@ class MediaRepository(private val mediaDao: MediaDao) {
                 null,
                 "${MediaStore.Video.Media.DATE_ADDED} DESC"
             )?.use { cursor ->
-                val idCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media._ID)
-                val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DISPLAY_NAME)
-                val titleCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.TITLE)
-                val durationCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DURATION)
-                val sizeCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.SIZE)
-                val dateAddedCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DATE_ADDED)
-                val dataCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DATA)
-                val mimeCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.MIME_TYPE)
-                val artistCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.ARTIST)
-                val albumCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.ALBUM)
+                val idCol = cursor.getColumnIndex(MediaStore.Video.Media._ID)
+                val nameCol = cursor.getColumnIndex(MediaStore.Video.Media.DISPLAY_NAME)
+                val titleCol = cursor.getColumnIndex(MediaStore.Video.Media.TITLE)
+                val durationCol = cursor.getColumnIndex(MediaStore.Video.Media.DURATION)
+                val sizeCol = cursor.getColumnIndex(MediaStore.Video.Media.SIZE)
+                val dateAddedCol = cursor.getColumnIndex(MediaStore.Video.Media.DATE_ADDED)
+                val dataCol = cursor.getColumnIndex(MediaStore.Video.Media.DATA)
+                val mimeCol = cursor.getColumnIndex(MediaStore.Video.Media.MIME_TYPE)
+                val artistCol = cursor.getColumnIndex(MediaStore.Video.Media.ARTIST)
+                val albumCol = cursor.getColumnIndex(MediaStore.Video.Media.ALBUM)
 
                 while (cursor.moveToNext()) {
-                    val id = cursor.getLong(idCol)
-                    val name = cursor.getString(nameCol) ?: "Video_$id"
-                    val title = cursor.getString(titleCol) ?: name
-                    val duration = cursor.getLong(durationCol)
-                    val size = cursor.getLong(sizeCol)
-                    val dateAdded = cursor.getLong(dateAddedCol)
-                    val data = cursor.getString(dataCol) ?: ""
-                    val mime = cursor.getString(mimeCol)
-                    val artist = cursor.getString(artistCol)
-                    val album = cursor.getString(albumCol)
+                    val id = if (idCol >= 0) cursor.getLong(idCol) else 0L
+                    val name = if (nameCol >= 0) cursor.getString(nameCol) ?: "Video_$id" else "Video_$id"
+                    val title = if (titleCol >= 0) cursor.getString(titleCol) ?: name else name
+                    val duration = if (durationCol >= 0) cursor.getLong(durationCol) else 0L
+                    val size = if (sizeCol >= 0) cursor.getLong(sizeCol) else 0L
+                    val dateAdded = if (dateAddedCol >= 0) cursor.getLong(dateAddedCol) else System.currentTimeMillis() / 1000
+                    val data = if (dataCol >= 0) cursor.getString(dataCol) ?: "" else ""
+                    val mime = if (mimeCol >= 0) cursor.getString(mimeCol) else null
+                    val artist = if (artistCol >= 0) cursor.getString(artistCol) else null
+                    val album = if (albumCol >= 0) cursor.getString(albumCol) else null
 
                     val contentUri = ContentUris.withAppendedId(
                         MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
                         id
                     ).toString()
 
-                    mediaList.add(
-                        MediaEntity(
-                            uriString = contentUri,
-                            title = title,
-                            artist = artist ?: "Unknown",
-                            album = album ?: "Unknown",
-                            duration = duration,
-                            size = size,
-                            dateAdded = dateAdded,
-                            isVideo = true,
-                            path = data,
-                            mimeType = mime,
-                            genre = "Video"
+                    if (contentUri.isNotBlank()) {
+                        mediaList.add(
+                            MediaEntity(
+                                uriString = contentUri,
+                                title = title,
+                                artist = artist ?: "Unknown",
+                                album = album ?: "Unknown",
+                                duration = duration,
+                                size = size,
+                                dateAdded = dateAdded,
+                                isVideo = true,
+                                path = data,
+                                mimeType = mime,
+                                genre = "Video"
+                            )
                         )
-                    )
+                    }
                 }
             }
         } catch (e: Exception) {
-            android.util.Log.e("MediaRepository", "Error querying video MediaStore, using fallback streams", e)
+            android.util.Log.e("MediaRepository", "Error querying video MediaStore", e)
         }
 
         // 2. Scan Audio
@@ -122,127 +140,76 @@ class MediaRepository(private val mediaDao: MediaDao) {
                 null,
                 "${MediaStore.Audio.Media.DATE_ADDED} DESC"
             )?.use { cursor ->
-                val idCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media._ID)
-                val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.DISPLAY_NAME)
-                val titleCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.TITLE)
-                val durationCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.DURATION)
-                val sizeCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.SIZE)
-                val dateAddedCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.DATE_ADDED)
-                val dataCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.DATA)
-                val mimeCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.MIME_TYPE)
-                val artistCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.ARTIST)
-                val albumCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.ALBUM)
+                val idCol = cursor.getColumnIndex(MediaStore.Audio.Media._ID)
+                val nameCol = cursor.getColumnIndex(MediaStore.Audio.Media.DISPLAY_NAME)
+                val titleCol = cursor.getColumnIndex(MediaStore.Audio.Media.TITLE)
+                val durationCol = cursor.getColumnIndex(MediaStore.Audio.Media.DURATION)
+                val sizeCol = cursor.getColumnIndex(MediaStore.Audio.Media.SIZE)
+                val dateAddedCol = cursor.getColumnIndex(MediaStore.Audio.Media.DATE_ADDED)
+                val dataCol = cursor.getColumnIndex(MediaStore.Audio.Media.DATA)
+                val mimeCol = cursor.getColumnIndex(MediaStore.Audio.Media.MIME_TYPE)
+                val artistCol = cursor.getColumnIndex(MediaStore.Audio.Media.ARTIST)
+                val albumCol = cursor.getColumnIndex(MediaStore.Audio.Media.ALBUM)
 
                 while (cursor.moveToNext()) {
-                    val id = cursor.getLong(idCol)
-                    val name = cursor.getString(nameCol) ?: "Audio_$id"
-                    val title = cursor.getString(titleCol) ?: name
-                    val duration = cursor.getLong(durationCol)
-                    val size = cursor.getLong(sizeCol)
-                    val dateAdded = cursor.getLong(dateAddedCol)
-                    val data = cursor.getString(dataCol) ?: ""
-                    val mime = cursor.getString(mimeCol)
-                    val artist = cursor.getString(artistCol)
-                    val album = cursor.getString(albumCol)
+                    val id = if (idCol >= 0) cursor.getLong(idCol) else 0L
+                    val name = if (nameCol >= 0) cursor.getString(nameCol) ?: "Audio_$id" else "Audio_$id"
+                    val title = if (titleCol >= 0) cursor.getString(titleCol) ?: name else name
+                    val duration = if (durationCol >= 0) cursor.getLong(durationCol) else 0L
+                    val size = if (sizeCol >= 0) cursor.getLong(sizeCol) else 0L
+                    val dateAdded = if (dateAddedCol >= 0) cursor.getLong(dateAddedCol) else System.currentTimeMillis() / 1000
+                    val data = if (dataCol >= 0) cursor.getString(dataCol) ?: "" else ""
+                    val mime = if (mimeCol >= 0) cursor.getString(mimeCol) else null
+                    val artist = if (artistCol >= 0) cursor.getString(artistCol) else null
+                    val album = if (albumCol >= 0) cursor.getString(albumCol) else null
 
                     val contentUri = ContentUris.withAppendedId(
                         MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
                         id
                     ).toString()
 
-                    mediaList.add(
-                        MediaEntity(
-                            uriString = contentUri,
-                            title = title,
-                            artist = artist ?: "Unknown",
-                            album = album ?: "Unknown",
-                            duration = duration,
-                            size = size,
-                            dateAdded = dateAdded,
-                            isVideo = false,
-                            path = data,
-                            mimeType = mime,
-                            genre = "Audio"
+                    if (contentUri.isNotBlank()) {
+                        mediaList.add(
+                            MediaEntity(
+                                uriString = contentUri,
+                                title = title,
+                                artist = artist ?: "Unknown",
+                                album = album ?: "Unknown",
+                                duration = duration,
+                                size = size,
+                                dateAdded = dateAdded,
+                                isVideo = false,
+                                path = data,
+                                mimeType = mime,
+                                genre = "Audio"
+                            )
                         )
-                    )
+                    }
                 }
             }
         } catch (e: Exception) {
-            android.util.Log.e("MediaRepository", "Error querying audio MediaStore, using fallback streams", e)
+            android.util.Log.e("MediaRepository", "Error querying audio MediaStore", e)
         }
 
-        // Seeding preloaded/online content so users can play and download from web
-        val packageName = context.packageName
-        val preloadedItems = listOf(
-            MediaEntity(
-                uriString = "android.resource://$packageName/raw/sample_track",
-                title = "Aero Premium Beats (Offline Demo)",
-                artist = "Aero Collective",
-                album = "Aero Showcase",
-                duration = 372000,
-                size = 8945228,
-                dateAdded = System.currentTimeMillis() / 1000,
-                isVideo = false,
-                path = "android.resource://$packageName/raw/sample_track",
-                mimeType = "audio/mp3",
-                genre = "Audio"
-            ),
-            MediaEntity(
-                uriString = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
-                title = "Big Buck Bunny (H.264 / 1080p)",
-                artist = "Blender Studio",
-                album = "Preloaded Videos",
-                duration = 596000,
-                size = 276134947,
-                dateAdded = System.currentTimeMillis() / 1000,
-                isVideo = true,
-                path = "/storage/emulated/0/Online/Videos/BigBuckBunny.mp4",
-                mimeType = "video/mp4",
-                genre = "Video"
-            ),
-            MediaEntity(
-                uriString = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4",
-                title = "Elephants Dream (H.264 / 1080p)",
-                artist = "Blender Studio",
-                album = "Preloaded Videos",
-                duration = 653000,
-                size = 425123984,
-                dateAdded = System.currentTimeMillis() / 1000,
-                isVideo = true,
-                path = "/storage/emulated/0/Online/Videos/ElephantsDream.mp4",
-                mimeType = "video/mp4",
-                genre = "Video"
-            ),
-            MediaEntity(
-                uriString = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3",
-                title = "SoundHelix Song 1 (MP3)",
-                artist = "SoundHelix",
-                album = "Preloaded Tracks",
-                duration = 372000,
-                size = 8928000,
-                dateAdded = System.currentTimeMillis() / 1000,
-                isVideo = false,
-                path = "/storage/emulated/0/Online/Music/SoundHelix-Song-1.mp3",
-                mimeType = "audio/mp3",
-                genre = "Audio"
-            ),
-            MediaEntity(
-                uriString = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3",
-                title = "SoundHelix Song 2 (MP3)",
-                artist = "SoundHelix",
-                album = "Preloaded Tracks",
-                duration = 423000,
-                size = 10152000,
-                dateAdded = System.currentTimeMillis() / 1000,
-                isVideo = false,
-                path = "/storage/emulated/0/Online/Music/SoundHelix-Song-2.mp3",
-                mimeType = "audio/mp3",
-                genre = "Audio"
-            )
-        )
-        mediaList.addAll(preloadedItems)
+        // Add custom items (network streams added by user)
+        mediaList.addAll(customItems)
 
-        mediaDao.insertMedia(mediaList)
+        // Deduplicate items
+        val verifiedList = mediaList.distinctBy { it.uriString }
+
+        // Only update database if media list actually changed to prevent unnecessary UI invalidation
+        val existingUris = existingItems.map { it.uriString }.toSet()
+        val newUris = verifiedList.map { it.uriString }.toSet()
+        if (existingUris != newUris || existingItems.size != verifiedList.size) {
+            mediaDao.replaceLocalMedia(verifiedList)
+        }
+
+        // Preload thumbnails in background asynchronously so scan completes instantly
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                com.example.ui.screens.ThumbnailManager.preloadThumbnails(context, verifiedList)
+            } catch (e: Exception) {}
+        }
     }
 }
 

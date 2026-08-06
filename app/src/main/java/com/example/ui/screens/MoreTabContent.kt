@@ -199,12 +199,12 @@ fun MoreTabContent(
                     .height(110.dp)
                     .border(
                         1.dp,
-                        MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                        MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.40f),
                         RoundedCornerShape(20.dp)
                     )
                     .clickable { onOpenAddStream() },
                 colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.2f)
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.65f)
                 )
             ) {
                 Column(
@@ -731,7 +731,11 @@ private fun UtilityCard(
             .clickable { onClick() }
             .testTag(testTag),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.65f)
+        ),
+        border = androidx.compose.foundation.BorderStroke(
+            1.dp,
+            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.40f)
         )
     ) {
         Column(

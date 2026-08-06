@@ -19,6 +19,7 @@ dependencyResolutionManagement {
   repositories {
     google()
     mavenCentral()
+    maven { url = uri("https://videolan.jfrog.io/artifactory/videolan-maven/") }
   }
 }
 

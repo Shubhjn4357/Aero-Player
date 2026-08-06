@@ -63,7 +63,7 @@ data class PreferenceEntity(
     val saveVideoQueueHistory: Boolean = true,
     val saveAudioQueueHistory: Boolean = true,
     val hwAcceleration: String = "Full", // "Disabled", "Decoding", "Full"
-    val backgroundMode: String = "Play in Background", // "Stop", "Play in Background", "PiP"
+    val backgroundMode: String = "STOP_PLAYBACK", // "STOP_PLAYBACK", "PLAY_BACKGROUND_AUDIO", "LAUNCH_PIP_MODE"
     val resumePlaybackBehavior: String = "Ask Every Time", // "Ask Every Time", "Always Resume", "Always Start from Beginning"
     val usePerVideoSettings: Boolean = false,
     val perVideoSettingsJson: String = "{}",
@@ -99,5 +99,6 @@ data class PreferenceEntity(
     val openGlRemoteUrl: String = "gl://192.168.1.100:8080",
     val openGlRenderMode: String = "Hardware Accelerated GL (Network ES 3.0)",
     val pauseOnScreenSleep: Boolean = true,
-    val keepCastingOnScreenSleep: Boolean = true
+    val keepCastingOnScreenSleep: Boolean = true,
+    val defaultPlayerEngine: String = "VLC Engine (vlcjni)" // "VLC Engine (vlcjni)", "ExoPlayer"
 )

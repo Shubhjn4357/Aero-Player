@@ -128,13 +128,10 @@ fun PlaylistTabContent(
                                     }
                                 ),
                             colors = CardDefaults.cardColors(
-                                containerColor = if (isSelected) accentOrange.copy(alpha = 0.25f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                                containerColor = if (isSelected) accentOrange.copy(alpha = 0.25f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
                             ),
-                            shape = RoundedCornerShape(16.dp),
-                            border = BorderStroke(
-                                if (isSelected) 2.dp else 0.dp,
-                                if (isSelected) accentOrange else Color.Transparent
-                            )
+                            shape = RoundedCornerShape(20.dp),
+                            border = if (isSelected) BorderStroke(1.5.dp, accentOrange) else null
                         ) {
                             Box(modifier = Modifier.fillMaxWidth()) {
                                 Column(modifier = Modifier.padding(16.dp)) {

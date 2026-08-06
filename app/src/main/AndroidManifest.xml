@@ -13,6 +13,8 @@
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" tools:ignore="ScopedStorage" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
 
     <application
         android:allowBackup="true"
@@ -50,9 +52,21 @@
                 android:resource="@xml/file_paths" />
         </provider>
 
+        <service
+            android:name=".service.MediaPlaybackService"
+            android:foregroundServiceType="mediaPlayback"
+            android:exported="false" />
+
         <receiver
             android:name=".receiver.PlayerActionReceiver"
-            android:exported="false" />
+            android:exported="true">
+            <intent-filter android:priority="1000">
+                <action android:name="android.intent.action.MEDIA_BUTTON" />
+                <action android:name="com.example.ACTION_PLAY_PAUSE" />
+                <action android:name="com.example.ACTION_PREV" />
+                <action android:name="com.example.ACTION_NEXT" />
+            </intent-filter>
+        </receiver>
 
         <receiver
             android:name=".widget.PlayerWidget4x1"

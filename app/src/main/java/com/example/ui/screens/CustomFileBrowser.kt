@@ -73,11 +73,11 @@ fun CustomFileBrowser(
         segments
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-    ) {
+    FrostedGlassBackground {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+        ) {
         // Top Toolbar
         Row(
             modifier = Modifier
@@ -278,6 +278,7 @@ fun CustomFileBrowser(
             }
         }
     }
+}
 }
 
 private fun formatFileSize(bytes: Long): String {

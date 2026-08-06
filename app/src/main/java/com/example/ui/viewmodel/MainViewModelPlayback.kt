@@ -54,6 +54,10 @@ fun MainViewModel.setPlayingItem(item: MediaEntity?) {
 fun MainViewModel.clearPlayingItem() {
     try {
         exoPlayer.stop()
+        exoPlayer.clearMediaItems()
+    } catch (e: Exception) {}
+    try {
+        PlayerControlBridge.vlcPlayerRef?.stop()
     } catch (e: Exception) {}
     _currentPlayingItem.value = null
 }
@@ -144,17 +148,71 @@ fun MainViewModel.insertNext(item: MediaEntity) {
 }
 
 fun MainViewModel.playNext() {
-    if (_playQueue.value.isEmpty()) return
-    val nextIndex = (_currentQueueIndex.value + 1) % _playQueue.value.size
+    val queue = _playQueue.value
+    if (queue.isEmpty()) return
+    val nextIndex = (_currentQueueIndex.value + 1) % queue.size
     _currentQueueIndex.value = nextIndex
-    _currentPlayingItem.value = _playQueue.value[nextIndex]
+    val nextItem = queue[nextIndex]
+    _currentPlayingItem.value = nextItem
+
+    if (PlayerControlBridge.isVlcActive && PlayerControlBridge.vlcPlayerRef != null) {
+        try {
+            val context = getApplication<Application>()
+            val resolvedUri = com.example.util.ContentResolverUtils.resolvePlayableUri(
+                context,
+                nextItem.uriString,
+                nextItem.path
+            )
+            PlayerControlBridge.vlcPlayerRef?.playMediaUri(uri = resolvedUri)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    } else if (exoPlayer.mediaItemCount > nextIndex) {
+        try {
+            exoPlayer.seekToDefaultPosition(nextIndex)
+            if (!exoPlayer.isPlaying) {
+                exoPlayer.play()
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+    updateNotificationState()
+    updateWidgets()
 }
 
 fun MainViewModel.playPrevious() {
-    if (_playQueue.value.isEmpty()) return
-    val prevIndex = if (_currentQueueIndex.value - 1 >= 0) _currentQueueIndex.value - 1 else _playQueue.value.size - 1
+    val queue = _playQueue.value
+    if (queue.isEmpty()) return
+    val prevIndex = if (_currentQueueIndex.value - 1 >= 0) _currentQueueIndex.value - 1 else queue.size - 1
     _currentQueueIndex.value = prevIndex
-    _currentPlayingItem.value = _playQueue.value[prevIndex]
+    val prevItem = queue[prevIndex]
+    _currentPlayingItem.value = prevItem
+
+    if (PlayerControlBridge.isVlcActive && PlayerControlBridge.vlcPlayerRef != null) {
+        try {
+            val context = getApplication<Application>()
+            val resolvedUri = com.example.util.ContentResolverUtils.resolvePlayableUri(
+                context,
+                prevItem.uriString,
+                prevItem.path
+            )
+            PlayerControlBridge.vlcPlayerRef?.playMediaUri(uri = resolvedUri)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    } else if (exoPlayer.mediaItemCount > prevIndex) {
+        try {
+            exoPlayer.seekToDefaultPosition(prevIndex)
+            if (!exoPlayer.isPlaying) {
+                exoPlayer.play()
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+    updateNotificationState()
+    updateWidgets()
 }
 
 fun MainViewModel.clearQueue() {

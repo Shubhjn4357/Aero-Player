@@ -11,6 +11,7 @@ data class EqualizerBand(
 )
 
 fun MainViewModel.initEqualizer(audioSessionId: Int) {
+    ensureDefaultBands()
     if (audioSessionId == 0) return
     try {
         androidEqualizer?.release()

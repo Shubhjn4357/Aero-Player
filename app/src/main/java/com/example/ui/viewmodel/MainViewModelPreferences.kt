@@ -62,7 +62,7 @@ fun MainViewModel.updatePlaybackSettings(speed: Float, resizeMode: Int) {
 fun MainViewModel.updateSubtitleSettings(size: Float, color: String) {
     viewModelScope.launch {
         val current = preferencesState.value
-        preferenceRepository.updatePreferences(current.copy(subtitleSize = size, subtitleColor = color))
+        preferenceRepository.updatePreferences(current.copy(subtitleSize = size, subtitleColor = color, subtitleTextColor = color))
     }
 }
 
@@ -79,6 +79,7 @@ fun MainViewModel.updateSubtitleCustomization(background: String, textColor: Str
         preferenceRepository.updatePreferences(current.copy(
             subtitleBackground = background,
             subtitleTextColor = textColor,
+            subtitleColor = textColor,
             subtitleSize = size,
             subtitleFontStyle = fontStyle
         ))
@@ -233,17 +234,72 @@ fun MainViewModel.updatePerVideoVolumeBrightness(uriString: String, volume: Floa
     }
 }
 
-fun MainViewModel.updatePerVideoSettings(uriString: String, speed: Float, resizeMode: Int, volume: Float, eqPreset: String) {
+fun MainViewModel.updatePerVideoSettings(
+    uriString: String,
+    speed: Float,
+    resizeMode: Int,
+    volume: Float,
+    eqPreset: String,
+    brightness: Float = -1f
+) {
     viewModelScope.launch {
         val current = preferencesState.value
         try {
             val json = if (current.perVideoSettingsJson.isBlank()) org.json.JSONObject() else org.json.JSONObject(current.perVideoSettingsJson)
-            val videoObj = org.json.JSONObject().apply {
-                put("speed", speed.toDouble())
-                put("resizeMode", resizeMode)
-                put("volume", volume.toDouble())
-                put("eqPreset", eqPreset)
+            val videoObj = json.optJSONObject(uriString) ?: org.json.JSONObject()
+            videoObj.put("speed", speed.toDouble())
+            videoObj.put("resizeMode", resizeMode)
+            videoObj.put("volume", volume.toDouble())
+            videoObj.put("eqPreset", eqPreset)
+            if (brightness >= 0f) {
+                videoObj.put("brightness", brightness.toDouble())
             }
+            json.put(uriString, videoObj)
+            preferenceRepository.updatePreferences(current.copy(perVideoSettingsJson = json.toString()))
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+}
+
+fun MainViewModel.updatePerVideoSubtitle(
+    uriString: String,
+    subtitleGroupIndex: Int,
+    subtitleTrackIndex: Int,
+    isDisabled: Boolean,
+    externalSubtitleUri: String? = null
+) {
+    viewModelScope.launch {
+        val current = preferencesState.value
+        try {
+            val json = if (current.perVideoSettingsJson.isBlank()) org.json.JSONObject() else org.json.JSONObject(current.perVideoSettingsJson)
+            val videoObj = json.optJSONObject(uriString) ?: org.json.JSONObject()
+            videoObj.put("subGroupIndex", subtitleGroupIndex)
+            videoObj.put("subTrackIndex", subtitleTrackIndex)
+            videoObj.put("subDisabled", isDisabled)
+            if (externalSubtitleUri != null) {
+                videoObj.put("externalSubUri", externalSubtitleUri)
+            }
+            json.put(uriString, videoObj)
+            preferenceRepository.updatePreferences(current.copy(perVideoSettingsJson = json.toString()))
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+}
+
+fun MainViewModel.updatePerVideoAudio(
+    uriString: String,
+    audioGroupIndex: Int,
+    audioTrackIndex: Int
+) {
+    viewModelScope.launch {
+        val current = preferencesState.value
+        try {
+            val json = if (current.perVideoSettingsJson.isBlank()) org.json.JSONObject() else org.json.JSONObject(current.perVideoSettingsJson)
+            val videoObj = json.optJSONObject(uriString) ?: org.json.JSONObject()
+            videoObj.put("audioGroupIndex", audioGroupIndex)
+            videoObj.put("audioTrackIndex", audioTrackIndex)
             json.put(uriString, videoObj)
             preferenceRepository.updatePreferences(current.copy(perVideoSettingsJson = json.toString()))
         } catch (e: Exception) {
@@ -274,6 +330,12 @@ fun MainViewModel.toggleRotationLock(locked: Boolean) {
 }
 
 fun MainViewModel.completeOnboarding() {
+    try {
+        getApplication<android.app.Application>().getSharedPreferences("app_prefs", android.content.Context.MODE_PRIVATE)
+            .edit().putBoolean("onboarding_completed", true).apply()
+    } catch (e: Exception) {
+        android.util.Log.e("MainViewModel", "Failed to write onboarding to SharedPreferences", e)
+    }
     viewModelScope.launch {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(onboardingCompleted = true))
@@ -422,6 +484,13 @@ fun MainViewModel.updateHwAcceleration(mode: String) {
     viewModelScope.launch {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(hwAcceleration = mode))
+    }
+}
+
+fun MainViewModel.updateDefaultPlayerEngine(engine: String) {
+    viewModelScope.launch {
+        val current = preferencesState.value
+        preferenceRepository.updatePreferences(current.copy(defaultPlayerEngine = engine))
     }
 }
 

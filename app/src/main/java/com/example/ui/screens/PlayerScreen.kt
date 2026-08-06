@@ -1,5 +1,8 @@
 package com.example.ui.screens
 
+import com.example.player.VlcPlayerWrapper
+import com.example.ui.components.VlcPlayerView
+
 import android.app.Activity
 import android.content.Context
 import android.media.AudioManager
@@ -115,6 +118,10 @@ fun PlayerScreen(
     // ExoPlayer Builder
     val exoPlayer = viewModel.exoPlayer
 
+    // Embedded LibVLC Player Wrapper for Direct Playback of All Codecs & Compressed Streams
+    val vlcPlayer = remember { VlcPlayerWrapper(context) }
+    var activeEngine by remember { mutableStateOf("VLC") }
+
     var showResumePrompt by remember { mutableStateOf(false) }
     var isAutoTransitioning by remember { mutableStateOf(false) }
     var isNewSession by remember { mutableStateOf(true) }
@@ -202,27 +209,49 @@ fun PlayerScreen(
         }
     }
 
-    // Listen to Lifecycle Events to pause playback instantly when minimized
+    var wasPlayingBeforePause by remember { mutableStateOf(false) }
+
+    // Listen to Lifecycle Events to pause playback instantly when minimized/locked and auto-resume on return
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner, exoPlayer, prefs, isInPipMode, activeMediaItem) {
+    DisposableEffect(lifecycleOwner, exoPlayer, vlcPlayer, prefs, isInPipMode, activeMediaItem) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
-            if (event == androidx.lifecycle.Lifecycle.Event.ON_PAUSE) {
-                val activity = context as? android.app.Activity
-                val activityInPip = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
-                    activity?.isInPictureInPictureMode == true
-                } else {
-                    false
+            val activity = context as? android.app.Activity
+            val activityInPip = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+                activity?.isInPictureInPictureMode == true
+            } else {
+                false
+            }
+            val inPip = isInPipMode || activityInPip
+            val isVideoContent = activeMediaItem.isVideo && !playAsAudioOnly
+
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_PAUSE || event == androidx.lifecycle.Lifecycle.Event.ON_STOP) {
+                val bgModeNormalized = when (prefs.backgroundMode) {
+                    "PLAY_BACKGROUND_AUDIO", "Play in Background" -> "PLAY_BACKGROUND_AUDIO"
+                    "LAUNCH_PIP_MODE", "PiP" -> "LAUNCH_PIP_MODE"
+                    else -> "STOP_PLAYBACK"
                 }
-                val inPip = isInPipMode || activityInPip
-                val shouldPlayBackground = prefs.backgroundMode == "PLAY_BACKGROUND_AUDIO" ||
-                        (prefs.backgroundMode == "LAUNCH_PIP_MODE" && activeMediaItem.isVideo && inPip)
+                val shouldPlayBackground = bgModeNormalized == "PLAY_BACKGROUND_AUDIO" ||
+                        (bgModeNormalized == "LAUNCH_PIP_MODE" && activeMediaItem.isVideo && inPip)
+
                 if (!shouldPlayBackground) {
+                    val currentlyPlaying = if (activeEngine == "VLC") vlcPlayer.isPlaying else exoPlayer.isPlaying
+                    if (currentlyPlaying) {
+                        wasPlayingBeforePause = true
+                    }
                     exoPlayer.pause()
+                    vlcPlayer.pause()
                 }
-            } else if (event == androidx.lifecycle.Lifecycle.Event.ON_STOP) {
-                val shouldPlayBackground = prefs.backgroundMode == "PLAY_BACKGROUND_AUDIO"
-                if (!shouldPlayBackground) {
-                    exoPlayer.pause()
+            } else if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                if (activeEngine == "VLC") {
+                    vlcPlayer.refreshVideoSurface()
+                }
+                if (!inPip && wasPlayingBeforePause) {
+                    wasPlayingBeforePause = false
+                    if (activeEngine == "VLC") {
+                        vlcPlayer.play()
+                    } else {
+                        exoPlayer.play()
+                    }
                 }
             }
         }
@@ -232,65 +261,81 @@ fun PlayerScreen(
         }
     }
 
-    // Load Uri Source
+    // Keep PlayerControlBridge updated with active player engine reference
+    LaunchedEffect(vlcPlayer, activeEngine) {
+        com.example.ui.viewmodel.PlayerControlBridge.vlcPlayerRef = vlcPlayer
+        com.example.ui.viewmodel.PlayerControlBridge.activeEngineName = activeEngine
+    }
+
+    // Load Uri Source Configurations
     LaunchedEffect(activeMediaItem) {
         audioFallbackAttempted = false
-        val currentUri = try { exoPlayer.currentMediaItem?.localConfiguration?.uri?.toString() } catch (e: Exception) { null }
-        if (currentUri == activeMediaItem.uriString && !isNewSession) {
-            // Already playing this item, don't restart it
-            return@LaunchedEffect
-        }
         isNewSession = false
 
-        // Stop and clear media items sequentially to prevent playback freeze on play/re-play
-        exoPlayer.stop()
-        exoPlayer.clearMediaItems()
+        var speedToApply = if (exoPlayer.playbackParameters.speed != 1.0f) exoPlayer.playbackParameters.speed else prefs.playbackSpeed
+        var resizeToApply = resizeMode
+        var volumeToApply = exoPlayer.volume
+        var eqPresetToApply = currentEqualizerPreset
+        var brightnessToApply = currentBrightness
 
-        var speedToApply = prefs.playbackSpeed
-        var resizeToApply = prefs.resizeMode
-        var volumeToApply = 1.0f
-        var eqPresetToApply = "Flat"
-        var brightnessToApply = -1.0f
+        var savedSubGroupIndex = -1
+        var savedSubTrackIndex = -1
+        var savedSubDisabled = false
+        var savedExternalSubUri: String? = null
 
         // 1. Initial global defaults if set
         if (prefs.saveVolumeBrightnessBehavior == "Global") {
-            volumeToApply = prefs.globalVolume
-            brightnessToApply = prefs.globalBrightness
+            if (prefs.globalVolume in 0f..1f) volumeToApply = prefs.globalVolume
+            if (prefs.globalBrightness in 0f..1f) brightnessToApply = prefs.globalBrightness
         }
 
         // 2. Load per-video preferences or individual settings
-        if (prefs.usePerVideoSettings || prefs.saveVolumeBrightnessBehavior == "Individual") {
-            try {
-                val json = if (prefs.perVideoSettingsJson.isBlank()) org.json.JSONObject() else org.json.JSONObject(prefs.perVideoSettingsJson)
-                if (json.has(activeMediaItem.uriString)) {
-                    val videoObj = json.getJSONObject(activeMediaItem.uriString)
-                    if (prefs.usePerVideoSettings) {
-                        speedToApply = videoObj.optDouble("speed", prefs.playbackSpeed.toDouble()).toFloat()
-                        resizeToApply = videoObj.optInt("resizeMode", prefs.resizeMode)
-                        eqPresetToApply = videoObj.optString("eqPreset", "Flat")
-                    }
-                    if (prefs.usePerVideoSettings || prefs.saveVolumeBrightnessBehavior == "Individual") {
-                        volumeToApply = videoObj.optDouble("volume", 1.0).toFloat()
-                    }
-                    if (prefs.saveVolumeBrightnessBehavior == "Individual") {
-                        brightnessToApply = videoObj.optDouble("brightness", -1.0).toFloat()
-                    }
+        try {
+            val json = if (prefs.perVideoSettingsJson.isBlank()) org.json.JSONObject() else org.json.JSONObject(prefs.perVideoSettingsJson)
+            if (json.has(activeMediaItem.uriString)) {
+                val videoObj = json.getJSONObject(activeMediaItem.uriString)
+                speedToApply = videoObj.optDouble("speed", speedToApply.toDouble()).toFloat()
+                resizeToApply = videoObj.optInt("resizeMode", resizeToApply)
+                eqPresetToApply = videoObj.optString("eqPreset", eqPresetToApply)
+                if (videoObj.has("volume")) {
+                    volumeToApply = videoObj.getDouble("volume").toFloat()
                 }
-            } catch (e: Exception) {
-                e.printStackTrace()
+                if (videoObj.has("brightness")) {
+                    brightnessToApply = videoObj.getDouble("brightness").toFloat()
+                }
+                savedSubGroupIndex = videoObj.optInt("subGroupIndex", -1)
+                savedSubTrackIndex = videoObj.optInt("subTrackIndex", -1)
+                savedSubDisabled = videoObj.optBoolean("subDisabled", false)
+                if (videoObj.has("externalSubUri")) {
+                    savedExternalSubUri = videoObj.getString("externalSubUri")
+                }
+            } else if (prefs.saveVolumeBrightnessBehavior != "Global") {
+                if (prefs.globalVolume in 0f..1f) volumeToApply = prefs.globalVolume
+                if (prefs.globalBrightness in 0f..1f) brightnessToApply = prefs.globalBrightness
             }
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
 
         // Apply configurations
         exoPlayer.setPlaybackSpeed(speedToApply)
         exoPlayer.volume = volumeToApply
+        vlcPlayer.setVolume((volumeToApply * 100).toInt())
+        vlcPlayer.setSpeed(speedToApply)
         resizeMode = resizeToApply
-        // Ensure subtitle/text tracks and audio tracks are NOT disabled and can be selected by default!
-        exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
-            .buildUpon()
-            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
-            .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)
-            .build()
+        // Apply saved subtitle disabled/enabled state
+        if (savedSubDisabled) {
+            exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
+                .buildUpon()
+                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                .build()
+        } else {
+            exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
+                .buildUpon()
+                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)
+                .build()
+        }
         if (eqPresetToApply.isNotBlank()) {
             viewModel.applyPreset(eqPresetToApply)
         }
@@ -312,78 +357,104 @@ fun PlayerScreen(
             currentBrightness = if (currentB < 0f) 0.5f else currentB
         }
 
-        val currentPlayingUri = exoPlayer.currentMediaItem?.localConfiguration?.uri?.toString()
-        val isAlreadyPlayingThisItem = currentPlayingUri == activeMediaItem.uriString &&
-                (exoPlayer.playbackState == Player.STATE_READY || exoPlayer.playbackState == Player.STATE_BUFFERING)
+        val history = viewModel.getHistoryByUri(activeMediaItem.uriString)
+        if (history != null && history.progressMs > 1000L && history.progressMs < history.duration - 5000L) {
+            resumePosition = history.progressMs
+            if (prefs.resumePlaybackBehavior == "Ask Every Time") {
+                showResumePrompt = true
+            }
+        }
+    }
 
-        if (!isAlreadyPlayingThisItem) {
-            generalRetryCount = 0
-            val isRemoteStream = activeMediaItem.genre == "Live Stream" || activeMediaItem.genre == "Playlist Stream Channel" || activeMediaItem.uriString.startsWith("http://") || activeMediaItem.uriString.startsWith("https://") || activeMediaItem.uriString.startsWith("rtsp://") || activeMediaItem.uriString.startsWith("mms://")
-            isBuffering = isRemoteStream
-            playbackErrorMsg = null
-            val history = viewModel.getHistoryByUri(activeMediaItem.uriString)
-            val isAuto = isAutoTransitioning
-            isAutoTransitioning = false
+    // Auto-detect media type & auto-route complex containers to VLC Engine
+    LaunchedEffect(activeMediaItem) {
+        val targetPath = (activeMediaItem.path ?: activeMediaItem.uriString).lowercase()
+        val isVlcRequiredFormat = targetPath.endsWith(".mkv") || targetPath.endsWith(".avi") ||
+                targetPath.endsWith(".flv") || targetPath.endsWith(".ts") || targetPath.endsWith(".wmv") ||
+                targetPath.endsWith(".vob") || targetPath.endsWith(".ogv") || targetPath.endsWith(".divx") ||
+                targetPath.endsWith(".rmvb") || targetPath.contains(".dts") || targetPath.contains(".ac3")
+        if (isVlcRequiredFormat && activeEngine != "VLC") {
+            activeEngine = "VLC"
+        }
+    }
 
+    // Player Engine Media Loading Trigger (Fires ONLY when media item or engine changes)
+    LaunchedEffect(activeMediaItem, activeEngine) {
+        if (activeEngine == "VLC") {
             try {
+                exoPlayer.pause()
                 exoPlayer.stop()
                 exoPlayer.clearMediaItems()
             } catch (e: Exception) {}
 
-            val newItem = buildMediaItemWithSubtitles(activeMediaItem.uriString, context)
+            playbackErrorMsg = null
+            val resolvedUri = com.example.util.ContentResolverUtils.resolvePlayableUri(
+                context,
+                activeMediaItem.uriString,
+                activeMediaItem.path
+            )
+            vlcPlayer.playMediaUri(
+                uri = resolvedUri,
+                hardwareAccelerated = prefs.hwAcceleration != "DISABLED_SOFTWARE",
+                subtitleSizeSp = prefs.subtitleSize,
+                subtitleTextColorHex = prefs.subtitleTextColor,
+                subtitleBgColorHex = prefs.subtitleBackground,
+                subtitleEncoding = prefs.subtitleEncoding
+            )
+            vlcPlayer.setVolume((exoPlayer.volume * 100).toInt())
+            vlcPlayer.setSpeed(exoPlayer.playbackParameters.speed)
+            if (resumePosition > 0) {
+                vlcPlayer.seekTo(resumePosition)
+            }
+        } else {
+            try {
+                vlcPlayer.pause()
+                vlcPlayer.stop()
+            } catch (e: Exception) {}
 
-        try {
-            if (isAuto) {
-                // Seamless Auto-Play for Next/Prev Episode in Queue
-                exoPlayer.setMediaItem(newItem)
-                exoPlayer.prepare()
-                exoPlayer.seekTo(0L)
-                exoPlayer.playWhenReady = true
-                exoPlayer.play()
-            } else if (history != null && history.progressMs > 1000L && history.progressMs < history.duration - 5000L) {
-                resumePosition = history.progressMs
-                when (prefs.resumePlaybackBehavior) {
-                    "Always Resume" -> {
-                        exoPlayer.setMediaItem(newItem)
-                        exoPlayer.prepare()
+            val currentMediaId = exoPlayer.currentMediaItem?.mediaId
+            val currentPlayingUri = exoPlayer.currentMediaItem?.localConfiguration?.uri?.toString()
+            val isAlreadyPlayingThisItem = exoPlayer.currentMediaItem != null &&
+                    (currentMediaId == activeMediaItem.uriString || currentPlayingUri == activeMediaItem.uriString)
+            if (!isAlreadyPlayingThisItem) {
+                playbackErrorMsg = null
+                val json = try { if (prefs.perVideoSettingsJson.isBlank()) org.json.JSONObject() else org.json.JSONObject(prefs.perVideoSettingsJson) } catch(e: Exception) { org.json.JSONObject() }
+                val videoObj = json.optJSONObject(activeMediaItem.uriString)
+                val savedExtSub = videoObj?.optString("externalSubUri", null)
+
+                val newItem = buildMediaItemWithSubtitles(
+                    uriString = activeMediaItem.uriString,
+                    context = context,
+                    path = activeMediaItem.path,
+                    externalSubtitleUri = savedExtSub
+                )
+                try {
+                    exoPlayer.setMediaItem(newItem)
+                    exoPlayer.prepare()
+                    if (resumePosition > 0) {
                         exoPlayer.seekTo(resumePosition)
-                        exoPlayer.playWhenReady = true
-                        exoPlayer.play()
                     }
-                    "Always Start from Beginning" -> {
-                        exoPlayer.setMediaItem(newItem)
-                        exoPlayer.prepare()
-                        exoPlayer.seekTo(0L)
-                        exoPlayer.playWhenReady = true
-                        exoPlayer.play()
-                    }
-                    else -> { // "Ask Every Time"
-                        showResumePrompt = true
-                        exoPlayer.setMediaItem(newItem)
-                        exoPlayer.prepare()
-                        exoPlayer.playWhenReady = false
-                    }
+                    exoPlayer.playWhenReady = true
+                    exoPlayer.play()
+                } catch (e: Throwable) {
+                    e.printStackTrace()
                 }
             } else {
-                exoPlayer.setMediaItem(newItem)
-                exoPlayer.prepare()
-                exoPlayer.seekTo(0L)
-                exoPlayer.playWhenReady = true
-                exoPlayer.play()
+                if (!exoPlayer.isPlaying && exoPlayer.playbackState != Player.STATE_ENDED) {
+                    exoPlayer.play()
+                }
             }
-        } catch (e: Throwable) {
-            e.printStackTrace()
-            android.widget.Toast.makeText(context, "Error starting playback: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
-        }
         }
     }
 
     // Log History periodically
-    LaunchedEffect(exoPlayer, activeMediaItem) {
+    LaunchedEffect(activeEngine, activeMediaItem) {
         while (true) {
-            delay(8000)
-            if (exoPlayer.isPlaying) {
-                viewModel.addPlaybackHistory(activeMediaItem, exoPlayer.currentPosition)
+            delay(5000)
+            val pos = if (activeEngine == "VLC") vlcPlayer.currentPositionMs else exoPlayer.currentPosition
+            val playing = if (activeEngine == "VLC") vlcPlayer.isPlaying else exoPlayer.isPlaying
+            if (playing && pos > 0) {
+                viewModel.addPlaybackHistory(activeMediaItem, pos)
             }
         }
     }
@@ -391,53 +462,59 @@ fun PlayerScreen(
     // Log history immediately when playback is paused
     LaunchedEffect(isPlaying) {
         if (!isPlaying) {
-            viewModel.addPlaybackHistory(activeMediaItem, exoPlayer.currentPosition)
+            val pos = if (activeEngine == "VLC") vlcPlayer.currentPositionMs else exoPlayer.currentPosition
+            if (pos > 0) {
+                viewModel.addPlaybackHistory(activeMediaItem, pos)
+            }
         }
     }
 
     DisposableEffect(activeMediaItem) {
         onDispose {
-            viewModel.addPlaybackHistory(activeMediaItem, exoPlayer.currentPosition)
+            val pos = if (activeEngine == "VLC") vlcPlayer.currentPositionMs else exoPlayer.currentPosition
+            if (pos > 0) {
+                viewModel.addPlaybackHistory(activeMediaItem, pos)
+            }
             if (activeMediaItem.isVideo && !isPipActive && !isInPipMode) {
-                exoPlayer.pause()
+                try {
+                    if (activeEngine == "VLC") vlcPlayer.pause()
+                    exoPlayer.pause()
+                } catch (e: Exception) {}
             }
         }
     }
 
-    // Auto-save per-video settings when they are modified
-    LaunchedEffect(exoPlayer.volume, resizeMode, currentEqualizerPreset, isPlaying) {
-        if (prefs.usePerVideoSettings && isPlaying) {
-            val currentSpeed = exoPlayer.playbackParameters.speed
-            val currentVol = exoPlayer.volume
-            viewModel.updatePerVideoSettings(
-                uriString = activeMediaItem.uriString,
-                speed = currentSpeed,
-                resizeMode = resizeMode,
-                volume = currentVol,
-                eqPreset = currentEqualizerPreset
-            )
-        }
+    // Auto-save per-video settings when they are modified (debounced)
+    LaunchedEffect(currentBrightness, resizeMode, currentEqualizerPreset) {
+        delay(500)
+        val currentSpeed = exoPlayer.playbackParameters.speed
+        val currentVol = exoPlayer.volume
+        viewModel.updatePerVideoSettings(
+            uriString = activeMediaItem.uriString,
+            speed = currentSpeed,
+            resizeMode = resizeMode,
+            volume = currentVol,
+            eqPreset = currentEqualizerPreset,
+            brightness = currentBrightness
+        )
     }
 
-    // Auto-save volume and brightness levels based on behavior settings
-    LaunchedEffect(exoPlayer.volume, currentBrightness, isPlaying) {
-        if (isPlaying) {
-            val currentVol = exoPlayer.volume
-            val currentBri = currentBrightness
+    // Auto-save volume and brightness levels based on behavior settings (debounced)
+    LaunchedEffect(currentBrightness) {
+        delay(500)
+        val currentVol = exoPlayer.volume
+        val currentBri = currentBrightness
 
-            if (prefs.saveVolumeBrightnessBehavior == "Global") {
-                viewModel.updateGlobalVolume(currentVol)
-                if (currentBri >= 0f) {
-                    viewModel.updateGlobalBrightness(currentBri)
-                }
-            } else if (prefs.saveVolumeBrightnessBehavior == "Individual") {
-                viewModel.updatePerVideoVolumeBrightness(
-                    uriString = activeMediaItem.uriString,
-                    volume = currentVol,
-                    brightness = currentBri
-                )
-            }
+        viewModel.updateGlobalVolume(currentVol)
+        if (currentBri >= 0f) {
+            viewModel.updateGlobalBrightness(currentBri)
         }
+
+        viewModel.updatePerVideoVolumeBrightness(
+            uriString = activeMediaItem.uriString,
+            volume = currentVol,
+            brightness = currentBri
+        )
     }
 
     // Core States
@@ -457,11 +534,6 @@ fun PlayerScreen(
     var scrubPosition by remember { mutableStateOf(0L) }
     var scrubbingBitmap by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
 
-    // Fallback track selection states
-    var selectedMockAudioIndex by remember { mutableStateOf(0) }
-    var selectedMockSubtitleIndex by remember { mutableStateOf(0) }
-    var selectedMockVideoIndex by remember { mutableStateOf(0) }
-
     // LRU Cache for preloaded video keyframe thumbnails (up to 120 bitmaps)
     val thumbnailCache = remember { androidx.collection.LruCache<String, android.graphics.Bitmap>(120) }
 
@@ -472,6 +544,7 @@ fun PlayerScreen(
     LaunchedEffect(activeMediaItem) {
         val isHttp = activeMediaItem.uriString.startsWith("http://") || activeMediaItem.uriString.startsWith("https://")
         if (activeMediaItem.isVideo && !isHttp) {
+            kotlinx.coroutines.delay(1200L) // Yield initial CPU & disk I/O completely to ExoPlayer video startup
             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                 var retriever: android.media.MediaMetadataRetriever? = null
                 var pfd: android.os.ParcelFileDescriptor? = null
@@ -479,31 +552,40 @@ fun PlayerScreen(
                     retriever = android.media.MediaMetadataRetriever()
                     if (activeMediaItem.uriString.startsWith("content://")) {
                         try {
-                            val uri = parseMediaUri(activeMediaItem.uriString)
-                            pfd = context.contentResolver.openFileDescriptor(uri, "r")
-                            if (pfd != null) {
-                                retriever.setDataSource(pfd.fileDescriptor)
+                            val uri = parseMediaUri(activeMediaItem.uriString, activeMediaItem.path, context)
+                            if (uri.scheme == "file") {
+                                retriever.setDataSource(uri.path)
                             } else {
-                                retriever.setDataSource(context, uri)
+                                pfd = context.contentResolver.openFileDescriptor(uri, "r")
+                                if (pfd != null) {
+                                    retriever.setDataSource(pfd.fileDescriptor)
+                                } else {
+                                    retriever.setDataSource(context, uri)
+                                }
                             }
                         } catch (e: Exception) {
-                            retriever.setDataSource(context, parseMediaUri(activeMediaItem.uriString))
+                            if (!activeMediaItem.path.isNullOrBlank() && java.io.File(activeMediaItem.path).exists()) {
+                                retriever.setDataSource(activeMediaItem.path)
+                            } else {
+                                retriever.setDataSource(context, parseMediaUri(activeMediaItem.uriString, activeMediaItem.path, context))
+                            }
                         }
                     } else {
                         retriever.setDataSource(activeMediaItem.path ?: activeMediaItem.uriString)
                     }
                     val videoId = activeMediaItem.uriString.hashCode().toString()
                     val durSec = (activeMediaItem.duration / 1000L).coerceAtLeast(10L)
-                    val stepSec = (durSec / 25L).coerceIn(2L, 20L)
+                    val stepSec = (durSec / 12L).coerceIn(3L, 30L)
                     for (sec in 0L..durSec step stepSec) {
+                        kotlinx.coroutines.yield()
                         val key = "${videoId}_$sec"
                         if (thumbnailCache.get(key) == null) {
                             val frame = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O_MR1) {
                                 retriever.getScaledFrameAtTime(
                                     sec * 1000000L,
                                     android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
-                                    180,
-                                    100
+                                    160,
+                                    90
                                 )
                             } else {
                                 retriever.getFrameAtTime(
@@ -534,15 +616,23 @@ fun PlayerScreen(
                     if (activeMediaItem.uriString.startsWith("content://")) {
                         var pfd: android.os.ParcelFileDescriptor? = null
                         try {
-                            val uri = parseMediaUri(activeMediaItem.uriString)
-                            pfd = context.contentResolver.openFileDescriptor(uri, "r")
-                            if (pfd != null) {
-                                r.setDataSource(pfd.fileDescriptor)
+                            val uri = parseMediaUri(activeMediaItem.uriString, activeMediaItem.path, context)
+                            if (uri.scheme == "file") {
+                                r.setDataSource(uri.path)
                             } else {
-                                r.setDataSource(context, uri)
+                                pfd = context.contentResolver.openFileDescriptor(uri, "r")
+                                if (pfd != null) {
+                                    r.setDataSource(pfd.fileDescriptor)
+                                } else {
+                                    r.setDataSource(context, uri)
+                                }
                             }
                         } catch (e: Exception) {
-                            r.setDataSource(context, parseMediaUri(activeMediaItem.uriString))
+                            if (!activeMediaItem.path.isNullOrBlank() && java.io.File(activeMediaItem.path).exists()) {
+                                r.setDataSource(activeMediaItem.path)
+                            } else {
+                                r.setDataSource(context, parseMediaUri(activeMediaItem.uriString, activeMediaItem.path, context))
+                            }
                         } finally {
                             try { pfd?.close() } catch (e: Exception) {}
                         }
@@ -639,17 +729,21 @@ fun PlayerScreen(
     var connectedCastDevice by remember { mutableStateOf<String?>(null) }
 
     // Register Screen Off / Screen Sleep BroadcastReceiver to handle screen sleep mode
-    DisposableEffect(context, exoPlayer, prefs.pauseOnScreenSleep, prefs.keepCastingOnScreenSleep, isCastingActive) {
+    DisposableEffect(context, exoPlayer, vlcPlayer, prefs.keepCastingOnScreenSleep, isCastingActive, activeMediaItem) {
         val screenReceiver = object : android.content.BroadcastReceiver() {
             override fun onReceive(ctx: android.content.Context?, intent: android.content.Intent?) {
                 if (intent?.action == android.content.Intent.ACTION_SCREEN_OFF) {
-                    // If casting is active and keep casting in sleep mode is enabled, supply media without pausing
                     if (isCastingActive && prefs.keepCastingOnScreenSleep) {
                         if (!exoPlayer.isPlaying) {
                             exoPlayer.play()
                         }
-                    } else if (prefs.pauseOnScreenSleep) {
+                    } else {
+                        val currentlyPlaying = if (activeEngine == "VLC") vlcPlayer.isPlaying else exoPlayer.isPlaying
+                        if (currentlyPlaying) {
+                            wasPlayingBeforePause = true
+                        }
                         exoPlayer.pause()
+                        vlcPlayer.pause()
                     }
                 }
             }
@@ -692,6 +786,57 @@ fun PlayerScreen(
             }
         )
     } // 0 = OFF, 1 = ONE, 2 = ALL
+
+    DisposableEffect(vlcPlayer) {
+        vlcPlayer.onPlaybackStateChanged = { playing, buffering ->
+            if (activeEngine == "VLC") {
+                isPlaying = playing
+                isBuffering = buffering
+            }
+        }
+        vlcPlayer.onPositionUpdated = { pos, dur ->
+            if (activeEngine == "VLC") {
+                if (!isScrubbing && pos >= 0) {
+                    currentPosition = pos
+                }
+                if (dur > 0) duration = dur
+            }
+        }
+        vlcPlayer.onErrorOccurred = { err ->
+            playbackErrorMsg = null
+        }
+        vlcPlayer.onCompletion = {
+            if (activeEngine == "VLC") {
+                if (repeatModeState == 1) {
+                    vlcPlayer.seekTo(0)
+                    vlcPlayer.play()
+                } else {
+                    val playQueue = viewModel.playQueue.value
+                    val currentIndex = viewModel.currentQueueIndex.value
+                    if (playQueue.size <= 1) {
+                        if (repeatModeState == 2) {
+                            vlcPlayer.seekTo(0)
+                            vlcPlayer.play()
+                        } else {
+                            vlcPlayer.seekTo(0)
+                            vlcPlayer.pause()
+                        }
+                    } else {
+                        if (currentIndex >= playQueue.size - 1 && repeatModeState == 0) {
+                            vlcPlayer.seekTo(0)
+                            vlcPlayer.pause()
+                        } else {
+                            isAutoTransitioning = true
+                            viewModel.playNext()
+                        }
+                    }
+                }
+            }
+        }
+        onDispose {
+            vlcPlayer.release()
+        }
+    }
 
     var sleepTimeLeftMinutes by remember { mutableStateOf(0) }
     var isSleepTimerRunning by remember { mutableStateOf(false) }
@@ -854,41 +999,44 @@ fun PlayerScreen(
     DisposableEffect(exoPlayer) {
         val listener = object : Player.Listener {
             override fun onIsPlayingChanged(playing: Boolean) {
-                isPlaying = playing
-                if (playing) {
-                    playbackErrorMsg = null
-                    generalRetryCount = 0
+                if (activeEngine != "VLC") {
+                    isPlaying = playing
+                    if (playing) {
+                        playbackErrorMsg = null
+                        generalRetryCount = 0
+                    }
                 }
             }
             override fun onPlaybackStateChanged(playbackState: Int) {
-                isBuffering = playbackState == Player.STATE_BUFFERING
-                if (playbackState == Player.STATE_READY) {
-                    duration = exoPlayer.duration
-                    playbackErrorMsg = null
-                    generalRetryCount = 0
-                } else if (playbackState == Player.STATE_ENDED) {
-                    if (repeatModeState == 1) { // Repeat One
-                        exoPlayer.seekTo(0)
-                        exoPlayer.play()
-                    } else {
-                        val playQueue = viewModel.playQueue.value
-                        val currentIndex = viewModel.currentQueueIndex.value
-                        if (playQueue.size <= 1) {
-                            if (repeatModeState == 2) { // Repeat All
-                                exoPlayer.seekTo(0)
-                                exoPlayer.play()
-                            } else {
-                                exoPlayer.seekTo(0)
-                                exoPlayer.pause()
-                            }
+                if (activeEngine != "VLC") {
+                    isBuffering = playbackState == Player.STATE_BUFFERING
+                    if (playbackState == Player.STATE_READY) {
+                        duration = exoPlayer.duration
+                        playbackErrorMsg = null
+                        generalRetryCount = 0
+                    } else if (playbackState == Player.STATE_ENDED) {
+                        if (repeatModeState == 1) { // Repeat One
+                            exoPlayer.seekTo(0)
+                            exoPlayer.play()
                         } else {
-                            if (currentIndex >= playQueue.size - 1 && repeatModeState == 0) {
-                                // End of queue reached and repeat is off
-                                exoPlayer.seekTo(0)
-                                exoPlayer.pause()
+                            val playQueue = viewModel.playQueue.value
+                            val currentIndex = viewModel.currentQueueIndex.value
+                            if (playQueue.size <= 1) {
+                                if (repeatModeState == 2) { // Repeat All
+                                    exoPlayer.seekTo(0)
+                                    exoPlayer.play()
+                                } else {
+                                    exoPlayer.seekTo(0)
+                                    exoPlayer.pause()
+                                }
                             } else {
-                                isAutoTransitioning = true
-                                viewModel.playNext()
+                                if (currentIndex >= playQueue.size - 1 && repeatModeState == 0) {
+                                    exoPlayer.seekTo(0)
+                                    exoPlayer.pause()
+                                } else {
+                                    isAutoTransitioning = true
+                                    viewModel.playNext()
+                                }
                             }
                         }
                     }
@@ -896,143 +1044,10 @@ fun PlayerScreen(
             }
             override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
                 tracksUpdateTrigger++
-
-                // Auto-select Dolby (EAC3/AC3) or unselected audio tracks on initial load
-                val currentParams = exoPlayer.trackSelectionParameters
-                val isAudioDisabled = currentParams.disabledTrackTypes.contains(androidx.media3.common.C.TRACK_TYPE_AUDIO)
-                if (!isAudioDisabled) {
-                    val audioGroups = tracks.groups.filter { it.type == androidx.media3.common.C.TRACK_TYPE_AUDIO }
-                    if (audioGroups.isNotEmpty()) {
-                        val hasSelectedAudioTrack = audioGroups.any { group ->
-                            (0 until group.length).any { group.isTrackSelected(it) }
-                        }
-                        if (!hasSelectedAudioTrack) {
-                            val firstGroup = audioGroups.first()
-                            val newParams = currentParams.buildUpon()
-                                .setOverrideForType(androidx.media3.common.TrackSelectionOverride(firstGroup.mediaTrackGroup, 0))
-                                .setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_AUDIO, false)
-                                .build()
-                            exoPlayer.trackSelectionParameters = newParams
-                        }
-                    }
-                }
             }
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
-                val errorMsg = error.localizedMessage ?: error.message ?: ""
-                val isAudioError = error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_DECODER_INIT_FAILED ||
-                        error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_DECODER_QUERY_FAILED ||
-                        error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_AUDIO_TRACK_INIT_FAILED ||
-                        error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_AUDIO_TRACK_WRITE_FAILED ||
-                        errorMsg.contains("audio", ignoreCase = true) ||
-                        errorMsg.contains("eac3", ignoreCase = true) ||
-                        errorMsg.contains("ac3", ignoreCase = true) ||
-                        errorMsg.contains("MediaCodecAudioRenderer", ignoreCase = true) ||
-                        errorMsg.contains("AudioRenderer", ignoreCase = true) ||
-                        errorMsg.contains("AudioSink", ignoreCase = true)
-
-                val isVideoError = errorMsg.contains("video", ignoreCase = true) ||
-                        errorMsg.contains("MediaCodecVideoRenderer", ignoreCase = true) ||
-                        errorMsg.contains("VideoRenderer", ignoreCase = true)
-
-                val currentParams = exoPlayer.trackSelectionParameters
-
-                if (isAudioError && !audioFallbackAttempted) {
-                    audioFallbackAttempted = true
-                    val resumePos = exoPlayer.currentPosition
-                    val currentTracksInfo = exoPlayer.currentTracks
-                    var fallbackTrackSelected = false
-
-                    // Try finding an alternative audio track (e.g. stereo AAC / MP3) if present
-                    val audioGroups = currentTracksInfo.groups.filter { it.type == androidx.media3.common.C.TRACK_TYPE_AUDIO }
-                    for (group in audioGroups) {
-                        for (i in 0 until group.length) {
-                            val format = group.getTrackFormat(i)
-                            val mime = format.sampleMimeType?.lowercase() ?: ""
-                            if (mime.isNotBlank() && !mime.contains("eac3") && !mime.contains("ac3") && !mime.contains("dts")) {
-                                val newParams = currentParams.buildUpon()
-                                    .setOverrideForType(androidx.media3.common.TrackSelectionOverride(group.mediaTrackGroup, i))
-                                    .setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_AUDIO, false)
-                                    .build()
-                                exoPlayer.trackSelectionParameters = newParams
-                                fallbackTrackSelected = true
-                                break
-                            }
-                        }
-                        if (fallbackTrackSelected) break
-                    }
-
-                    if (fallbackTrackSelected) {
-                        android.widget.Toast.makeText(
-                            context,
-                            "Audio codec change handled: switched to compatible track.",
-                            android.widget.Toast.LENGTH_SHORT
-                        ).show()
-                    } else {
-                        val newParams = currentParams.buildUpon()
-                            .setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_AUDIO, true)
-                            .build()
-                        exoPlayer.trackSelectionParameters = newParams
-
-                        android.widget.Toast.makeText(
-                            context,
-                            "Unsupported audio codec: continuing video playback.",
-                            android.widget.Toast.LENGTH_SHORT
-                        ).show()
-                    }
-
-                    playbackErrorMsg = null
-                    exoPlayer.prepare()
-                    if (resumePos > 0) exoPlayer.seekTo(resumePos)
-                    exoPlayer.playWhenReady = true
-                    exoPlayer.play()
-                    return
-                }
-
-                if (isAudioError && audioFallbackAttempted) {
-                    val resumePos = exoPlayer.currentPosition
-                    val newParams = currentParams.buildUpon()
-                        .setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_AUDIO, true)
-                        .build()
-                    exoPlayer.trackSelectionParameters = newParams
-                    playbackErrorMsg = null
-                    exoPlayer.prepare()
-                    if (resumePos > 0) exoPlayer.seekTo(resumePos)
-                    exoPlayer.playWhenReady = true
-                    exoPlayer.play()
-                    return
-                }
-
-                if (isVideoError) {
-                    val resumePos = exoPlayer.currentPosition
-                    val newParams = currentParams.buildUpon()
-                        .clearOverridesOfType(androidx.media3.common.C.TRACK_TYPE_VIDEO)
-                        .build()
-                    exoPlayer.trackSelectionParameters = newParams
-                    playbackErrorMsg = null
-                    exoPlayer.prepare()
-                    if (resumePos > 0) exoPlayer.seekTo(resumePos)
-                    exoPlayer.playWhenReady = true
-                    exoPlayer.play()
-                    return
-                }
-
-                isBuffering = false
-                if (generalRetryCount < 1) {
-                    generalRetryCount++
-                    val resumePos = exoPlayer.currentPosition
-                    playbackErrorMsg = null
-                    exoPlayer.setMediaItem(buildMediaItemWithSubtitles(activeMediaItem.uriString, context))
-                    exoPlayer.prepare()
-                    if (resumePos > 0) {
-                        exoPlayer.seekTo(resumePos)
-                    }
-                    exoPlayer.playWhenReady = true
-                    exoPlayer.play()
-                    return
-                }
-
-                val cleanError = formatCleanPlaybackError(error)
-                playbackErrorMsg = "Playback Error\n\nUnable to load stream or broken link.\n\n$cleanError"
+                // Background ExoPlayer errors ignored under VLC single engine
+                playbackErrorMsg = null
             }
             override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
                 isShuffleEnabled = shuffleModeEnabled
@@ -1049,38 +1064,136 @@ fun PlayerScreen(
         onDispose { exoPlayer.removeListener(listener) }
     }
 
+    LaunchedEffect(tracksUpdateTrigger, activeMediaItem) {
+        val currentTracks = exoPlayer.currentTracks
+        if (currentTracks.groups.isNotEmpty()) {
+            try {
+                val json = if (prefs.perVideoSettingsJson.isBlank()) org.json.JSONObject() else org.json.JSONObject(prefs.perVideoSettingsJson)
+                if (json.has(activeMediaItem.uriString)) {
+                    val videoObj = json.getJSONObject(activeMediaItem.uriString)
+                    val savedAudioG = videoObj.optInt("audioGroupIndex", -1)
+                    val savedAudioT = videoObj.optInt("audioTrackIndex", -1)
+                    val savedSubG = videoObj.optInt("subGroupIndex", -1)
+                    val savedSubT = videoObj.optInt("subTrackIndex", -1)
+                    val savedSubDis = videoObj.optBoolean("subDisabled", false)
+
+                    var builder = exoPlayer.trackSelectionParameters.buildUpon()
+                    if (savedSubDis) {
+                        builder = builder.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                    } else if (savedSubG in 0 until currentTracks.groups.size && savedSubT >= 0) {
+                        val group = currentTracks.groups[savedSubG]
+                        if (group.type == C.TRACK_TYPE_TEXT && savedSubT < group.length) {
+                            builder = builder.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                                .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, savedSubT))
+                        }
+                    }
+
+                    if (savedAudioG in 0 until currentTracks.groups.size && savedAudioT >= 0) {
+                        val group = currentTracks.groups[savedAudioG]
+                        if (group.type == C.TRACK_TYPE_AUDIO && savedAudioT < group.length) {
+                            builder = builder.setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)
+                                .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, savedAudioT))
+                        }
+                    }
+                    exoPlayer.trackSelectionParameters = builder.build()
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
     // Auto-unblock buffering stall watchdog
-    LaunchedEffect(isBuffering) {
+    LaunchedEffect(isBuffering, activeEngine) {
         if (isBuffering) {
             delay(3500)
-            if (exoPlayer.playbackState == Player.STATE_BUFFERING) {
-                val pos = exoPlayer.currentPosition
-                try {
-                    exoPlayer.prepare()
-                    if (pos > 0) {
-                        exoPlayer.seekTo(pos)
+            if (isBuffering) {
+                if (activeEngine == "VLC") {
+                    val pos = vlcPlayer.currentPositionMs
+                    if (pos > 0) vlcPlayer.seekTo(pos)
+                    vlcPlayer.play()
+                } else if (exoPlayer.playbackState == Player.STATE_BUFFERING) {
+                    val pos = exoPlayer.currentPosition
+                    try {
+                        exoPlayer.prepare()
+                        if (pos > 0) {
+                            exoPlayer.seekTo(pos)
+                        }
+                        exoPlayer.playWhenReady = true
+                        exoPlayer.play()
+                    } catch (e: Exception) {
+                        e.printStackTrace()
                     }
-                    exoPlayer.playWhenReady = true
-                    exoPlayer.play()
-                } catch (e: Exception) {
-                    e.printStackTrace()
                 }
             }
         }
     }
 
     // Playback loop tracking position
-    LaunchedEffect(isPlaying, abRepeatEnabled, pointA, pointB) {
-        while (isPlaying) {
-            val pos = exoPlayer.currentPosition
-            currentPosition = pos
+    LaunchedEffect(activeEngine, abRepeatEnabled, pointA, pointB) {
+        while (true) {
+            if (!isScrubbing) {
+                if (activeEngine == "VLC") {
+                    val pos = vlcPlayer.currentPositionMs
+                    if (pos >= 0) currentPosition = pos
+                    val dur = vlcPlayer.durationMs
+                    if (dur > 0) duration = dur
+                } else {
+                    val pos = exoPlayer.currentPosition
+                    currentPosition = pos
+                    val dur = exoPlayer.duration.coerceAtLeast(0L)
+                    if (dur > 0) duration = dur
+                }
+            }
+            val currentPos = if (activeEngine == "VLC") vlcPlayer.currentPositionMs else exoPlayer.currentPosition
             if (abRepeatEnabled && pointA != null && pointB != null) {
-                if (pos >= pointB!!) {
-                    exoPlayer.seekTo(pointA!!)
+                if (currentPos >= pointB!!) {
+                    if (activeEngine == "VLC") vlcPlayer.seekTo(pointA!!) else exoPlayer.seekTo(pointA!!)
                     currentPosition = pointA!!
                 }
             }
-            delay(150)
+            delay(if (isPlaying) 150L else 400L)
+        }
+    }
+
+    // Sync aspect ratio / resize mode with VLC engine
+    LaunchedEffect(resizeMode, activeEngine) {
+        if (activeEngine == "VLC") {
+            val aspectStr = when (resizeMode) {
+                AspectRatioFrameLayout.RESIZE_MODE_FIT -> null
+                AspectRatioFrameLayout.RESIZE_MODE_FILL -> "16:9"
+                AspectRatioFrameLayout.RESIZE_MODE_ZOOM -> "21:9"
+                AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH -> "16:9"
+                AspectRatioFrameLayout.RESIZE_MODE_FIXED_HEIGHT -> "4:3"
+                else -> null
+            }
+            vlcPlayer.setAspectRatio(aspectStr)
+        }
+    }
+
+    // Sync playback speed with VLC engine
+    LaunchedEffect(exoPlayer.playbackParameters.speed, activeEngine) {
+        if (activeEngine == "VLC") {
+            vlcPlayer.setSpeed(exoPlayer.playbackParameters.speed)
+        }
+    }
+
+    // Sync volume with VLC engine
+    LaunchedEffect(exoPlayer.volume, activeEngine) {
+        if (activeEngine == "VLC") {
+            vlcPlayer.setVolume((exoPlayer.volume * 100).toInt())
+        }
+    }
+
+    // Sync subtitle preferences with VLC engine
+    LaunchedEffect(prefs.subtitleSize, prefs.subtitleTextColor, prefs.subtitleBackground, prefs.subtitleEncoding, activeEngine) {
+        if (activeEngine == "VLC") {
+            vlcPlayer.updateSubtitleOptions(
+                subtitleSizeSp = prefs.subtitleSize,
+                subtitleTextColorHex = prefs.subtitleTextColor,
+                subtitleBgColorHex = prefs.subtitleBackground,
+                subtitleEncoding = prefs.subtitleEncoding
+            )
         }
     }
 
@@ -1104,6 +1217,28 @@ fun PlayerScreen(
         }
     }
 
+    val safeOnBack = {
+        try {
+            if (activeEngine == "VLC") {
+                vlcPlayer.pause()
+            }
+            exoPlayer.pause()
+        } catch (e: Exception) {}
+        isPlaying = false
+        onBack()
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            try {
+                if (activeEngine == "VLC") {
+                    vlcPlayer.pause()
+                }
+                exoPlayer.pause()
+            } catch (e: Exception) {}
+        }
+    }
+
     BackHandler {
         when {
             showFileBrowserForSubtitle -> showFileBrowserForSubtitle = false
@@ -1111,7 +1246,7 @@ fun PlayerScreen(
             showAdvancedControlsSheet -> showAdvancedControlsSheet = false
             showSleepTimerSheet -> showSleepTimerSheet = false
             showEqualizerSheet -> showEqualizerSheet = false
-            else -> onBack()
+            else -> safeOnBack()
         }
     }
 
@@ -1123,7 +1258,7 @@ fun PlayerScreen(
                     activeMediaItem = newMedia
                 },
                 onNavigateToSettings = {
-                    onBack()
+                    safeOnBack()
                 }
             )
 
@@ -1139,29 +1274,47 @@ fun PlayerScreen(
                         .offset { IntOffset(pipOffset.x.roundToInt(), pipOffset.y.roundToInt()) }
                         .width(280.dp)
                         .height(175.dp)
-                        .shadow(16.dp, RoundedCornerShape(18.dp)),
-                    shape = RoundedCornerShape(18.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color.Black),
-                    border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.8f))
+                        .shadow(20.dp, RoundedCornerShape(16.dp)),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color.Black)
                 ) {
                     Box(modifier = Modifier.fillMaxSize()) {
                         // Video / Surface View
                         if (activeMediaItem.isVideo && !playAsAudioOnly) {
-                            AndroidView(
-                                factory = { ctx ->
-                                    PlayerView(ctx).apply {
-                                        useController = false
-                                        keepScreenOn = true
-                                        player = exoPlayer
-                                        layoutParams = FrameLayout.LayoutParams(
-                                            ViewGroup.LayoutParams.MATCH_PARENT,
-                                            ViewGroup.LayoutParams.MATCH_PARENT
-                                        )
-                                    }
-                                },
-                                update = { view -> view.resizeMode = resizeMode },
-                                modifier = Modifier.fillMaxSize()
-                            )
+                            if (activeEngine == "VLC") {
+                                com.example.ui.components.VlcPlayerView(
+                                    vlcPlayer = vlcPlayer,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            } else {
+                                AndroidView(
+                                    factory = { ctx ->
+                                        PlayerView(ctx).apply {
+                                            useController = false
+                                            keepScreenOn = true
+                                            setShutterBackgroundColor(android.graphics.Color.TRANSPARENT)
+                                            setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
+                                            player = exoPlayer
+                                            layoutParams = FrameLayout.LayoutParams(
+                                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                                ViewGroup.LayoutParams.MATCH_PARENT
+                                            )
+                                        }
+                                    },
+                                    update = { view ->
+                                        view.onResume()
+                                        if (view.player != exoPlayer) {
+                                            view.player = exoPlayer
+                                        }
+                                        view.resizeMode = resizeMode
+                                        applySubtitleStyleToPlayerView(view, prefs)
+                                    },
+                                    onRelease = { view ->
+                                        // Retain player binding to prevent blank frame on transient recomposition
+                                    },
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
                         } else {
                             Box(
                                 modifier = Modifier
@@ -1178,18 +1331,19 @@ fun PlayerScreen(
                             }
                         }
 
-                        // Overlay with Controls & Drag Header Bar
-                        Column(
+                        // Overlay with Header & Clean Control Bar
+                        Box(
                             modifier = Modifier
                                 .fillMaxSize()
-                                .background(Color.Black.copy(alpha = 0.40f))
+                                .background(Color.Black.copy(alpha = 0.35f))
                         ) {
                             // Top Drag Bar & Title & Window Buttons
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .background(Color.Black.copy(alpha = 0.70f))
-                                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                                    .align(Alignment.TopCenter)
+                                    .background(Color.Black.copy(alpha = 0.50f))
+                                    .padding(horizontal = 8.dp, vertical = 6.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 // Draggable Handle & Title Area
@@ -1210,7 +1364,7 @@ fun PlayerScreen(
                                     Icon(
                                         imageVector = Icons.Default.DragHandle,
                                         contentDescription = "Drag Pop-Up Window",
-                                        tint = Color.White.copy(alpha = 0.8f),
+                                        tint = Color.White.copy(alpha = 0.85f),
                                         modifier = Modifier.size(18.dp)
                                     )
                                     Spacer(modifier = Modifier.width(6.dp))
@@ -1243,7 +1397,11 @@ fun PlayerScreen(
                                 IconButton(
                                     onClick = {
                                         isPipActive = false
-                                        exoPlayer.pause()
+                                        try {
+                                            if (activeEngine == "VLC") vlcPlayer.pause()
+                                            exoPlayer.pause()
+                                        } catch (e: Exception) {}
+                                        isPlaying = false
                                     },
                                     modifier = Modifier.size(28.dp)
                                 ) {
@@ -1256,99 +1414,100 @@ fun PlayerScreen(
                                 }
                             }
 
-                            // Center Player Control Bar (Rewind -10s, Play/Pause, Stop, Forward +10s)
+                            // Center Clean Controls: Backward -10s, Toggle Play/Pause, Forward +10s
                             Box(
                                 modifier = Modifier
-                                    .fillMaxSize()
-                                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                                    .align(Alignment.Center)
+                                    .padding(horizontal = 8.dp),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Row(
-                                    horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
+                                    horizontalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterHorizontally),
                                     verticalAlignment = Alignment.CenterVertically,
                                     modifier = Modifier
-                                        .background(Color.Black.copy(alpha = 0.70f), CircleShape)
-                                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                                        .background(Color.Black.copy(alpha = 0.65f), CircleShape)
+                                        .padding(horizontal = 14.dp, vertical = 6.dp)
                                 ) {
-                                    // Rewind 10s
+                                    // Backward 10s
                                     IconButton(
                                         onClick = {
-                                            val target = (exoPlayer.currentPosition - 10000).coerceAtLeast(0)
-                                            exoPlayer.seekTo(target)
+                                            val target = (currentPosition - 10000L).coerceAtLeast(0L)
+                                            if (activeEngine == "VLC") vlcPlayer.seekTo(target) else exoPlayer.seekTo(target)
+                                            currentPosition = target
                                         },
                                         modifier = Modifier.size(32.dp)
                                     ) {
                                         Icon(
-                                            imageVector = Icons.Default.FastRewind,
-                                            contentDescription = "Rewind 10s",
+                                            imageVector = Icons.Default.Replay10,
+                                            contentDescription = "Backward 10s",
                                             tint = Color.White,
-                                            modifier = Modifier.size(20.dp)
-                                        )
-                                    }
-
-                                    // Play / Pause
-                                    IconButton(
-                                        onClick = {
-                                            if (exoPlayer.isPlaying) {
-                                                exoPlayer.pause()
-                                                isPlaying = false
-                                            } else {
-                                                if (exoPlayer.playbackState == Player.STATE_ENDED) {
-                                                    exoPlayer.seekTo(0)
-                                                }
-                                                exoPlayer.play()
-                                                isPlaying = true
-                                            }
-                                        },
-                                        modifier = Modifier
-                                            .size(38.dp)
-                                            .background(MaterialTheme.colorScheme.primary, CircleShape)
-                                    ) {
-                                        Icon(
-                                            imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                                            contentDescription = "Play / Pause",
-                                            tint = MaterialTheme.colorScheme.onPrimary,
                                             modifier = Modifier.size(22.dp)
                                         )
                                     }
 
-                                    // Stop
+                                    // Toggle Play / Pause Button
                                     IconButton(
                                         onClick = {
-                                            exoPlayer.pause()
-                                            exoPlayer.seekTo(0)
-                                            isPlaying = false
+                                            if (activeEngine == "VLC") {
+                                                if (vlcPlayer.isPlaying) {
+                                                    vlcPlayer.pause()
+                                                    isPlaying = false
+                                                } else {
+                                                    vlcPlayer.play()
+                                                    isPlaying = true
+                                                }
+                                            } else {
+                                                if (exoPlayer.isPlaying) {
+                                                    exoPlayer.pause()
+                                                    isPlaying = false
+                                                } else {
+                                                    exoPlayer.play()
+                                                    isPlaying = true
+                                                }
+                                            }
                                         },
                                         modifier = Modifier
-                                            .size(32.dp)
-                                            .background(Color.Red.copy(alpha = 0.85f), CircleShape)
+                                            .size(40.dp)
+                                            .background(MaterialTheme.colorScheme.primary, CircleShape)
                                     ) {
                                         Icon(
-                                            imageVector = Icons.Default.Stop,
-                                            contentDescription = "Stop Playback",
-                                            tint = Color.White,
-                                            modifier = Modifier.size(18.dp)
+                                            imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                            contentDescription = if (isPlaying) "Pause" else "Play",
+                                            tint = MaterialTheme.colorScheme.onPrimary,
+                                            modifier = Modifier.size(24.dp)
                                         )
                                     }
 
                                     // Forward 10s
                                     IconButton(
                                         onClick = {
-                                            val duration = if (exoPlayer.duration > 0) exoPlayer.duration else Long.MAX_VALUE
-                                            val target = (exoPlayer.currentPosition + 10000).coerceAtMost(duration)
-                                            exoPlayer.seekTo(target)
+                                            val maxDur = if (duration > 0) duration else Long.MAX_VALUE
+                                            val target = (currentPosition + 10000L).coerceAtMost(maxDur)
+                                            if (activeEngine == "VLC") vlcPlayer.seekTo(target) else exoPlayer.seekTo(target)
+                                            currentPosition = target
                                         },
                                         modifier = Modifier.size(32.dp)
                                     ) {
                                         Icon(
-                                            imageVector = Icons.Default.FastForward,
+                                            imageVector = Icons.Default.Forward10,
                                             contentDescription = "Forward 10s",
                                             tint = Color.White,
-                                            modifier = Modifier.size(20.dp)
+                                            modifier = Modifier.size(22.dp)
                                         )
                                     }
                                 }
                             }
+
+                            // Thin Progress Indicator along the bottom edge
+                            LinearProgressIndicator(
+                                progress = { if (duration > 0) (currentPosition.toFloat() / duration.toFloat()).coerceIn(0f, 1f) else 0f },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(3.dp)
+                                    .align(Alignment.BottomCenter),
+                                color = MaterialTheme.colorScheme.primary,
+                                trackColor = Color.White.copy(alpha = 0.2f)
+                            )
                         }
                     }
                 }
@@ -1366,12 +1525,16 @@ fun PlayerScreen(
             currentEqualizerPreset = currentEqualizerPreset,
             showSwitchToVideoBtn = activeMediaItem.isVideo && playAsAudioOnly,
             onSwitchToVideo = { playAsAudioOnly = false },
-            onBack = onBack,
+            onBack = safeOnBack,
             onTogglePlay = {
-                if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
+                if (activeEngine == "VLC") {
+                    if (vlcPlayer.isPlaying) vlcPlayer.pause() else vlcPlayer.play()
+                } else {
+                    if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
+                }
             },
             onSeek = { pos ->
-                exoPlayer.seekTo(pos)
+                if (activeEngine == "VLC") vlcPlayer.seekTo(pos) else exoPlayer.seekTo(pos)
                 currentPosition = pos
             },
             onPrev = { isAutoTransitioning = true; viewModel.playPrevious() },
@@ -1467,7 +1630,7 @@ fun PlayerScreen(
                                                         gestureSessionType = if (firstDown.position.x < width / 2) "brightness" else "volume"
                                                     } else {
                                                         gestureSessionType = "seek"
-                                                        initialGesturePosition = exoPlayer.currentPosition
+                                                        initialGesturePosition = if (activeEngine == "VLC") vlcPlayer.currentPositionMs else exoPlayer.currentPosition
                                                     }
                                                 }
                                             }
@@ -1522,7 +1685,7 @@ fun PlayerScreen(
                                                         val seekRangeMs = if (duration > 0L) (duration / 5).coerceAtLeast(60000L) else 120000L
                                                         val seekDelta = (totalDragX / width * seekRangeMs).toLong()
                                                         val targetSeek = (initialGesturePosition + seekDelta).coerceIn(0L, duration)
-                                                        exoPlayer.seekTo(targetSeek)
+                                                        if (activeEngine == "VLC") vlcPlayer.seekTo(targetSeek) else exoPlayer.seekTo(targetSeek)
                                                         currentPosition = targetSeek
                                                         gestureFeedbackValue = formatPlayerDuration(targetSeek)
                                                     }
@@ -1556,22 +1719,24 @@ fun PlayerScreen(
                                     if (offset.x > width * 0.30f && offset.x < width * 0.70f) {
                                         centerDoubleTapOffset = offset
                                         centerRippleTrigger++
-                                        if (exoPlayer.isPlaying) {
-                                            exoPlayer.pause()
+                                        if (activeEngine == "VLC") {
+                                            if (vlcPlayer.isPlaying) vlcPlayer.pause() else vlcPlayer.play()
                                         } else {
-                                            exoPlayer.play()
+                                            if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
                                         }
                                     } else if (offset.x <= width * 0.30f) {
-                                        val targetSeek = (exoPlayer.currentPosition - seekAmountMs).coerceAtLeast(0L)
-                                        exoPlayer.seekTo(targetSeek)
+                                        val curPos = if (activeEngine == "VLC") vlcPlayer.currentPositionMs else exoPlayer.currentPosition
+                                        val targetSeek = (curPos - seekAmountMs).coerceAtLeast(0L)
+                                        if (activeEngine == "VLC") vlcPlayer.seekTo(targetSeek) else exoPlayer.seekTo(targetSeek)
                                         currentPosition = targetSeek
                                         gestureFeedbackType = "seek_back"
                                         gestureFeedbackValue = "-${prefs.doubleTapSeekSeconds}s"
                                         leftDoubleTapOffset = offset
                                         leftRippleTrigger++
                                     } else {
-                                        val targetSeek = (exoPlayer.currentPosition + seekAmountMs).coerceAtMost(duration)
-                                        exoPlayer.seekTo(targetSeek)
+                                        val curPos = if (activeEngine == "VLC") vlcPlayer.currentPositionMs else exoPlayer.currentPosition
+                                        val targetSeek = (curPos + seekAmountMs).coerceAtMost(duration)
+                                        if (activeEngine == "VLC") vlcPlayer.seekTo(targetSeek) else exoPlayer.seekTo(targetSeek)
                                         currentPosition = targetSeek
                                         gestureFeedbackType = "seek_forward"
                                         gestureFeedbackValue = "+${prefs.doubleTapSeekSeconds}s"
@@ -1598,224 +1763,131 @@ fun PlayerScreen(
                     }
             ) {
                 if (activeMediaItem.isVideo && !playAsAudioOnly) {
-                    AndroidView(
-                        factory = { ctx ->
-                            PlayerView(ctx).apply {
-                                useController = false
-                                keepScreenOn = true
-                                player = exoPlayer
-                                layoutParams = FrameLayout.LayoutParams(
-                                    ViewGroup.LayoutParams.MATCH_PARENT,
-                                    ViewGroup.LayoutParams.MATCH_PARENT
-                                )
-                            }
-                        },
-                        update = { view -> 
-                            view.resizeMode = resizeMode
-                            try {
-                                val textColorInt = try {
-                                    val baseColor = android.graphics.Color.parseColor(prefs.subtitleTextColor)
-                                    val alpha = (prefs.subtitleOpacity * 255).toInt().coerceIn(0, 255)
-                                    (baseColor and 0x00FFFFFF) or (alpha shl 24)
-                                } catch (e: Exception) {
-                                    android.graphics.Color.WHITE
+                    if (activeEngine == "VLC") {
+                        VlcPlayerView(
+                            vlcPlayer = vlcPlayer,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    } else {
+                        AndroidView(
+                            factory = { ctx ->
+                                PlayerView(ctx).apply {
+                                    useController = false
+                                    keepScreenOn = true
+                                    setShutterBackgroundColor(android.graphics.Color.TRANSPARENT)
+                                    setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
+                                    player = exoPlayer
+                                    layoutParams = FrameLayout.LayoutParams(
+                                        ViewGroup.LayoutParams.MATCH_PARENT,
+                                        ViewGroup.LayoutParams.MATCH_PARENT
+                                    )
                                 }
-                                val bgColorInt = try { android.graphics.Color.parseColor(prefs.subtitleBackground) } catch (e: Exception) { android.graphics.Color.TRANSPARENT }
-                                
-                                val fontTypeface = when (prefs.subtitleFontStyle) {
-                                    "Bold" -> android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
-                                    "Italic" -> android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.ITALIC)
-                                    else -> android.graphics.Typeface.DEFAULT
+                            },
+                            update = { view -> 
+                                view.onResume()
+                                if (view.player != exoPlayer) {
+                                    view.player = exoPlayer
                                 }
-                                
-                                val edgeType = if (prefs.subtitleOutlineColor != "#00000000" && prefs.subtitleOutlineColor.isNotEmpty()) {
-                                    androidx.media3.ui.CaptionStyleCompat.EDGE_TYPE_OUTLINE
-                                } else if (prefs.subtitleShadowColor != "#00000000" && prefs.subtitleShadowColor.isNotEmpty()) {
-                                    androidx.media3.ui.CaptionStyleCompat.EDGE_TYPE_DROP_SHADOW
-                                } else {
-                                    androidx.media3.ui.CaptionStyleCompat.EDGE_TYPE_NONE
-                                }
-
-                                val edgeColorInt = try {
-                                    if (prefs.subtitleOutlineColor != "#00000000" && prefs.subtitleOutlineColor.isNotEmpty()) {
-                                        val baseEdgeColor = android.graphics.Color.parseColor(prefs.subtitleOutlineColor)
-                                        val edgeAlpha = (prefs.subtitleOutlineOpacity * 255).toInt().coerceIn(0, 255)
-                                        (baseEdgeColor and 0x00FFFFFF) or (edgeAlpha shl 24)
-                                    } else if (prefs.subtitleShadowColor != "#00000000" && prefs.subtitleShadowColor.isNotEmpty()) {
-                                        val baseEdgeColor = android.graphics.Color.parseColor(prefs.subtitleShadowColor)
-                                        val edgeAlpha = (prefs.subtitleShadowOpacity * 255).toInt().coerceIn(0, 255)
-                                        (baseEdgeColor and 0x00FFFFFF) or (edgeAlpha shl 24)
-                                    } else {
-                                        android.graphics.Color.BLACK
-                                    }
-                                } catch (e: Exception) {
-                                    android.graphics.Color.BLACK
-                                }
-
-                                val captionStyle = androidx.media3.ui.CaptionStyleCompat(
-                                    textColorInt,
-                                    bgColorInt,
-                                    android.graphics.Color.TRANSPARENT,
-                                    edgeType,
-                                    edgeColorInt,
-                                    fontTypeface
-                                )
-                                view.subtitleView?.let { subView ->
-                                    subView.setViewType(androidx.media3.ui.SubtitleView.VIEW_TYPE_CANVAS)
-                                    subView.setApplyEmbeddedStyles(false)
-                                    subView.setApplyEmbeddedFontSizes(false)
-                                    subView.setStyle(captionStyle)
-                                    subView.setFixedTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, prefs.subtitleSize)
-                                    subView.setBottomPaddingFraction(0.08f)
-                                }
-                            } catch (e: Exception) {
-                                e.printStackTrace()
-                            }
-                        },
-                        modifier = Modifier.fillMaxSize()
-                    )
+                                view.resizeMode = resizeMode
+                                applySubtitleStyleToPlayerView(view, prefs)
+                            },
+                            onRelease = { view ->
+                                // Retain player binding to prevent blank frame on transient recomposition
+                            },
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
                 } else {
-                    // Audio Vinyl Layout (Nordic styled)
                     AudioVinylPlayer(
                         item = activeMediaItem,
                         isPlaying = isPlaying
                     )
                 }
 
-                // Double Tap Ripple Animations (Unified Full-Screen Canvas with Native Curved Sector Clip)
+                // Double Tap Ripple Animations (Native Curved Sector Clip with Big Curve, No Circular Ripples)
                 val primaryColor = MaterialTheme.colorScheme.primary
                 androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
-                    // Left Ripple (Curved Arc Sector Clip)
+                    // Left Side (Backward 30% with Big Outward Curve)
                     val leftProgress = leftAnim.value
                     if (leftProgress > 0f && leftProgress < 1f) {
-                        val tapCenter = if (leftDoubleTapOffset != androidx.compose.ui.geometry.Offset.Zero) {
-                            leftDoubleTapOffset
-                        } else {
-                            androidx.compose.ui.geometry.Offset(size.width * 0.18f, size.height / 2f)
-                        }
                         val leftPath = androidx.compose.ui.graphics.Path().apply {
                             moveTo(0f, 0f)
-                            lineTo(size.width * 0.38f, 0f)
+                            lineTo(size.width * 0.30f, 0f)
                             quadraticTo(
-                                size.width * 0.46f, size.height * 0.5f,
-                                size.width * 0.38f, size.height
+                                size.width * 0.38f, size.height * 0.5f,
+                                size.width * 0.30f, size.height
                             )
                             lineTo(0f, size.height)
                             close()
                         }
-                        clipPath(leftPath) {
-                            drawPath(
-                                path = leftPath,
-                                color = Color.White.copy(alpha = (1f - leftProgress) * 0.16f)
-                            )
-                            val rippleRadius = size.width * 0.55f * leftProgress
-                            drawCircle(
-                                brush = androidx.compose.ui.graphics.Brush.radialGradient(
-                                    colors = listOf(
-                                        Color.White.copy(alpha = (1f - leftProgress) * 0.38f),
-                                        primaryColor.copy(alpha = (1f - leftProgress) * 0.22f),
-                                        Color.Transparent
-                                    ),
-                                    center = tapCenter,
-                                    radius = rippleRadius.coerceAtLeast(1f)
+                        drawPath(
+                            path = leftPath,
+                            brush = androidx.compose.ui.graphics.Brush.horizontalGradient(
+                                colors = listOf(
+                                    Color.White.copy(alpha = (1f - leftProgress) * 0.28f),
+                                    primaryColor.copy(alpha = (1f - leftProgress) * 0.16f),
+                                    Color.Transparent
                                 ),
-                                center = tapCenter,
-                                radius = rippleRadius
+                                startX = 0f,
+                                endX = size.width * 0.38f
                             )
-                            val ringRadius = size.width * 0.42f * leftProgress
-                            drawCircle(
-                                color = Color.White.copy(alpha = (1f - leftProgress) * 0.45f),
-                                center = tapCenter,
-                                radius = ringRadius,
-                                style = androidx.compose.ui.graphics.drawscope.Stroke(width = 3.dp.toPx())
+                        )
+                        drawPath(
+                            path = leftPath,
+                            color = primaryColor.copy(alpha = (1f - leftProgress) * 0.40f),
+                            style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.5.dp.toPx())
+                        )
+                    }
+
+                    // Center Side (40% Center Flash)
+                    val centerProgress = centerAnim.value
+                    if (centerProgress > 0f && centerProgress < 1f) {
+                        val centerPath = androidx.compose.ui.graphics.Path().apply {
+                            addRoundRect(
+                                androidx.compose.ui.geometry.RoundRect(
+                                    left = size.width * 0.30f,
+                                    top = size.height * 0.10f,
+                                    right = size.width * 0.70f,
+                                    bottom = size.height * 0.90f,
+                                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(24.dp.toPx())
+                                )
                             )
                         }
                         drawPath(
-                            path = leftPath,
-                            color = primaryColor.copy(alpha = (1f - leftProgress) * 0.35f),
-                            style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.dp.toPx())
+                            path = centerPath,
+                            color = Color.White.copy(alpha = (1f - centerProgress) * 0.12f)
                         )
                     }
 
-                    // Center Ripple
-                    val centerProgress = centerAnim.value
-                    if (centerProgress > 0f && centerProgress < 1f) {
-                        val tapCenter = if (centerDoubleTapOffset != androidx.compose.ui.geometry.Offset.Zero) {
-                            centerDoubleTapOffset
-                        } else {
-                            androidx.compose.ui.geometry.Offset(size.width / 2f, size.height / 2f)
-                        }
-                        val rippleRadius = size.height * 0.45f * centerProgress
-                        drawCircle(
-                            brush = androidx.compose.ui.graphics.Brush.radialGradient(
-                                colors = listOf(
-                                    Color.White.copy(alpha = (1f - centerProgress) * 0.4f),
-                                    primaryColor.copy(alpha = (1f - centerProgress) * 0.22f),
-                                    Color.Transparent
-                                ),
-                                center = tapCenter,
-                                radius = rippleRadius.coerceAtLeast(1f)
-                            ),
-                            center = tapCenter,
-                            radius = rippleRadius
-                        )
-                        drawCircle(
-                            color = Color.White.copy(alpha = (1f - centerProgress) * 0.5f),
-                            center = tapCenter,
-                            radius = rippleRadius,
-                            style = androidx.compose.ui.graphics.drawscope.Stroke(width = 3.dp.toPx())
-                        )
-                    }
-
-                    // Right Ripple (Curved Arc Sector Clip)
+                    // Right Side (Forward 30% with Big Inward Curve)
                     val rightProgress = rightAnim.value
                     if (rightProgress > 0f && rightProgress < 1f) {
-                        val tapCenter = if (rightDoubleTapOffset != androidx.compose.ui.geometry.Offset.Zero) {
-                            rightDoubleTapOffset
-                        } else {
-                            androidx.compose.ui.geometry.Offset(size.width * 0.82f, size.height / 2f)
-                        }
                         val rightPath = androidx.compose.ui.graphics.Path().apply {
                             moveTo(size.width, 0f)
-                            lineTo(size.width * 0.62f, 0f)
+                            lineTo(size.width * 0.70f, 0f)
                             quadraticTo(
-                                size.width * 0.54f, size.height * 0.5f,
-                                size.width * 0.62f, size.height
+                                size.width * 0.62f, size.height * 0.5f,
+                                size.width * 0.70f, size.height
                             )
                             lineTo(size.width, size.height)
                             close()
                         }
-                        clipPath(rightPath) {
-                            drawPath(
-                                path = rightPath,
-                                color = Color.White.copy(alpha = (1f - rightProgress) * 0.16f)
-                            )
-                            val rippleRadius = size.width * 0.55f * rightProgress
-                            drawCircle(
-                                brush = androidx.compose.ui.graphics.Brush.radialGradient(
-                                    colors = listOf(
-                                        Color.White.copy(alpha = (1f - rightProgress) * 0.38f),
-                                        primaryColor.copy(alpha = (1f - rightProgress) * 0.22f),
-                                        Color.Transparent
-                                    ),
-                                    center = tapCenter,
-                                    radius = rippleRadius.coerceAtLeast(1f)
-                                ),
-                                center = tapCenter,
-                                radius = rippleRadius
-                            )
-                            val ringRadius = size.width * 0.42f * rightProgress
-                            drawCircle(
-                                color = Color.White.copy(alpha = (1f - rightProgress) * 0.45f),
-                                center = tapCenter,
-                                radius = ringRadius,
-                                style = androidx.compose.ui.graphics.drawscope.Stroke(width = 3.dp.toPx())
-                            )
-                        }
                         drawPath(
                             path = rightPath,
-                            color = primaryColor.copy(alpha = (1f - rightProgress) * 0.35f),
-                            style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.dp.toPx())
+                            brush = androidx.compose.ui.graphics.Brush.horizontalGradient(
+                                colors = listOf(
+                                    Color.Transparent,
+                                    primaryColor.copy(alpha = (1f - rightProgress) * 0.16f),
+                                    Color.White.copy(alpha = (1f - rightProgress) * 0.28f)
+                                ),
+                                startX = size.width * 0.62f,
+                                endX = size.width
+                            )
+                        )
+                        drawPath(
+                            path = rightPath,
+                            color = primaryColor.copy(alpha = (1f - rightProgress) * 0.40f),
+                            style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.5.dp.toPx())
                         )
                     }
                 }
@@ -2141,26 +2213,118 @@ fun PlayerScreen(
                             Icon(Icons.Default.Error, contentDescription = null, tint = MaterialTheme.colorScheme.onErrorContainer, modifier = Modifier.size(44.dp))
                             Text("Playback Error", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onErrorContainer, fontSize = 18.sp)
                             Text(errorMsg, color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.8f), fontSize = 13.sp, textAlign = TextAlign.Center)
-                            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                                OutlinedButton(onClick = onBack, colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.onErrorContainer)) {
-                                    Text("Go Back")
-                                }
+                            Column(
+                                verticalArrangement = Arrangement.spacedBy(10.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
                                 Button(
                                     onClick = {
                                         playbackErrorMsg = null
                                         generalRetryCount = 0
                                         audioFallbackAttempted = false
-                                        val resumePos = exoPlayer.currentPosition
-                                        exoPlayer.setMediaItem(buildMediaItemWithSubtitles(activeMediaItem.uriString, context))
-                                        exoPlayer.prepare()
-                                        if (resumePos > 0) {
-                                            exoPlayer.seekTo(resumePos)
+                                        val pos = exoPlayer.currentPosition
+                                        try {
+                                            exoPlayer.stop()
+                                            exoPlayer.clearMediaItems()
+                                        } catch (e: Exception) {}
+                                        activeEngine = "VLC"
+                                        val resolvedUri = com.example.util.ContentResolverUtils.resolvePlayableUri(
+                                            context,
+                                            activeMediaItem.uriString,
+                                            activeMediaItem.path
+                                        )
+                                        vlcPlayer.playMediaUri(resolvedUri)
+                                        if (pos > 0) {
+                                            vlcPlayer.seekTo(pos)
                                         }
-                                        exoPlayer.play()
                                     },
-                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.onErrorContainer, contentColor = MaterialTheme.colorScheme.errorContainer)
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = MaterialTheme.colorScheme.primary,
+                                        contentColor = MaterialTheme.colorScheme.onPrimary
+                                    ),
+                                    modifier = Modifier.fillMaxWidth()
                                 ) {
-                                    Text("Retry")
+                                    Icon(Icons.Default.Bolt, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Play Direct in VLC Engine (vlcjni)", fontWeight = FontWeight.Bold)
+                                }
+
+                                Button(
+                                    onClick = {
+                                        com.example.util.ContentResolverUtils.openInExternalPlayer(
+                                            context,
+                                            activeMediaItem.uriString,
+                                            activeMediaItem.path
+                                        )
+                                    },
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = MaterialTheme.colorScheme.onErrorContainer,
+                                        contentColor = MaterialTheme.colorScheme.errorContainer
+                                    ),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Open in External Player (VLC / MPV)", fontWeight = FontWeight.Bold)
+                                }
+
+                                if (errorMsg.contains("ContentCompAlgo", ignoreCase = true) ||
+                                    errorMsg.contains("sub", ignoreCase = true) ||
+                                    errorMsg.contains("malformed", ignoreCase = true)) {
+                                    OutlinedButton(
+                                        onClick = {
+                                            playbackErrorMsg = null
+                                            generalRetryCount = 0
+                                            audioFallbackAttempted = false
+                                            val resumePos = exoPlayer.currentPosition
+                                            val plainItem = androidx.media3.common.MediaItem.Builder()
+                                                .setUri(com.example.util.ContentResolverUtils.resolvePlayableUri(context, activeMediaItem.uriString, activeMediaItem.path))
+                                                .build()
+                                            exoPlayer.setMediaItem(plainItem)
+                                            exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters.buildUpon()
+                                                .setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_TEXT, true)
+                                                .build()
+                                            exoPlayer.prepare()
+                                            if (resumePos > 0) exoPlayer.seekTo(resumePos)
+                                            exoPlayer.playWhenReady = true
+                                            exoPlayer.play()
+                                        },
+                                        colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.onErrorContainer),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Text("Disable Subtitles & Retry")
+                                    }
+                                }
+
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    OutlinedButton(
+                                        onClick = safeOnBack,
+                                        colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.onErrorContainer),
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Text("Go Back")
+                                    }
+                                    Button(
+                                        onClick = {
+                                            playbackErrorMsg = null
+                                            generalRetryCount = 0
+                                            audioFallbackAttempted = false
+                                            val resumePos = exoPlayer.currentPosition
+                                            exoPlayer.setMediaItem(buildMediaItemWithSubtitles(activeMediaItem.uriString, context, activeMediaItem.path))
+                                            exoPlayer.prepare()
+                                            if (resumePos > 0) {
+                                                exoPlayer.seekTo(resumePos)
+                                            }
+                                            exoPlayer.play()
+                                        },
+                                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.onErrorContainer, contentColor = MaterialTheme.colorScheme.errorContainer),
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Text("Retry")
+                                    }
                                 }
                             }
                         }
@@ -2330,7 +2494,7 @@ fun PlayerScreen(
                                     modifier = Modifier.weight(1f)
                                 ) {
                                     IconButton(
-                                        onClick = onBack,
+                                        onClick = safeOnBack,
                                         modifier = Modifier
                                             .background(MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f), CircleShape)
                                             .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f), CircleShape)
@@ -2361,7 +2525,7 @@ fun PlayerScreen(
                                     }
                                 }
 
-                                // Right Cluster: CC/Subtitles Toggle & Cast Controls
+                                // Right Cluster: Cast Controls & Subtitles
                                 Row(
                                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                                     verticalAlignment = Alignment.CenterVertically
@@ -2424,8 +2588,9 @@ fun PlayerScreen(
                                                     },
                                                     onDoubleTap = {
                                                         val seekAmountMs = (prefs.doubleTapSeekSeconds * 1000L)
-                                                        val targetSeek = (exoPlayer.currentPosition - seekAmountMs).coerceAtLeast(0L)
-                                                        exoPlayer.seekTo(targetSeek)
+                                                        val curPos = if (activeEngine == "VLC") vlcPlayer.currentPositionMs else exoPlayer.currentPosition
+                                                        val targetSeek = (curPos - seekAmountMs).coerceAtLeast(0L)
+                                                        if (activeEngine == "VLC") vlcPlayer.seekTo(targetSeek) else exoPlayer.seekTo(targetSeek)
                                                         currentPosition = targetSeek
                                                         gestureFeedbackType = "seek_back"
                                                         gestureFeedbackValue = "-${prefs.doubleTapSeekSeconds}s"
@@ -2451,23 +2616,23 @@ fun PlayerScreen(
                                     }
 
                                     // Play / Pause Button (Large Prominent White Icon)
-                                    IconButton(
+                                    AnimatedPlayPauseButton(
+                                        isPlaying = isPlaying,
                                         onClick = {
                                             hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
-                                            if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
+                                            if (activeEngine == "VLC") {
+                                                if (vlcPlayer.isPlaying) vlcPlayer.pause() else vlcPlayer.play()
+                                            } else {
+                                                if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
+                                            }
                                         },
                                         modifier = Modifier
                                             .size(if (isMini) 52.dp else 76.dp)
-                                            .background(Color.White.copy(alpha = 0.95f), CircleShape)
-                                            .border(1.dp, Color.White, CircleShape)
-                                    ) {
-                                        Icon(
-                                            imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                                            contentDescription = "Play/Pause",
-                                            tint = Color.Black,
-                                            modifier = Modifier.size(if (isMini) 28.dp else 42.dp)
-                                        )
-                                    }
+                                            .border(1.dp, Color.White, CircleShape),
+                                        iconSize = if (isMini) 28.dp else 42.dp,
+                                        containerColor = Color.White.copy(alpha = 0.95f),
+                                        contentColor = Color.Black
+                                    )
 
                                     // Skip Forward (Single Tap: Next Track, Double Tap: Seek Forward 10s with Ripple Animation)
                                     Box(
@@ -2483,8 +2648,9 @@ fun PlayerScreen(
                                                     },
                                                     onDoubleTap = {
                                                         val seekAmountMs = (prefs.doubleTapSeekSeconds * 1000L)
-                                                        val targetSeek = (exoPlayer.currentPosition + seekAmountMs).coerceAtMost(duration)
-                                                        exoPlayer.seekTo(targetSeek)
+                                                        val curPos = if (activeEngine == "VLC") vlcPlayer.currentPositionMs else exoPlayer.currentPosition
+                                                        val targetSeek = (curPos + seekAmountMs).coerceAtMost(duration)
+                                                        if (activeEngine == "VLC") vlcPlayer.seekTo(targetSeek) else exoPlayer.seekTo(targetSeek)
                                                         currentPosition = targetSeek
                                                         gestureFeedbackType = "seek_forward"
                                                         gestureFeedbackValue = "+${prefs.doubleTapSeekSeconds}s"
@@ -2519,75 +2685,110 @@ fun PlayerScreen(
                                     .navigationBarsPadding()
                                     .padding(horizontal = 24.dp, vertical = 8.dp)
                             ) {
-                                // YouTube style scrubbing floating preview card
+                                // YouTube style scrubbing floating preview card attached to drag thumb
                                 if (isScrubbing) {
-                                    Box(
+                                    BoxWithConstraints(
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .padding(bottom = 8.dp),
-                                        contentAlignment = Alignment.BottomCenter
+                                            .padding(bottom = 8.dp)
                                     ) {
-                                        Card(
-                                            colors = CardDefaults.cardColors(containerColor = Color.Black.copy(alpha = 0.95f)),
-                                            border = BorderStroke(1.2.dp, Color.Red.copy(alpha = 0.8f)),
-                                            shape = RoundedCornerShape(12.dp),
+                                        val totalWidth = maxWidth
+                                        val cardWidth = 160.dp
+                                        val fraction = if (duration > 0) (scrubPosition.toFloat() / duration.toFloat()).coerceIn(0f, 1f) else 0f
+                                        val thumbX = totalWidth * fraction
+                                        val targetOffset = thumbX - (cardWidth / 2)
+                                        val clampedOffset = targetOffset.coerceIn(0.dp, (totalWidth - cardWidth).coerceAtLeast(0.dp))
+                                        val arrowX = (thumbX - clampedOffset).coerceIn(16.dp, cardWidth - 16.dp)
+
+                                        Box(
                                             modifier = Modifier
-                                                .width(160.dp)
-                                                .height(95.dp)
+                                                .offset(x = clampedOffset)
+                                                .width(cardWidth)
                                         ) {
                                             Column(
-                                                modifier = Modifier.fillMaxSize(),
-                                                verticalArrangement = Arrangement.SpaceBetween,
                                                 horizontalAlignment = Alignment.CenterHorizontally
                                             ) {
-                                                Box(
+                                                Card(
+                                                    colors = CardDefaults.cardColors(containerColor = Color.Black.copy(alpha = 0.95f)),
+                                                    border = BorderStroke(1.5.dp, Color.Red.copy(alpha = 0.9f)),
+                                                    shape = RoundedCornerShape(12.dp),
+                                                    elevation = CardDefaults.cardElevation(8.dp),
                                                     modifier = Modifier
-                                                        .fillMaxWidth()
-                                                        .weight(1f)
-                                                        .background(Color.DarkGray.copy(alpha = 0.3f)),
-                                                    contentAlignment = Alignment.Center
+                                                        .width(cardWidth)
+                                                        .height(96.dp)
                                                 ) {
-                                                    if (scrubbingBitmap != null) {
-                                                        androidx.compose.foundation.Image(
-                                                            bitmap = scrubbingBitmap!!.asImageBitmap(),
-                                                            contentDescription = "Scrubbing frame preview",
-                                                            contentScale = androidx.compose.ui.layout.ContentScale.Crop,
-                                                            modifier = Modifier.fillMaxSize()
-                                                        )
-                                                    } else {
-                                                        Column(
-                                                            horizontalAlignment = Alignment.CenterHorizontally,
-                                                            verticalArrangement = Arrangement.Center
+                                                    Column(
+                                                        modifier = Modifier.fillMaxSize(),
+                                                        verticalArrangement = Arrangement.SpaceBetween,
+                                                        horizontalAlignment = Alignment.CenterHorizontally
+                                                    ) {
+                                                        Box(
+                                                            modifier = Modifier
+                                                                .fillMaxWidth()
+                                                                .weight(1f)
+                                                                .background(Color.DarkGray.copy(alpha = 0.4f)),
+                                                            contentAlignment = Alignment.Center
                                                         ) {
-                                                            Icon(
-                                                                imageVector = Icons.Default.PlayCircleOutline,
-                                                                contentDescription = null,
-                                                                tint = Color.Red,
-                                                                modifier = Modifier.size(24.dp)
-                                                            )
-                                                            Spacer(modifier = Modifier.height(2.dp))
+                                                            if (scrubbingBitmap != null) {
+                                                                androidx.compose.foundation.Image(
+                                                                    bitmap = scrubbingBitmap!!.asImageBitmap(),
+                                                                    contentDescription = "Scrubbing frame preview",
+                                                                    contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                                                                    modifier = Modifier.fillMaxSize()
+                                                                )
+                                                            } else {
+                                                                Column(
+                                                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                                                    verticalArrangement = Arrangement.Center
+                                                                ) {
+                                                                    Icon(
+                                                                        imageVector = Icons.Default.PlayCircleOutline,
+                                                                        contentDescription = null,
+                                                                        tint = Color.Red,
+                                                                        modifier = Modifier.size(24.dp)
+                                                                    )
+                                                                    Spacer(modifier = Modifier.height(2.dp))
+                                                                    Text(
+                                                                        text = "SCRUBBING",
+                                                                        color = Color.White.copy(alpha = 0.7f),
+                                                                        fontSize = 9.sp,
+                                                                        fontWeight = FontWeight.Bold
+                                                                    )
+                                                                }
+                                                            }
+                                                        }
+                                                        Box(
+                                                            modifier = Modifier
+                                                                .fillMaxWidth()
+                                                                .background(Color.Red)
+                                                                .padding(vertical = 3.dp),
+                                                            contentAlignment = Alignment.Center
+                                                        ) {
                                                             Text(
-                                                                text = "SCRUBBING",
-                                                                color = Color.White.copy(alpha = 0.7f),
-                                                                fontSize = 9.sp,
-                                                                fontWeight = FontWeight.Bold
+                                                                text = formatPlayerDuration(scrubPosition),
+                                                                color = Color.White,
+                                                                fontSize = 11.sp,
+                                                                fontWeight = FontWeight.ExtraBold
                                                             )
                                                         }
                                                     }
                                                 }
+                                                // Pointer indicator attached to drag thumb position
                                                 Box(
                                                     modifier = Modifier
                                                         .fillMaxWidth()
-                                                        .background(Color.Red)
-                                                        .padding(vertical = 4.dp),
-                                                    contentAlignment = Alignment.Center
+                                                        .height(6.dp)
                                                 ) {
-                                                    Text(
-                                                        text = formatPlayerDuration(scrubPosition),
-                                                        color = Color.White,
-                                                        fontSize = 11.sp,
-                                                        fontWeight = FontWeight.ExtraBold
-                                                    )
+                                                    androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
+                                                        val pointerPx = arrowX.toPx()
+                                                        val path = androidx.compose.ui.graphics.Path().apply {
+                                                            moveTo(pointerPx - 8f, 0f)
+                                                            lineTo(pointerPx + 8f, 0f)
+                                                            lineTo(pointerPx, 10f)
+                                                            close()
+                                                        }
+                                                        drawPath(path, color = androidx.compose.ui.graphics.Color.Red)
+                                                    }
                                                 }
                                             }
                                         }
@@ -2646,7 +2847,7 @@ fun PlayerScreen(
                                     onScrubPositionChange = { pos -> scrubPosition = pos },
                                     onScrubEnd = { pos ->
                                         isScrubbing = false
-                                        exoPlayer.seekTo(pos)
+                                        if (activeEngine == "VLC") vlcPlayer.seekTo(pos) else exoPlayer.seekTo(pos)
                                         currentPosition = pos
                                     },
                                     modifier = Modifier
@@ -3295,6 +3496,8 @@ fun PlayerScreen(
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f), thickness = 1.dp)
                 Spacer(modifier = Modifier.height(16.dp))
 
+
+
                 if (isAudio) {
                     // SECTION 1: PLAYBACK SPEED (TEMPO CONTROL COCKPIT)
                     Text(
@@ -3357,7 +3560,7 @@ fun PlayerScreen(
                             CustomSlider(
                                 value = localSpeed,
                                 onValueChange = { localSpeed = it },
-                                onValueChangeFinished = { exoPlayer.setPlaybackSpeed(localSpeed) },
+                                onValueChangeFinished = { exoPlayer.setPlaybackSpeed(localSpeed); vlcPlayer.setSpeed(localSpeed) },
                                 valueRange = 0.25f..4.00f
                             )
 
@@ -3383,7 +3586,7 @@ fun PlayerScreen(
                                             )
                                             .clickable {
                                                 hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
-                                                exoPlayer.setPlaybackSpeed(preset)
+                                                exoPlayer.setPlaybackSpeed(preset); vlcPlayer.setSpeed(preset)
                                             }
                                             .padding(vertical = 8.dp),
                                         contentAlignment = Alignment.Center
@@ -3484,13 +3687,10 @@ fun PlayerScreen(
 
                             Button(
                                 onClick = {
-                                    if (isPlaying) {
-                                        hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
-                                        showAdvancedControlsSheet = false
-                                        showEqualizerSheet = true
-                                    }
+                                    hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                                    showAdvancedControlsSheet = false
+                                    showEqualizerSheet = true
                                 },
-                                enabled = isPlaying,
                                 modifier = Modifier.fillMaxWidth(),
                                 shape = RoundedCornerShape(12.dp),
                                 colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
@@ -3683,7 +3883,7 @@ fun PlayerScreen(
                                             secs * 1000L
                                         }
                                         if (targetMs >= 0) {
-                                            exoPlayer.seekTo(targetMs.coerceIn(0L, duration))
+                                            if (activeEngine == "VLC") vlcPlayer.seekTo(targetMs.coerceIn(0L, duration)) else exoPlayer.seekTo(targetMs.coerceIn(0L, duration))
                                             currentPosition = targetMs.coerceIn(0L, duration)
                                             jumpInputText = ""
                                             showAdvancedControlsSheet = false
@@ -3713,7 +3913,7 @@ fun PlayerScreen(
                                             .clickable {
                                                 hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
                                                 val targetSeek = (exoPlayer.currentPosition + seconds * 1000L).coerceIn(0L, duration)
-                                                exoPlayer.seekTo(targetSeek)
+                                                if (activeEngine == "VLC") vlcPlayer.seekTo(targetSeek) else exoPlayer.seekTo(targetSeek)
                                                 currentPosition = targetSeek
                                                 android.widget.Toast.makeText(context, "Sought $label", android.widget.Toast.LENGTH_SHORT).show()
                                             }
@@ -4020,7 +4220,7 @@ fun PlayerScreen(
                         CustomSlider(
                             value = localSpeed,
                             onValueChange = { localSpeed = it },
-                            onValueChangeFinished = { exoPlayer.setPlaybackSpeed(localSpeed) },
+                            onValueChangeFinished = { exoPlayer.setPlaybackSpeed(localSpeed); vlcPlayer.setSpeed(localSpeed) },
                             valueRange = 0.25f..4.00f
                         )
 
@@ -4047,7 +4247,7 @@ fun PlayerScreen(
                                         )
                                         .clickable {
                                             hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
-                                            exoPlayer.setPlaybackSpeed(preset)
+                                            exoPlayer.setPlaybackSpeed(preset); vlcPlayer.setSpeed(preset)
                                         }
                                         .padding(vertical = 8.dp),
                                     contentAlignment = Alignment.Center
@@ -4148,13 +4348,10 @@ fun PlayerScreen(
 
                         Button(
                             onClick = {
-                                if (isPlaying) {
-                                    hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
-                                    showAdvancedControlsSheet = false
-                                    showEqualizerSheet = true
-                                }
+                                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                                showAdvancedControlsSheet = false
+                                showEqualizerSheet = true
                             },
-                            enabled = isPlaying,
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(12.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
@@ -4352,7 +4549,7 @@ fun PlayerScreen(
                                         secs * 1000L
                                     }
                                     if (targetMs >= 0) {
-                                        exoPlayer.seekTo(targetMs.coerceIn(0L, duration))
+                                        if (activeEngine == "VLC") vlcPlayer.seekTo(targetMs.coerceIn(0L, duration)) else exoPlayer.seekTo(targetMs.coerceIn(0L, duration))
                                         currentPosition = targetMs.coerceIn(0L, duration)
                                         jumpInputText = ""
                                         showAdvancedControlsSheet = false
@@ -4383,7 +4580,7 @@ fun PlayerScreen(
                                         .clickable {
                                             hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
                                             val targetSeek = (exoPlayer.currentPosition + seconds * 1000L).coerceIn(0L, duration)
-                                            exoPlayer.seekTo(targetSeek)
+                                            if (activeEngine == "VLC") vlcPlayer.seekTo(targetSeek) else exoPlayer.seekTo(targetSeek)
                                             currentPosition = targetSeek
                                             android.widget.Toast.makeText(context, "Sought $label", android.widget.Toast.LENGTH_SHORT).show()
                                         }
@@ -4705,7 +4902,7 @@ fun PlayerScreen(
                                                 .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
                                                 .clickable {
                                                     hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
-                                                    exoPlayer.seekTo(bmk)
+                                                    if (activeEngine == "VLC") vlcPlayer.seekTo(bmk) else exoPlayer.seekTo(bmk)
                                                     currentPosition = bmk
                                                 }
                                                 .padding(horizontal = 10.dp, vertical = 6.dp)
@@ -4817,6 +5014,7 @@ fun PlayerScreen(
                     ) {
                         Column(modifier = Modifier.padding(14.dp)) {
                             // Subtitle Size Slider
+                            var localSubSize by remember(prefs.subtitleSize) { mutableStateOf(prefs.subtitleSize) }
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -4829,7 +5027,7 @@ fun PlayerScreen(
                                     modifier = Modifier.size(16.dp)
                                 )
                                 Text(
-                                    text = "Font Size: ${prefs.subtitleSize.toInt()} sp",
+                                    text = "Font Size: ${localSubSize.toInt()} sp",
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 12.sp,
                                     color = MaterialTheme.colorScheme.onSurface
@@ -4837,22 +5035,47 @@ fun PlayerScreen(
                             }
                             Spacer(modifier = Modifier.height(6.dp))
                             CustomSlider(
-                                value = prefs.subtitleSize,
+                                value = localSubSize,
                                 onValueChange = { size ->
+                                    localSubSize = size
+                                },
+                                onValueChangeFinished = {
                                     viewModel.updateSubtitleCustomization(
                                         background = prefs.subtitleBackground,
                                         textColor = prefs.subtitleTextColor,
-                                        size = size,
+                                        size = localSubSize,
                                         fontStyle = prefs.subtitleFontStyle
                                     )
                                 },
-                                valueRange = 12f..32f,
+                                valueRange = 10f..48f,
                                 modifier = Modifier.fillMaxWidth()
                             )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                listOf(14f, 18f, 24f, 32f, 40f).forEach { presetSize ->
+                                    FilterChip(
+                                        selected = (localSubSize.toInt() == presetSize.toInt()),
+                                        onClick = {
+                                            localSubSize = presetSize
+                                            viewModel.updateSubtitleCustomization(
+                                                background = prefs.subtitleBackground,
+                                                textColor = prefs.subtitleTextColor,
+                                                size = presetSize,
+                                                fontStyle = prefs.subtitleFontStyle
+                                            )
+                                        },
+                                        label = { Text("${presetSize.toInt()}sp", fontSize = 11.sp) }
+                                    )
+                                }
+                            }
 
                             Spacer(modifier = Modifier.height(12.dp))
 
                             // Subtitle Opacity Slider
+                            var localSubOpacity by remember(prefs.subtitleOpacity) { mutableStateOf(prefs.subtitleOpacity) }
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -4865,7 +5088,7 @@ fun PlayerScreen(
                                     modifier = Modifier.size(16.dp)
                                 )
                                 Text(
-                                    text = "Opacity: ${(prefs.subtitleOpacity * 100).toInt()}%",
+                                    text = "Opacity: ${(localSubOpacity * 100).toInt()}%",
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 12.sp,
                                     color = MaterialTheme.colorScheme.onSurface
@@ -4873,9 +5096,12 @@ fun PlayerScreen(
                             }
                             Spacer(modifier = Modifier.height(6.dp))
                             CustomSlider(
-                                value = prefs.subtitleOpacity,
+                                value = localSubOpacity,
                                 onValueChange = { opacity ->
-                                    viewModel.updateAdvancedSubtitleSettings(opacity = opacity, preset = "Custom")
+                                    localSubOpacity = opacity
+                                },
+                                onValueChangeFinished = {
+                                    viewModel.updateAdvancedSubtitleSettings(opacity = localSubOpacity, preset = "Custom")
                                 },
                                 valueRange = 0.1f..1.0f,
                                 modifier = Modifier.fillMaxWidth()
@@ -4974,7 +5200,7 @@ fun PlayerScreen(
     if (showSleepTimerSheet) {
         ModalBottomSheet(
             onDismissRequest = { showSleepTimerSheet = false },
-            containerColor = MaterialTheme.colorScheme.surface,
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f),
             shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
         ) {
             Column(
@@ -5034,7 +5260,7 @@ fun PlayerScreen(
 
         ModalBottomSheet(
             onDismissRequest = { showEqualizerSheet = false },
-            containerColor = MaterialTheme.colorScheme.surface,
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f),
             shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
         ) {
             Column(
@@ -5209,7 +5435,7 @@ fun PlayerScreen(
         ModalBottomSheet(
             onDismissRequest = { showCastControlSheet = false },
             sheetState = castSheetState,
-            containerColor = MaterialTheme.colorScheme.surface,
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f),
             shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
         ) {
             Column(
@@ -5526,7 +5752,7 @@ fun PlayerScreen(
          ModalBottomSheet(
              onDismissRequest = { showAudioSubtitleSelectorSheet = false },
              sheetState = selectorSheetState,
-             containerColor = MaterialTheme.colorScheme.surface,
+             containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f),
              shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
          ) {
              val configuration = androidx.compose.ui.platform.LocalConfiguration.current
@@ -5676,6 +5902,12 @@ fun PlayerScreen(
              }
 
              // Local immediate states for instant UI rendering
+             val hasMultipleVideoFormats = videoTracks.size >= 2
+             val availableTabs = remember(hasMultipleVideoFormats) {
+                 if (hasMultipleVideoFormats) listOf("Audio", "Subtitles", "Video Quality") else listOf("Audio", "Subtitles")
+             }
+             var selectedSheetTab by remember { androidx.compose.runtime.mutableIntStateOf(0) }
+
              var localSubtitlesDisabled by remember(tracksUpdateTrigger) {
                  mutableStateOf(exoPlayer.trackSelectionParameters.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT))
              }
@@ -5710,18 +5942,56 @@ fun PlayerScreen(
                          modifier = Modifier.fillMaxWidth(),
                          verticalArrangement = Arrangement.spacedBy(4.dp)
                      ) {
-                         if (audioTracks.isEmpty()) {
+                         
+                         if (activeEngine == "VLC") {
+                             val vlcAudioTracks = vlcPlayer.getAudioTracks() ?: emptyArray()
+                             val selectedAudioId = vlcPlayer.getSelectedAudioTrack()
+                             if (vlcAudioTracks.isEmpty()) {
+                                 Text("No audio tracks found", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                             } else {
+                                 vlcAudioTracks.forEach { track ->
+                                     val isSelected = (track.id == selectedAudioId)
+                                     Card(
+                                         colors = CardDefaults.cardColors(containerColor = if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f) else Color.Transparent),
+                                         shape = RoundedCornerShape(8.dp),
+                                         modifier = Modifier.fillMaxWidth().clickable {
+                                             vlcPlayer.selectAudioTrack(track.id)
+                                             tracksUpdateTrigger++
+                                             android.widget.Toast.makeText(context, "Switched to audio track ${track.name ?: track.id}", android.widget.Toast.LENGTH_SHORT).show()
+                                         }
+                                     ) {
+                                         Row(
+                                             verticalAlignment = Alignment.CenterVertically,
+                                             horizontalArrangement = Arrangement.SpaceBetween,
+                                             modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 10.dp)
+                                         ) {
+                                             Text(
+                                                 text = track.name ?: "Track ${track.id}",
+                                                 fontSize = 13.sp,
+                                                 color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                                                 fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                                 modifier = Modifier.weight(1f)
+                                             )
+                                             if (isSelected) {
+                                                 Spacer(modifier = Modifier.width(8.dp))
+                                                 Icon(Icons.Default.Check, contentDescription = "Active", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+                                             }
+                                         }
+                                     }
+                                 }
+                             }
+                         } else if (audioTracks.isEmpty()) {
                              // Interactive simulated fallback audio tracks
-                             val mockAudios = listOf("Standard Stereo", "Surround Sound 5.1", "High-Fidelity Audio Description")
+                             val mockAudios = emptyList<String>()
                              mockAudios.forEachIndexed { index, label ->
-                                 val isSelected = selectedMockAudioIndex == index
+                                 val isSelected = index == 0
                                  Card(
                                      colors = CardDefaults.cardColors(containerColor = if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f) else Color.Transparent),
                                      shape = RoundedCornerShape(8.dp),
                                      modifier = Modifier.fillMaxWidth().clickable {
-                                         selectedMockAudioIndex = index
+                                         /* no-op */
                                          tracksUpdateTrigger++
-                                         android.widget.Toast.makeText(context, "Switched to $label fallback stream", android.widget.Toast.LENGTH_SHORT).show()
+                                         android.widget.Toast.makeText(context, "Switched to $label", android.widget.Toast.LENGTH_SHORT).show()
                                      }
                                  ) {
                                      Row(
@@ -5758,6 +6028,11 @@ fun PlayerScreen(
                                              .setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_AUDIO, false)
                                              .setOverrideForType(TrackSelectionOverride(trackGroup, tIndex))
                                              .build()
+                                          viewModel.updatePerVideoAudio(
+                                              uriString = activeMediaItem.uriString,
+                                              audioGroupIndex = gIndex,
+                                              audioTrackIndex = tIndex
+                                          )
                                          audioFallbackAttempted = false
                                          tracksUpdateTrigger++
                                      }
@@ -5804,16 +6079,70 @@ fun PlayerScreen(
                          modifier = Modifier.fillMaxWidth(),
                          verticalArrangement = Arrangement.spacedBy(4.dp)
                      ) {
-                         if (subtitleTracks.isEmpty()) {
-                             // Interactive simulated subtitles
-                             val mockSubs = listOf("Disable Subtitles", "English [CC]", "Spanish Subtitles", "French Subtitles")
-                             mockSubs.forEachIndexed { index, label ->
-                                 val isSelected = selectedMockSubtitleIndex == index
+                         
+                         if (activeEngine == "VLC") {
+                             val vlcSubTracks = vlcPlayer.getSubtitleTracks() ?: emptyArray()
+                             val selectedSubId = vlcPlayer.getSelectedSubtitleTrack()
+
+                             Card(
+                                 colors = CardDefaults.cardColors(containerColor = if (selectedSubId == -1) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f) else Color.Transparent),
+                                 shape = RoundedCornerShape(8.dp),
+                                 modifier = Modifier.fillMaxWidth().clickable {
+                                     vlcPlayer.selectSubtitleTrack(-1)
+                                     tracksUpdateTrigger++
+                                 }
+                             ) {
+                                 Row(
+                                     verticalAlignment = Alignment.CenterVertically,
+                                     horizontalArrangement = Arrangement.SpaceBetween,
+                                     modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 10.dp)
+                                 ) {
+                                     Text("Disable Subtitles", fontSize = 13.sp, color = if (selectedSubId == -1) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface, fontWeight = if (selectedSubId == -1) FontWeight.Bold else FontWeight.Normal)
+                                     if (selectedSubId == -1) {
+                                         Icon(Icons.Default.Check, contentDescription = "Active", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+                                     }
+                                 }
+                             }
+
+                             vlcSubTracks.filter { it.id != -1 }.forEach { track ->
+                                 val isSelected = (track.id == selectedSubId && selectedSubId != -1)
                                  Card(
                                      colors = CardDefaults.cardColors(containerColor = if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f) else Color.Transparent),
                                      shape = RoundedCornerShape(8.dp),
                                      modifier = Modifier.fillMaxWidth().clickable {
-                                         selectedMockSubtitleIndex = index
+                                         vlcPlayer.selectSubtitleTrack(track.id)
+                                         tracksUpdateTrigger++
+                                     }
+                                 ) {
+                                     Row(
+                                         verticalAlignment = Alignment.CenterVertically,
+                                         horizontalArrangement = Arrangement.SpaceBetween,
+                                         modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 10.dp)
+                                     ) {
+                                         Text(
+                                             text = track.name ?: "Subtitle ${track.id}",
+                                             fontSize = 13.sp,
+                                             color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                                             fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                             modifier = Modifier.weight(1f)
+                                         )
+                                         if (isSelected) {
+                                             Spacer(modifier = Modifier.width(8.dp))
+                                             Icon(Icons.Default.Check, contentDescription = "Active", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+                                         }
+                                     }
+                                 }
+                             }
+                         } else if (subtitleTracks.isEmpty()) {
+                             // Interactive simulated subtitles
+                             val mockSubs = emptyList<String>()
+                             mockSubs.forEachIndexed { index, label ->
+                                 val isSelected = index == 0
+                                 Card(
+                                     colors = CardDefaults.cardColors(containerColor = if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f) else Color.Transparent),
+                                     shape = RoundedCornerShape(8.dp),
+                                     modifier = Modifier.fillMaxWidth().clickable {
+                                         /* no-op */
                                          tracksUpdateTrigger++
                                          android.widget.Toast.makeText(context, "Subtitles: $label selected", android.widget.Toast.LENGTH_SHORT).show()
                                      }
@@ -5847,6 +6176,12 @@ fun PlayerScreen(
                                          .buildUpon()
                                          .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
                                          .build()
+                                      viewModel.updatePerVideoSubtitle(
+                                          uriString = activeMediaItem.uriString,
+                                          subtitleGroupIndex = -1,
+                                          subtitleTrackIndex = -1,
+                                          isDisabled = true
+                                      )
                                      tracksUpdateTrigger++
                                  }
                              ) {
@@ -5875,6 +6210,12 @@ fun PlayerScreen(
                                              .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
                                              .setOverrideForType(TrackSelectionOverride(trackGroup, tIndex))
                                              .build()
+                                          viewModel.updatePerVideoSubtitle(
+                                              uriString = activeMediaItem.uriString,
+                                              subtitleGroupIndex = gIndex,
+                                              subtitleTrackIndex = tIndex,
+                                              isDisabled = false
+                                          )
                                          tracksUpdateTrigger++
                                      }
                                  ) {
@@ -5955,14 +6296,14 @@ fun PlayerScreen(
                      ) {
                          if (videoTracks.isEmpty()) {
                              // Interactive simulated video tracks
-                             val mockResolutions = listOf("Auto (Best Quality)", "1080p (Full HD)", "720p (HD)", "480p (SD)")
+                             val mockResolutions = emptyList<String>()
                              mockResolutions.forEachIndexed { index, label ->
-                                 val isSelected = selectedMockVideoIndex == index
+                                 val isSelected = index == 0
                                  Card(
                                      colors = CardDefaults.cardColors(containerColor = if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f) else Color.Transparent),
                                      shape = RoundedCornerShape(8.dp),
                                      modifier = Modifier.fillMaxWidth().clickable {
-                                         selectedMockVideoIndex = index
+                                         /* no-op */
                                          android.widget.Toast.makeText(context, "Resolution: $label applied", android.widget.Toast.LENGTH_SHORT).show()
                                      }
                                  ) {
@@ -6043,25 +6384,45 @@ fun PlayerScreen(
                  )
                  Spacer(modifier = Modifier.height(20.dp))
 
-                 if (isLandscape) {
-                     Row(
-                         modifier = Modifier.fillMaxWidth(),
-                         horizontalArrangement = Arrangement.spacedBy(16.dp)
-                     ) {
-                         Box(modifier = Modifier.weight(1f)) { AudioColumnContent() }
-                         Box(modifier = Modifier.weight(1f)) { SubtitlesColumnContent() }
-                         Box(modifier = Modifier.weight(1f)) { VideoColumnContent() }
-                     }
-                 } else {
-                     Column(
-                         modifier = Modifier.fillMaxWidth(),
-                         verticalArrangement = Arrangement.spacedBy(16.dp)
-                     ) {
-                         AudioColumnContent()
-                         SubtitlesColumnContent()
-                         VideoColumnContent()
-                     }
-                 }
+                  if (isLandscape) {
+                      Row(
+                          modifier = Modifier.fillMaxWidth(),
+                          horizontalArrangement = Arrangement.spacedBy(16.dp)
+                      ) {
+                          Box(modifier = Modifier.weight(1f)) { AudioColumnContent() }
+                          Box(modifier = Modifier.weight(1f)) { SubtitlesColumnContent() }
+                          if (hasMultipleVideoFormats) {
+                              Box(modifier = Modifier.weight(1f)) { VideoColumnContent() }
+                          }
+                      }
+                  } else {
+                      TabRow(
+                          selectedTabIndex = selectedSheetTab.coerceIn(0, availableTabs.size - 1),
+                          containerColor = androidx.compose.ui.graphics.Color.Transparent,
+                          contentColor = MaterialTheme.colorScheme.primary,
+                          modifier = Modifier.fillMaxWidth()
+                      ) {
+                          availableTabs.forEachIndexed { index, title ->
+                              Tab(
+                                  selected = (selectedSheetTab.coerceIn(0, availableTabs.size - 1) == index),
+                                  onClick = { selectedSheetTab = index },
+                                  text = {
+                                      Text(
+                                          text = title,
+                                          fontWeight = if (selectedSheetTab.coerceIn(0, availableTabs.size - 1) == index) FontWeight.Bold else FontWeight.Normal,
+                                          fontSize = 14.sp
+                                      )
+                                  }
+                              )
+                          }
+                      }
+                      Spacer(modifier = Modifier.height(16.dp))
+                      when (selectedSheetTab.coerceIn(0, availableTabs.size - 1)) {
+                          0 -> AudioColumnContent()
+                          1 -> SubtitlesColumnContent()
+                          2 -> if (hasMultipleVideoFormats) VideoColumnContent() else AudioColumnContent()
+                      }
+                  }
                  Spacer(modifier = Modifier.height(24.dp))
              }
          }
@@ -6081,13 +6442,27 @@ fun PlayerScreen(
                 onFileSelected = { selectedFile ->
                     showFileBrowserForSubtitle = false
                     try {
-                        val subtitleUri = android.net.Uri.fromFile(selectedFile).toString()
+                        val fileUri = android.net.Uri.fromFile(selectedFile)
+                        val subtitleUri = fileUri.toString()
+                        viewModel.updatePerVideoSubtitle(
+                            uriString = activeMediaItem.uriString,
+                            subtitleGroupIndex = -1,
+                            subtitleTrackIndex = -1,
+                            isDisabled = false,
+                            externalSubtitleUri = subtitleUri
+                        )
+                        if (activeEngine == "VLC") {
+                            vlcPlayer.addExternalSubtitle(fileUri)
+                            tracksUpdateTrigger++
+                            android.widget.Toast.makeText(context, "Added subtitle track to VLC", android.widget.Toast.LENGTH_SHORT).show()
+                            return@CustomFileBrowser
+                        }
                         val mimeType = when (selectedFile.extension.lowercase()) {
                             "vtt" -> "text/vtt"
                             "ass" -> "text/x-ssa"
-                            else -> "application/x-subrip" // default srt
+                            else -> "application/x-subrip"
                         }
-                        val subtitleConfig = MediaItem.SubtitleConfiguration.Builder(android.net.Uri.parse(subtitleUri))
+                        val subtitleConfig = MediaItem.SubtitleConfiguration.Builder(fileUri)
                             .setMimeType(mimeType)
                             .setLanguage("en")
                             .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
@@ -6095,15 +6470,21 @@ fun PlayerScreen(
                             .build()
 
                         val newMediaItem = MediaItem.Builder()
-                            .setUri(parseMediaUri(activeMediaItem.uriString))
+                            .setMediaId(activeMediaItem.uriString)
+                            .setUri(parseMediaUri(activeMediaItem.uriString, activeMediaItem.path, context))
                             .setSubtitleConfigurations(listOf(subtitleConfig))
                             .build()
 
                         val currentPos = exoPlayer.currentPosition
+                        exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
+                            .buildUpon()
+                            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                            .build()
                         exoPlayer.setMediaItem(newMediaItem)
                         exoPlayer.prepare()
                         exoPlayer.seekTo(currentPos)
                         exoPlayer.play()
+                        tracksUpdateTrigger++
                     } catch (e: Exception) {
                         playbackErrorMsg = "Failed to load external subtitle: ${e.localizedMessage}"
                     }
@@ -6276,16 +6657,41 @@ Subtitle for ${activeMediaItem.title} ($selectedLanguage)
                                     showOnlineSubtitleDownloader = false
                                     android.widget.Toast.makeText(context, "Downloaded $selectedLanguage subtitles!", android.widget.Toast.LENGTH_LONG).show()
 
-                                    // Refresh player with newly downloaded subtitles
-                                    val currentPos = exoPlayer.currentPosition
-                                    val isPlayerPlaying = exoPlayer.isPlaying
-                                    val newMediaItem = buildMediaItemWithSubtitles(activeMediaItem.uriString, context)
-                                    
-                                    exoPlayer.setMediaItem(newMediaItem)
-                                    exoPlayer.prepare()
-                                    exoPlayer.seekTo(currentPos)
-                                    if (isPlayerPlaying) {
-                                        exoPlayer.play()
+                                    val subFileUri = android.net.Uri.fromFile(subFile)
+                                    val downloadedSubUri = subFileUri.toString()
+                                    viewModel.updatePerVideoSubtitle(
+                                        uriString = activeMediaItem.uriString,
+                                        subtitleGroupIndex = -1,
+                                        subtitleTrackIndex = -1,
+                                        isDisabled = false,
+                                        externalSubtitleUri = downloadedSubUri
+                                    )
+
+                                    if (activeEngine == "VLC") {
+                                        vlcPlayer.addExternalSubtitle(subFileUri)
+                                        tracksUpdateTrigger++
+                                    } else {
+                                        // Refresh player with newly downloaded subtitles
+                                        val currentPos = exoPlayer.currentPosition
+                                        val isPlayerPlaying = exoPlayer.isPlaying
+                                        val newMediaItem = buildMediaItemWithSubtitles(
+                                            uriString = activeMediaItem.uriString,
+                                            context = context,
+                                            path = activeMediaItem.path,
+                                            externalSubtitleUri = downloadedSubUri
+                                        )
+                                        
+                                        exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
+                                            .buildUpon()
+                                            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                                            .build()
+                                        exoPlayer.setMediaItem(newMediaItem)
+                                        exoPlayer.prepare()
+                                        exoPlayer.seekTo(currentPos)
+                                        if (isPlayerPlaying) {
+                                            exoPlayer.play()
+                                        }
+                                        tracksUpdateTrigger++
                                     }
                                 }
                             } catch (e: Exception) {
@@ -6314,6 +6720,8 @@ Subtitle for ${activeMediaItem.title} ($selectedLanguage)
     if (showQueueSheet) {
         val playQueue by viewModel.playQueue.collectAsState()
         val currentQueueIndex by viewModel.currentQueueIndex.collectAsState()
+        var queueGroupingMode by remember { mutableStateOf("All") } // "All" or "Folder"
+        val expandedFolders = remember { mutableStateMapOf<String, Boolean>() }
 
         PlayerRightSideDrawer(
             isOpen = showQueueSheet,
@@ -6323,7 +6731,7 @@ Subtitle for ${activeMediaItem.title} ($selectedLanguage)
                 modifier = Modifier
                     .fillMaxWidth()
                     .navigationBarsPadding()
-                    .padding(horizontal = 24.dp, vertical = 12.dp)
+                    .padding(horizontal = 20.dp, vertical = 12.dp)
             ) {
                 Spacer(modifier = Modifier.height(16.dp))
                 Row(
@@ -6343,13 +6751,50 @@ Subtitle for ${activeMediaItem.title} ($selectedLanguage)
                         Text("Clear Queue")
                     }
                 }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Grouping Mode Selector Switch: "All Items" vs "Organised by Folder"
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f), RoundedCornerShape(12.dp))
+                        .padding(4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    FilterChip(
+                        selected = queueGroupingMode == "All",
+                        onClick = { queueGroupingMode = "All" },
+                        label = { Text("All Queue Items", fontSize = 12.sp, fontWeight = FontWeight.Bold) },
+                        leadingIcon = { Icon(Icons.Default.List, contentDescription = null, modifier = Modifier.size(14.dp)) },
+                        modifier = Modifier.weight(1f),
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = MaterialTheme.colorScheme.primary,
+                            selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
+                            selectedLeadingIconColor = MaterialTheme.colorScheme.onPrimary
+                        )
+                    )
+                    FilterChip(
+                        selected = queueGroupingMode == "Folder",
+                        onClick = { queueGroupingMode = "Folder" },
+                        label = { Text("Organised by Folder", fontSize = 12.sp, fontWeight = FontWeight.Bold) },
+                        leadingIcon = { Icon(Icons.Default.Folder, contentDescription = null, modifier = Modifier.size(14.dp)) },
+                        modifier = Modifier.weight(1f),
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = MaterialTheme.colorScheme.primary,
+                            selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
+                            selectedLeadingIconColor = MaterialTheme.colorScheme.onPrimary
+                        )
+                    )
+                }
+
                 Spacer(modifier = Modifier.height(12.dp))
 
                 if (playQueue.isEmpty()) {
                     Box(modifier = Modifier.fillMaxWidth().height(200.dp), contentAlignment = Alignment.Center) {
                         Text("Queue is empty", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                } else {
+                } else if (queueGroupingMode == "All") {
                     LazyColumn(
                         modifier = Modifier.fillMaxWidth().weight(1f),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -6406,6 +6851,150 @@ Subtitle for ${activeMediaItem.title} ($selectedLanguage)
                             }
                         }
                     }
+                } else {
+                    // Organised by Folder View
+                    val folderGroups = remember(playQueue) {
+                        playQueue.groupBy { item ->
+                            val cleanPath = when {
+                                item.path.startsWith("/storage/emulated/0/") -> item.path.substringAfter("/storage/emulated/0/")
+                                item.path.startsWith("storage/emulated/0/") -> item.path.substringAfter("storage/emulated/0/")
+                                else -> item.path.trimStart('/')
+                            }
+                            val parentDir = cleanPath.substringBeforeLast('/', missingDelimiterValue = "Root Library")
+                            if (parentDir.isBlank() || parentDir == cleanPath) "Root Library" else parentDir.substringAfterLast('/')
+                        }
+                    }
+
+                    LazyColumn(
+                        modifier = Modifier.fillMaxWidth().weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        folderGroups.forEach { (folderName, itemsInFolder) ->
+                            val isExpanded = expandedFolders.getOrDefault(folderName, true)
+
+                            item(key = "folder_$folderName") {
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable { expandedFolders[folderName] = !isExpanded }
+                                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                                modifier = Modifier.weight(1f)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Folder,
+                                                    contentDescription = null,
+                                                    tint = MaterialTheme.colorScheme.primary,
+                                                    modifier = Modifier.size(20.dp)
+                                                )
+                                                Column {
+                                                    Text(
+                                                        text = folderName,
+                                                        fontWeight = FontWeight.Bold,
+                                                        fontSize = 13.sp,
+                                                        color = MaterialTheme.colorScheme.onSurface
+                                                    )
+                                                    Text(
+                                                        text = "${itemsInFolder.size} file${if (itemsInFolder.size > 1) "s" else ""}",
+                                                        fontSize = 10.sp,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    )
+                                                }
+                                            }
+
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                            ) {
+                                                IconButton(
+                                                    onClick = {
+                                                        if (itemsInFolder.isNotEmpty()) {
+                                                            viewModel.setPlayingItem(itemsInFolder.first())
+                                                            showQueueSheet = false
+                                                        }
+                                                    },
+                                                    modifier = Modifier.size(28.dp)
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.PlayCircle,
+                                                        contentDescription = "Play Folder",
+                                                        tint = MaterialTheme.colorScheme.primary,
+                                                        modifier = Modifier.size(20.dp)
+                                                    )
+                                                }
+
+                                                Icon(
+                                                    imageVector = if (isExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                                                    contentDescription = "Toggle Folder",
+                                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    modifier = Modifier.size(20.dp)
+                                                )
+                                            }
+                                        }
+
+                                        if (isExpanded) {
+                                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+                                            Column(
+                                                modifier = Modifier.padding(6.dp),
+                                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                                            ) {
+                                                itemsInFolder.forEach { item ->
+                                                    val globalIdx = playQueue.indexOf(item)
+                                                    val isCurrent = globalIdx == currentQueueIndex
+
+                                                    Card(
+                                                        onClick = {
+                                                            viewModel.setPlayingItem(item)
+                                                            showQueueSheet = false
+                                                        },
+                                                        modifier = Modifier.fillMaxWidth(),
+                                                        colors = CardDefaults.cardColors(
+                                                            containerColor = if (isCurrent) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.8f)
+                                                            else MaterialTheme.colorScheme.surface.copy(alpha = 0.6f)
+                                                        )
+                                                    ) {
+                                                        Row(
+                                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                                                            verticalAlignment = Alignment.CenterVertically,
+                                                            horizontalArrangement = Arrangement.SpaceBetween
+                                                        ) {
+                                                            Text(
+                                                                text = item.title,
+                                                                fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Medium,
+                                                                fontSize = 12.sp,
+                                                                color = if (isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                                                                maxLines = 1,
+                                                                overflow = TextOverflow.Ellipsis,
+                                                                modifier = Modifier.weight(1f)
+                                                            )
+                                                            Spacer(modifier = Modifier.width(8.dp))
+                                                            Text(
+                                                                text = formatPlayerDuration(item.duration),
+                                                                fontSize = 10.sp,
+                                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                            )
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
                 Spacer(modifier = Modifier.height(16.dp))
             }
@@ -6414,54 +7003,16 @@ Subtitle for ${activeMediaItem.title} ($selectedLanguage)
 
     // Video Info details popup
     if (showVideoInfoOverlay) {
-        AlertDialog(
-            onDismissRequest = { showVideoInfoOverlay = false },
-            title = { Text("Media Technical Details", fontWeight = FontWeight.Bold) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Title: ${activeMediaItem.title}", fontSize = 13.sp)
-                    Text("Artist: ${activeMediaItem.artist ?: "Unknown"}", fontSize = 13.sp)
-                    Text("Location: ${activeMediaItem.uriString}", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
-                    Text("Duration: ${formatPlayerDuration(duration)}", fontSize = 13.sp)
-                    val tracks = exoPlayer.currentTracks
-                    var audioCount = 0
-                    var textCount = 0
-                    var videoWidth = 0
-                    var videoHeight = 0
-                    tracks.groups.forEach { group ->
-                        if (group.type == C.TRACK_TYPE_AUDIO) audioCount += group.length
-                        if (group.type == C.TRACK_TYPE_TEXT) textCount += group.length
-                        if (group.type == C.TRACK_TYPE_VIDEO) {
-                            for (i in 0 until group.length) {
-                                val fmt = group.getTrackFormat(i)
-                                if (fmt.width > 0) {
-                                    videoWidth = fmt.width
-                                    videoHeight = fmt.height
-                                }
-                            }
-                        }
-                    }
-                    if (videoWidth > 0) {
-                        Text("Resolution: ${videoWidth}x${videoHeight}", fontSize = 13.sp)
-                    } else {
-                        Text("Type: Audio Disc Stream", fontSize = 13.sp)
-                    }
-                    Text("Audio Streams: $audioCount tracks detected", fontSize = 13.sp)
-                    Text("Subtitle Tracks: $textCount detected", fontSize = 13.sp)
-                }
-            },
-            confirmButton = {
-                Button(onClick = { showVideoInfoOverlay = false }) {
-                    Text("Close")
-                }
-            }
+        MediaInfoDialog(
+            media = activeMediaItem,
+            onDismiss = { showVideoInfoOverlay = false }
         )
     }
 
     if (showResumePrompt) {
         AlertDialog(
             onDismissRequest = {
-                exoPlayer.seekTo(0L)
+                if (activeEngine == "VLC") vlcPlayer.seekTo(0L) else exoPlayer.seekTo(0L)
                 exoPlayer.playWhenReady = true
                 exoPlayer.play()
                 showResumePrompt = false
@@ -6478,7 +7029,7 @@ Subtitle for ${activeMediaItem.title} ($selectedLanguage)
             confirmButton = {
                 Button(
                     onClick = {
-                        exoPlayer.seekTo(resumePosition)
+                        if (activeEngine == "VLC") vlcPlayer.seekTo(resumePosition) else exoPlayer.seekTo(resumePosition)
                         exoPlayer.playWhenReady = true
                         exoPlayer.play()
                         showResumePrompt = false
@@ -6490,7 +7041,7 @@ Subtitle for ${activeMediaItem.title} ($selectedLanguage)
             dismissButton = {
                 TextButton(
                     onClick = {
-                        exoPlayer.seekTo(0L)
+                        if (activeEngine == "VLC") vlcPlayer.seekTo(0L) else exoPlayer.seekTo(0L)
                         exoPlayer.playWhenReady = true
                         exoPlayer.play()
                         showResumePrompt = false
@@ -7008,32 +7559,19 @@ fun CustomAudioPlayerScreen(
                         }
 
                         // Elevated Rounded Play/Pause Floating Action Deck FAB
-                        Box(
+                        AnimatedPlayPauseButton(
+                            isPlaying = isPlaying,
+                            onClick = {
+                                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                                onTogglePlay()
+                            },
                             modifier = Modifier
                                 .size(64.dp)
-                                .shadow(8.dp, CircleShape)
-                                .clip(CircleShape)
-                                .background(
-                                    Brush.linearGradient(
-                                        colors = listOf(
-                                            MaterialTheme.colorScheme.primary,
-                                            MaterialTheme.colorScheme.secondary
-                                        )
-                                    )
-                                )
-                                .clickable {
-                                    hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
-                                    onTogglePlay()
-                                },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                                contentDescription = "Play or Pause",
-                                tint = MaterialTheme.colorScheme.onPrimary,
-                                modifier = Modifier.size(32.dp)
-                            )
-                        }
+                                .shadow(8.dp, CircleShape),
+                            iconSize = 32.dp,
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            contentColor = MaterialTheme.colorScheme.onPrimary
+                        )
 
                         IconButton(onClick = {
                             hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
@@ -7155,20 +7693,23 @@ fun SmoothSeekBar(
     val isDragged by interactionSource.collectIsDraggedAsState()
     val isCurrentlyScrubbing = isPressed || isDragged
 
+    var isInternalDragging by remember { mutableStateOf(false) }
+    var internalProgress by remember { mutableStateOf(0f) }
+
+    val externalFraction = if (duration > 0) (position.toFloat() / duration.toFloat()).coerceIn(0f, 1f) else 0f
+    val displayFraction = if (isInternalDragging || isCurrentlyScrubbing || isScrubbing) internalProgress else externalFraction
+
     LaunchedEffect(isCurrentlyScrubbing) {
         if (isCurrentlyScrubbing) {
+            isInternalDragging = true
+            internalProgress = externalFraction
             onScrubStart()
         }
     }
 
-    // Local state to make scrubbing ultra-smooth
-    var localProgress by remember(position, duration) {
-        mutableStateOf(if (duration > 0) position.toFloat() / duration.toFloat() else 0f)
-    }
-
     val primaryColor = MaterialTheme.colorScheme.primary
     val trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
-    val activeColor = if (isCurrentlyScrubbing) MaterialTheme.colorScheme.secondary else primaryColor
+    val activeColor = if (isCurrentlyScrubbing || isInternalDragging || isScrubbing) MaterialTheme.colorScheme.secondary else primaryColor
 
     Box(
         modifier = modifier
@@ -7177,17 +7718,19 @@ fun SmoothSeekBar(
         contentAlignment = Alignment.Center
     ) {
         Slider(
-            value = localProgress.coerceIn(0f, 1f),
+            value = displayFraction.coerceIn(0f, 1f),
             onValueChange = { newValue ->
-                localProgress = newValue
+                isInternalDragging = true
+                internalProgress = newValue
+                onScrubStart()
                 if (duration > 0) {
                     onScrubPositionChange((newValue * duration).toLong())
                 }
             },
             onValueChangeFinished = {
-                if (duration > 0) {
-                    onScrubEnd((localProgress * duration).toLong())
-                }
+                val targetMs = if (duration > 0) (internalProgress * duration).toLong() else 0L
+                isInternalDragging = false
+                onScrubEnd(targetMs)
             },
             valueRange = 0f..1f,
             interactionSource = interactionSource,
@@ -7323,25 +7866,166 @@ fun SwipeToUnlock(
     }
 }
 
+fun parseMediaUri(uriString: String, path: String? = null, context: android.content.Context? = null): android.net.Uri {
+    return com.example.util.ContentResolverUtils.resolvePlayableUri(context, uriString, path)
+}
+
 fun parseMediaUri(uriString: String): android.net.Uri {
-    val trimmed = uriString.trim()
-    return if (trimmed.startsWith("http://") || trimmed.startsWith("https://") || trimmed.startsWith("content://") || trimmed.startsWith("file://")) {
-        android.net.Uri.parse(trimmed)
-    } else {
-        android.net.Uri.fromFile(java.io.File(trimmed))
+    return parseMediaUri(uriString, null, null)
+}
+
+fun applySubtitleStyleToPlayerView(
+    view: androidx.media3.ui.PlayerView,
+    prefs: com.example.data.database.PreferenceEntity,
+    overrideSubtitleSize: Float? = null,
+    overrideSubtitleOpacity: Float? = null
+) {
+    try {
+        val opacityToUse = overrideSubtitleOpacity ?: prefs.subtitleOpacity
+        val sizeToUse = overrideSubtitleSize ?: prefs.subtitleSize
+
+        val textColorInt = try {
+            val baseColor = android.graphics.Color.parseColor(prefs.subtitleTextColor)
+            val alpha = (opacityToUse * 255).toInt().coerceIn(0, 255)
+            (baseColor and 0x00FFFFFF) or (alpha shl 24)
+        } catch (e: Exception) {
+            android.graphics.Color.WHITE
+        }
+
+        val bgColorInt = try {
+            if (prefs.subtitleBackground == "#00000000" || prefs.subtitleBackground.isEmpty()) {
+                android.graphics.Color.TRANSPARENT
+            } else {
+                android.graphics.Color.parseColor(prefs.subtitleBackground)
+            }
+        } catch (e: Exception) {
+            android.graphics.Color.TRANSPARENT
+        }
+
+        val fontTypeface = when (prefs.subtitleFontStyle) {
+            "Bold" -> android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
+            "Italic" -> android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.ITALIC)
+            else -> android.graphics.Typeface.DEFAULT
+        }
+
+        val hasOutline = prefs.subtitleOutlineColor != "#00000000" && prefs.subtitleOutlineColor.isNotEmpty()
+        val hasShadow = prefs.subtitleShadowColor != "#00000000" && prefs.subtitleShadowColor.isNotEmpty()
+
+        val edgeType = if (hasOutline) {
+            androidx.media3.ui.CaptionStyleCompat.EDGE_TYPE_OUTLINE
+        } else if (hasShadow) {
+            androidx.media3.ui.CaptionStyleCompat.EDGE_TYPE_DROP_SHADOW
+        } else {
+            androidx.media3.ui.CaptionStyleCompat.EDGE_TYPE_NONE
+        }
+
+        val edgeColorInt = try {
+            if (hasOutline) {
+                val baseEdgeColor = android.graphics.Color.parseColor(prefs.subtitleOutlineColor)
+                val edgeAlpha = (prefs.subtitleOutlineOpacity * 255).toInt().coerceIn(0, 255)
+                (baseEdgeColor and 0x00FFFFFF) or (edgeAlpha shl 24)
+            } else if (hasShadow) {
+                val baseEdgeColor = android.graphics.Color.parseColor(prefs.subtitleShadowColor)
+                val edgeAlpha = (prefs.subtitleShadowOpacity * 255).toInt().coerceIn(0, 255)
+                (baseEdgeColor and 0x00FFFFFF) or (edgeAlpha shl 24)
+            } else {
+                android.graphics.Color.BLACK
+            }
+        } catch (e: Exception) {
+            android.graphics.Color.BLACK
+        }
+
+        val captionStyle = androidx.media3.ui.CaptionStyleCompat(
+            textColorInt,
+            bgColorInt,
+            android.graphics.Color.TRANSPARENT,
+            edgeType,
+            edgeColorInt,
+            fontTypeface
+        )
+
+        view.subtitleView?.let { subView ->
+            subView.setViewType(androidx.media3.ui.SubtitleView.VIEW_TYPE_CANVAS)
+            subView.setApplyEmbeddedStyles(false)
+            subView.setApplyEmbeddedFontSizes(false)
+            subView.setStyle(captionStyle)
+            subView.setFixedTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, sizeToUse)
+            subView.setBottomPaddingFraction(0.08f)
+        }
+    } catch (e: Exception) {
+        e.printStackTrace()
     }
 }
 
-fun buildMediaItemWithSubtitles(uriString: String, context: android.content.Context): MediaItem {
-    val mediaUri = parseMediaUri(uriString)
-    val builder = MediaItem.Builder().setUri(mediaUri)
+private var subtitleFilesCache: Map<String, List<java.io.File>>? = null
+private var lastSubCacheTime: Long = 0L
+
+fun invalidateSubtitleCache() {
+    subtitleFilesCache = null
+    lastSubCacheTime = 0L
+}
+
+fun buildMediaItemWithSubtitles(
+    uriString: String,
+    context: android.content.Context,
+    path: String? = null,
+    externalSubtitleUri: String? = null
+): MediaItem {
+    val mediaUri = parseMediaUri(uriString, path, context)
+    val builder = MediaItem.Builder()
+        .setMediaId(uriString)
+        .setUri(mediaUri)
+
+    // Set MIME type for container formats (MKV, MP4, AVI, WebM, HLS, DASH, etc.)
     try {
-        val videoId = uriString.hashCode().toString()
+        val mimeType = com.example.util.ContentResolverUtils.inferMimeType(uriString, path, context)
+        if (!mimeType.isNullOrBlank()) {
+            builder.setMimeType(mimeType)
+        }
+    } catch (e: Exception) {
+        e.printStackTrace()
+    }
+
+    val subtitleConfigs = mutableListOf<MediaItem.SubtitleConfiguration>()
+
+    if (!externalSubtitleUri.isNullOrBlank()) {
+        try {
+            val extUri = android.net.Uri.parse(externalSubtitleUri)
+            val extName = extUri.lastPathSegment?.lowercase() ?: ""
+            val mime = when {
+                extName.endsWith(".vtt") -> "text/vtt"
+                extName.endsWith(".ass") -> "text/x-ssa"
+                else -> "application/x-subrip"
+            }
+            val config = MediaItem.SubtitleConfiguration.Builder(extUri)
+                .setMimeType(mime)
+                .setLanguage("en")
+                .setLabel("External Subtitle")
+                .setSelectionFlags(androidx.media3.common.C.SELECTION_FLAG_DEFAULT)
+                .setRoleFlags(androidx.media3.common.C.ROLE_FLAG_SUBTITLE)
+                .build()
+            subtitleConfigs.add(config)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    try {
         val subtitleDir = java.io.File(context.filesDir, "subtitles")
         if (subtitleDir.exists()) {
-            val subFiles = subtitleDir.listFiles { _, name -> name.startsWith("sub_${videoId}_") }
-            if (subFiles != null && subFiles.isNotEmpty()) {
-                val list = mutableListOf<MediaItem.SubtitleConfiguration>()
+            val now = System.currentTimeMillis()
+            var cache = subtitleFilesCache
+            if (cache == null || now - lastSubCacheTime > 4000L) {
+                val files = subtitleDir.listFiles()
+                cache = files?.groupBy { file ->
+                    file.name.substringAfter("sub_").substringBefore("_")
+                } ?: emptyMap()
+                subtitleFilesCache = cache
+                lastSubCacheTime = now
+            }
+            val videoId = uriString.hashCode().toString()
+            val subFiles = cache[videoId]
+            if (!subFiles.isNullOrEmpty()) {
                 subFiles.forEach { file ->
                     val name = file.name
                     val lang = name.substringAfter("sub_${videoId}_").substringBefore(".")
@@ -7357,15 +8041,30 @@ fun buildMediaItemWithSubtitles(uriString: String, context: android.content.Cont
                         .setSelectionFlags(androidx.media3.common.C.SELECTION_FLAG_DEFAULT)
                         .setRoleFlags(androidx.media3.common.C.ROLE_FLAG_SUBTITLE)
                         .build()
-                    list.add(config)
+                    subtitleConfigs.add(config)
                 }
-                builder.setSubtitleConfigurations(list)
             }
         }
     } catch (e: Exception) {
         e.printStackTrace()
     }
+
+    if (subtitleConfigs.isNotEmpty()) {
+        builder.setSubtitleConfigurations(subtitleConfigs)
+    }
+
     return builder.build()
+}
+
+fun buildMediaItemWithSubtitles(uriString: String, context: android.content.Context): MediaItem {
+    return buildMediaItemWithSubtitles(uriString, context, null, null)
+}
+
+fun buildMediaItemWithSubtitles(
+    item: com.example.data.database.MediaEntity,
+    context: android.content.Context
+): MediaItem {
+    return buildMediaItemWithSubtitles(item.uriString, context, item.path)
 }
 
 @Composable

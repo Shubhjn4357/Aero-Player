@@ -263,7 +263,7 @@ class MainActivity : ComponentActivity() {
         if (::mainViewModel.isInitialized) {
             val prefs = mainViewModel.preferencesState.value
             val currentItem = mainViewModel.currentPlayingItem.value
-            val isPlaying = try { mainViewModel.exoPlayer.isPlaying } catch (e: Exception) { false }
+            val isPlaying = mainViewModel.isPlaying.value
             if (currentItem != null && currentItem.isVideo && isPlaying && prefs.backgroundMode == "LAUNCH_PIP_MODE") {
                 enterPictureInPictureModeCompat()
             }
@@ -291,11 +291,30 @@ class MainActivity : ComponentActivity() {
         }
     }
     override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent?): Boolean {
-        if (::mainViewModel.isInitialized && (keyCode == android.view.KeyEvent.KEYCODE_VOLUME_UP ||
-                keyCode == android.view.KeyEvent.KEYCODE_VOLUME_DOWN ||
-                keyCode == android.view.KeyEvent.KEYCODE_VOLUME_MUTE)) {
-            if (mainViewModel.onVolumeKeyPressed(keyCode)) {
-                return true
+        if (::mainViewModel.isInitialized) {
+            when (keyCode) {
+                android.view.KeyEvent.KEYCODE_VOLUME_UP,
+                android.view.KeyEvent.KEYCODE_VOLUME_DOWN,
+                android.view.KeyEvent.KEYCODE_VOLUME_MUTE -> {
+                    if (mainViewModel.onVolumeKeyPressed(keyCode)) {
+                        return true
+                    }
+                }
+                android.view.KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+                android.view.KeyEvent.KEYCODE_HEADSETHOOK,
+                android.view.KeyEvent.KEYCODE_MEDIA_PLAY,
+                android.view.KeyEvent.KEYCODE_MEDIA_PAUSE -> {
+                    PlayerControlBridge.playPause()
+                    return true
+                }
+                android.view.KeyEvent.KEYCODE_MEDIA_NEXT -> {
+                    PlayerControlBridge.next()
+                    return true
+                }
+                android.view.KeyEvent.KEYCODE_MEDIA_PREVIOUS -> {
+                    PlayerControlBridge.prev()
+                    return true
+                }
             }
         }
         return super.onKeyDown(keyCode, event)
@@ -350,11 +369,24 @@ fun PermissionAndNavigationContainer(viewModel: MainViewModel) {
         }
     }
     val prefs by viewModel.preferencesState.collectAsState()
-
-    var showAllFilesAccessDialog by remember { mutableStateOf(false) }
+    val appSp = remember { context.getSharedPreferences("app_prefs", android.content.Context.MODE_PRIVATE) }
+    var isOnboardingCompleted by remember {
+        mutableStateOf(appSp.getBoolean("onboarding_completed", false) || prefs.onboardingCompleted)
+    }
 
     LaunchedEffect(prefs.onboardingCompleted) {
         if (prefs.onboardingCompleted) {
+            isOnboardingCompleted = true
+            if (!appSp.getBoolean("onboarding_completed", false)) {
+                appSp.edit().putBoolean("onboarding_completed", true).apply()
+            }
+        }
+    }
+
+    var showAllFilesAccessDialog by remember { mutableStateOf(false) }
+
+    LaunchedEffect(isOnboardingCompleted) {
+        if (isOnboardingCompleted) {
             try {
                 kotlinx.coroutines.delay(500)
                 permissionState.launchMultiplePermissionRequest()
@@ -400,8 +432,8 @@ fun PermissionAndNavigationContainer(viewModel: MainViewModel) {
     }
 
     // Automatically trigger scan once permissions are granted and onboarding is completed
-    LaunchedEffect(permissionState.allPermissionsGranted, prefs.onboardingCompleted) {
-        if (permissionState.allPermissionsGranted && prefs.onboardingCompleted) {
+    LaunchedEffect(permissionState.allPermissionsGranted, isOnboardingCompleted) {
+        if (permissionState.allPermissionsGranted && isOnboardingCompleted) {
             viewModel.scanLocalMedia()
         }
     }
@@ -488,10 +520,12 @@ fun PermissionAndNavigationContainer(viewModel: MainViewModel) {
             }
         }
 
-        if (!prefs.onboardingCompleted) {
+        if (!isOnboardingCompleted) {
             OnboardingScreen(
                 onFinished = {
                     viewModel.completeOnboarding()
+                    appSp.edit().putBoolean("onboarding_completed", true).apply()
+                    isOnboardingCompleted = true
                 }
             )
         }

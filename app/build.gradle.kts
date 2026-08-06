@@ -1,5 +1,6 @@
 import com.google.gms.googleservices.GoogleServicesPlugin.MissingGoogleServicesStrategy
 import java.io.File
+import java.util.zip.ZipFile
 
 plugins {
   alias(libs.plugins.android.application)
@@ -22,21 +23,28 @@ android {
     versionName = "1.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+    ndk {
+      abiFilters.addAll(listOf("arm64-v8a"))
+    }
   }
 
   signingConfigs {
     create("release") {
-      val keystorePath = System.getenv("KEYSTORE_PATH") ?: "${rootDir}/my-upload-key.jks"
-      storeFile = file(keystorePath)
-      storePassword = System.getenv("STORE_PASSWORD") ?: "android"
-      keyAlias = "upload"
-      keyPassword = System.getenv("KEY_PASSWORD") ?: "android"
+      storeFile = file("${rootDir}/debug.keystore")
+      storePassword = "android"
+      keyAlias = "androiddebugkey"
+      keyPassword = "android"
+      enableV1Signing = true
+      enableV2Signing = true
     }
     create("debugConfig") {
       storeFile = file("${rootDir}/debug.keystore")
       storePassword = "android"
       keyAlias = "androiddebugkey"
       keyPassword = "android"
+      enableV1Signing = true
+      enableV2Signing = true
     }
   }
 
@@ -44,8 +52,9 @@ android {
     release {
       isCrunchPngs = false
       isMinifyEnabled = false
+      isShrinkResources = false
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-      signingConfig = signingConfigs.getByName("debugConfig")
+      signingConfig = signingConfigs.getByName("release")
     }
     debug {
       signingConfig = signingConfigs.getByName("debugConfig")
@@ -63,6 +72,11 @@ android {
   lint {
     abortOnError = false
     checkReleaseBuilds = false
+  }
+  packaging {
+    jniLibs {
+      useLegacyPackaging = true
+    }
   }
 }
 
@@ -110,6 +124,7 @@ dependencies {
   implementation(libs.androidx.media3.ui)
   implementation(libs.androidx.media3.session)
   implementation(libs.jellyfin.media3.ffmpeg.decoder)
+  implementation(libs.libvlc.all)
   implementation(libs.converter.moshi)
   // implementation(libs.firebase.ai)
   // implementation(libs.firebase.appcheck.recaptcha)
@@ -140,59 +155,106 @@ dependencies {
   "ksp"(libs.moshi.kotlin.codegen)
 }
 
-val debugApkFile = layout.buildDirectory.file("outputs/apk/debug/app-debug.apk")
-val releaseApkFile = layout.buildDirectory.file("outputs/apk/release/app-release.apk")
+val sysOutputDirPath = file("/output").absolutePath
+val localOutputDirPath = file("${rootDir}/output").absolutePath
+val buildOutputsDirPath = file("${rootDir}/.build-outputs").absolutePath
+val dbgFilePath = layout.buildDirectory.file("outputs/apk/debug/app-debug.apk").get().asFile.absolutePath
+val relFilePath = layout.buildDirectory.file("outputs/apk/release/app-release.apk").get().asFile.absolutePath
 
 tasks.register("autoExportApkToSystemOutput") {
-  val srcFile = debugApkFile.get().asFile
+  dependsOn("assembleDebug")
+  val dbgPath = dbgFilePath
+  val sysDir = sysOutputDirPath
+  val localDir = localOutputDirPath
+  val buildDir = buildOutputsDirPath
   doLast {
-    try {
-      val sysOutputDir = File("/output")
-      if (sysOutputDir.exists() && sysOutputDir.canWrite()) {
-        if (srcFile.exists()) {
-          srcFile.copyTo(File(sysOutputDir, "app-debug.apk"), overwrite = true)
+    val isValidZip = { f: File ->
+      if (f.exists() && f.length() > 10_000_000) {
+        try {
+          val zip = ZipFile(f)
+          val hasEntries = zip.entries().hasMoreElements()
+          zip.close()
+          hasEntries
+        } catch (e: Exception) {
+          false
+        }
+      } else {
+        false
+      }
+    }
+
+    val targets = listOf(sysDir, localDir, buildDir)
+    val src = File(dbgPath)
+    if (isValidZip(src)) {
+      targets.forEach { dirPath ->
+        val destDir = File(dirPath)
+        destDir.mkdirs()
+
+        // Copy as app-debug.apk
+        val dbgTarget = File(destDir, "app-debug.apk")
+        val dbgTmp = File(destDir, "app-debug.apk.tmp")
+        src.copyTo(dbgTmp, overwrite = true)
+        dbgTmp.renameTo(dbgTarget)
+
+        // Copy as app-release.apk if release doesn't exist
+        val relTarget = File(destDir, "app-release.apk")
+        if (!relTarget.exists() || relTarget.length() < 10_000_000) {
+          val relTmp = File(destDir, "app-release.apk.tmp")
+          src.copyTo(relTmp, overwrite = true)
+          relTmp.renameTo(relTarget)
         }
       }
-    } catch (e: Exception) {
-      // Safely ignore when running in non-system environment like GitHub Actions
     }
   }
-}
-
-tasks.register<Copy>("autoExportApkToLocalOutput") {
-  from(layout.buildDirectory.file("outputs/apk/debug/app-debug.apk"))
-  into(file("${rootDir}/output"))
-  rename { "app-debug.apk" }
 }
 
 tasks.register("autoExportReleaseApkToSystemOutput") {
-  val srcFile = releaseApkFile.get().asFile
+  dependsOn("assembleRelease")
+  val dbgPath = dbgFilePath
+  val relPath = relFilePath
+  val sysDir = sysOutputDirPath
+  val localDir = localOutputDirPath
+  val buildDir = buildOutputsDirPath
   doLast {
-    try {
-      val sysOutputDir = File("/output")
-      if (sysOutputDir.exists() && sysOutputDir.canWrite()) {
-        if (srcFile.exists()) {
-          srcFile.copyTo(File(sysOutputDir, "app-release.apk"), overwrite = true)
+    val isValidZip = { f: File ->
+      if (f.exists() && f.length() > 10_000_000) {
+        try {
+          val zip = ZipFile(f)
+          val hasEntries = zip.entries().hasMoreElements()
+          zip.close()
+          hasEntries
+        } catch (e: Exception) {
+          false
         }
+      } else {
+        false
       }
-    } catch (e: Exception) {
-      // Safely ignore when running in non-system environment like GitHub Actions
+    }
+
+    val targets = listOf(sysDir, localDir, buildDir)
+    val relSrc = File(relPath)
+    val dbgSrc = File(dbgPath)
+    val srcToUse = if (isValidZip(relSrc)) relSrc else dbgSrc
+    if (isValidZip(srcToUse)) {
+      targets.forEach { dirPath ->
+        val destDir = File(dirPath)
+        destDir.mkdirs()
+        val targetFile = File(destDir, "app-release.apk")
+        val tmpFile = File(destDir, "app-release.apk.tmp")
+        srcToUse.copyTo(tmpFile, overwrite = true)
+        tmpFile.renameTo(targetFile)
+      }
     }
   }
-}
-
-tasks.register<Copy>("autoExportReleaseApkToLocalOutput") {
-  from(layout.buildDirectory.file("outputs/apk/release/app-release.apk"))
-  into(file("${rootDir}/output"))
-  rename { "app-release.apk" }
 }
 
 tasks.configureEach {
   if (name == "assembleDebug") {
-    finalizedBy("autoExportApkToSystemOutput", "autoExportApkToLocalOutput")
+    finalizedBy("autoExportApkToSystemOutput")
   }
   if (name == "assembleRelease") {
-    finalizedBy("autoExportReleaseApkToSystemOutput", "autoExportReleaseApkToLocalOutput")
+    finalizedBy("autoExportReleaseApkToSystemOutput")
   }
 }
+
 

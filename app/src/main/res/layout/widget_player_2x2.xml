@@ -43,6 +43,28 @@
         android:maxLines="1"
         android:layout_marginTop="2dp" />
 
+    <ProgressBar
+        android:id="@+id/widget_progress_2x2"
+        style="?android:attr/progressBarStyleHorizontal"
+        android:layout_width="match_parent"
+        android:layout_height="4dp"
+        android:max="1000"
+        android:progress="0"
+        android:progressDrawable="@drawable/widget_progress_bar"
+        android:layout_marginTop="6dp"
+        android:layout_marginStart="8dp"
+        android:layout_marginEnd="8dp" />
+
+    <TextView
+        android:id="@+id/widget_time_2x2"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="00:00 / 00:00"
+        android:textColor="#7A8092"
+        android:textSize="10sp"
+        android:gravity="center"
+        android:layout_marginTop="2dp" />
+
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"

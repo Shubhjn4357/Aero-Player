@@ -4,6 +4,7 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Transaction
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -19,6 +20,12 @@ interface MediaDao {
 
     @Query("DELETE FROM media_items WHERE artist != 'Custom Stream'")
     suspend fun clearLocalMedia()
+
+    @Transaction
+    suspend fun replaceLocalMedia(media: List<MediaEntity>) {
+        clearLocalMedia()
+        insertMedia(media)
+    }
 
     @Query("DELETE FROM media_items WHERE uriString = :uriString")
     suspend fun deleteMediaByUri(uriString: String)

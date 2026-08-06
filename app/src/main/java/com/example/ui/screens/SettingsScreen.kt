@@ -5,6 +5,7 @@ import androidx.compose.animation.*
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -21,6 +22,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -55,6 +57,8 @@ fun SettingsScreen(
 ) {
     val prefs by viewModel.preferencesState.collectAsState()
     val context = LocalContext.current
+    val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
+    val keyboardController = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
 
     // Navigation & View state controllers
     var selectedCategory by remember { mutableStateOf<NativeSettingsCategory?>(null) }
@@ -93,6 +97,21 @@ fun SettingsScreen(
     var showCastBufferMenu by remember { mutableStateOf(false) }
     var showOpenGlRenderMenu by remember { mutableStateOf(false) }
 
+    // Dismiss soft keyboard whenever any menu, category selection, or dialog opens
+    LaunchedEffect(
+        showThemeMenu, showStyleMenu, showOrientationMenu, showSeekSecondsMenu,
+        showHwMenu, showBgModeMenu, showResumeMenu, showSaveVolBrightMenu,
+        showSubtitleLangMenu, showSubtitleColorMenu, showSubtitleBgMenu, showSubtitleSizeMenu,
+        showSubtitleFontMenu, showSubtitlePresetMenu, showSubtitleEncodingMenu, showShadowColorMenu,
+        showOutlineColorMenu, showNetworkMenu, showCastDeviceMenu, showCastProtocolMenu,
+        showCastQualityMenu, showCastBufferMenu, showOpenGlRenderMenu,
+        selectedCategory, showFolderManagerDialog, showBannedFolderManagerDialog,
+        showPrivacyPolicyDialog, showTermsDialog, showChangelogDialog
+    ) {
+        focusManager.clearFocus()
+        keyboardController?.hide()
+    }
+
     BackHandler {
         when {
             showAboutScreen -> showAboutScreen = false
@@ -114,8 +133,9 @@ fun SettingsScreen(
         return
     }
 
+    FrostedGlassBackground {
     Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
+        containerColor = Color.Transparent,
         topBar = {
             TopAppBar(
                 title = {
@@ -174,12 +194,19 @@ fun SettingsScreen(
                 leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
                 trailingIcon = {
                     if (searchQuery.isNotEmpty()) {
-                        IconButton(onClick = { searchQuery = "" }) {
+                        IconButton(onClick = { searchQuery = ""; focusManager.clearFocus(); keyboardController?.hide() }) {
                             Icon(Icons.Default.Clear, contentDescription = "Clear search")
                         }
                     }
                 },
                 singleLine = true,
+                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Search),
+                keyboardActions = androidx.compose.foundation.text.KeyboardActions(
+                    onSearch = {
+                        focusManager.clearFocus()
+                        keyboardController?.hide()
+                    }
+                ),
                 shape = RoundedCornerShape(16.dp),
                 colors = OutlinedTextFieldDefaults.colors(
                     unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
@@ -192,6 +219,14 @@ fun SettingsScreen(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
+                    .pointerInput(Unit) {
+                        detectTapGestures(
+                            onTap = {
+                                focusManager.clearFocus()
+                                keyboardController?.hide()
+                            }
+                        )
+                    }
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
@@ -326,6 +361,7 @@ fun SettingsScreen(
                 Spacer(modifier = Modifier.height(24.dp))
             }
         }
+    }
     }
 
     // --- SUPPORT DIALOGS ---
@@ -721,7 +757,8 @@ private fun NativeSettingsCategoryOverview(
     )
 
     Card(
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.65f)),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.40f)),
         shape = RoundedCornerShape(20.dp),
         modifier = Modifier.fillMaxWidth()
     ) {
@@ -1632,7 +1669,7 @@ private fun SubtitleSettingsGroup(
                             Icon(Icons.Default.ArrowDropDown, contentDescription = null)
                         }
                         DropdownMenu(expanded = showSubtitleSizeMenu, onDismissRequest = { onChangeSubtitleSizeMenu(false) }) {
-                            listOf(12f, 14f, 16f, 18f, 20f, 24f, 28f).forEach { sz ->
+                            listOf(10f, 12f, 14f, 16f, 18f, 20f, 22f, 24f, 28f, 32f, 36f, 40f, 48f).forEach { sz ->
                                 DropdownMenuItem(
                                     text = { Text("${sz.toInt()} sp") },
                                     onClick = {
