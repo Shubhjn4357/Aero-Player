@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Center Aero Cone / Play Symbol with vibrant gradient -->
+    <path
+        android:pathData="M42,32 L74,54 L42,76 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="42"
+                android:startY="32"
+                android:endX="74"
+                android:endY="76"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#FFFFB74D" />
+                <item android:offset="0.5" android:color="#FFFF9100" />
+                <item android:offset="1.0" android:color="#FFFF6D00" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <!-- Geometric decorative accents -->
+    <path
+        android:pathData="M38,28 L38,80"
+        android:strokeWidth="3"
+        android:strokeLineCap="round">
+        <aapt:attr name="android:strokeColor">
+            <gradient
+                android:startX="38"
+                android:startY="28"
+                android:endX="38"
+                android:endY="80"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#4DFFFFFF" />
+                <item android:offset="0.5" android:color="#FFFFB74D" />
+                <item android:offset="1.0" android:color="#33FF9100" />
+            </gradient>
+        </aapt:attr>
+    </path>
+</vector>
