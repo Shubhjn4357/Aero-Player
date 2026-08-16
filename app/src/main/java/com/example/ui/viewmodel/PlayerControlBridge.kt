@@ -122,6 +122,10 @@ object PlayerControlBridge {
     }
 
     fun onHeadsetHookClick() {
+        val prefs = viewModelRef?.get()?.preferencesState?.value
+        if (prefs != null && prefs.ignoreHeadsetButtons) {
+            return
+        }
         hookClickCount++
         hookJob?.cancel()
         hookJob = bridgeScope.launch {
@@ -134,6 +138,13 @@ object PlayerControlBridge {
                 3 -> prev()
                 else -> playPause()
             }
+        }
+    }
+
+    fun onHeadsetPluggedIn() {
+        val prefs = viewModelRef?.get()?.preferencesState?.value
+        if (prefs == null || prefs.resumeOnHeadsetInsertion) {
+            play()
         }
     }
 

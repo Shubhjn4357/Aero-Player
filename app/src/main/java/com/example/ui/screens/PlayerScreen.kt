@@ -364,18 +364,27 @@ fun PlayerScreen(
             vlcPlayer.pause()
             exoPlayer.setPlaybackSpeed(speedToApply)
             exoPlayer.volume = volumeToApply
+            val trackBuilder = exoPlayer.trackSelectionParameters.buildUpon()
             if (savedSubDisabled) {
-                exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
-                    .buildUpon()
-                    .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
-                    .build()
+                trackBuilder.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
             } else {
-                exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
-                    .buildUpon()
-                    .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
-                    .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)
-                    .build()
+                trackBuilder.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                trackBuilder.setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)
             }
+            if (prefs.preferredAudioLanguage.isNotBlank() && prefs.preferredAudioLanguage != "Default") {
+                trackBuilder.setPreferredAudioLanguage(prefs.preferredAudioLanguage.lowercase())
+            }
+            if (prefs.defaultSubtitleLanguage.isNotBlank() && prefs.defaultSubtitleLanguage != "Default") {
+                trackBuilder.setPreferredTextLanguage(prefs.defaultSubtitleLanguage.lowercase())
+            }
+            when (prefs.preferredVideoResolution) {
+                "4K (2160p)", "4K" -> trackBuilder.setMaxVideoSize(3840, 2160)
+                "1080p" -> trackBuilder.setMaxVideoSize(1920, 1080)
+                "720p" -> trackBuilder.setMaxVideoSize(1280, 720)
+                "480p" -> trackBuilder.setMaxVideoSize(854, 480)
+            }
+            exoPlayer.trackSelectionParameters = trackBuilder.build()
+            exoPlayer.setSeekParameters(if (prefs.alwaysFastSeek) androidx.media3.exoplayer.SeekParameters.CLOSEST_SYNC else androidx.media3.exoplayer.SeekParameters.EXACT)
         }
 
         if (eqPresetToApply.isNotBlank()) {
@@ -605,6 +614,28 @@ fun PlayerScreen(
         }
         com.example.ui.viewmodel.PlayerControlBridge.onSeekToListener = { targetMs ->
             performSeek(targetMs)
+        }
+    }
+
+    // Synchronize Live Native Android Media Notification with playback state & active track
+    LaunchedEffect(activeMediaItem, isPlaying, prefs.seekButtonsInNotification) {
+        com.example.service.MediaPlaybackService.updateNotification(
+            context = context,
+            item = activeMediaItem,
+            isPlaying = isPlaying,
+            seekButtonsEnabled = prefs.seekButtonsInNotification
+        )
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            val bgModeNormalized = when (prefs.backgroundMode) {
+                "PLAY_BACKGROUND_AUDIO", "Play in Background" -> "PLAY_BACKGROUND_AUDIO"
+                else -> "STOP_PLAYBACK"
+            }
+            if (bgModeNormalized != "PLAY_BACKGROUND_AUDIO") {
+                com.example.service.MediaPlaybackService.stopPlaybackService(context)
+            }
         }
     }
 
@@ -5401,7 +5432,6 @@ fun PlayerScreen(
                                     subtitleVerticalOffset = 0.08f,
                                     subtitleEncoding = "UTF-8"
                                 )
-                                tracksUpdateTrigger++
                             }
                         ) {
                             Text("Reset", fontSize = 13.sp, color = MaterialTheme.colorScheme.secondary)
@@ -5513,7 +5543,6 @@ fun PlayerScreen(
                             selected = isSelected,
                             onClick = {
                                 viewModel.applySubtitlePreset(preset)
-                                tracksUpdateTrigger++
                             },
                             label = { Text(preset, fontSize = 12.sp) },
                             colors = FilterChipDefaults.filterChipColors(
@@ -5543,7 +5572,6 @@ fun PlayerScreen(
                             onClick = {
                                 val newSize = (prefs.subtitleSize - 1f).coerceAtLeast(10f)
                                 viewModel.updateSubtitlePreferences(subtitleSize = newSize, subtitlePreset = "Custom")
-                                tracksUpdateTrigger++
                             },
                             modifier = Modifier.size(32.dp)
                         ) {
@@ -5553,7 +5581,6 @@ fun PlayerScreen(
                             onClick = {
                                 val newSize = (prefs.subtitleSize + 1f).coerceAtMost(36f)
                                 viewModel.updateSubtitlePreferences(subtitleSize = newSize, subtitlePreset = "Custom")
-                                tracksUpdateTrigger++
                             },
                             modifier = Modifier.size(32.dp)
                         ) {
@@ -5565,7 +5592,6 @@ fun PlayerScreen(
                     value = prefs.subtitleSize.coerceIn(10f, 36f),
                     onValueChange = { newSize ->
                         viewModel.updateSubtitlePreferences(subtitleSize = newSize, subtitlePreset = "Custom")
-                        tracksUpdateTrigger++
                     },
                     valueRange = 10f..36f,
                     modifier = Modifier.fillMaxWidth()
@@ -5603,7 +5629,6 @@ fun PlayerScreen(
                         Surface(
                             onClick = {
                                 viewModel.updateSubtitlePreferences(subtitleTextColor = hex, subtitlePreset = "Custom")
-                                tracksUpdateTrigger++
                             },
                             shape = RoundedCornerShape(8.dp),
                             color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
@@ -5660,7 +5685,6 @@ fun PlayerScreen(
                             selected = isSelected,
                             onClick = {
                                 viewModel.updateSubtitlePreferences(subtitleBackground = hex, subtitlePreset = "Custom")
-                                tracksUpdateTrigger++
                             },
                             label = { Text(name, fontSize = 12.sp) },
                             colors = FilterChipDefaults.filterChipColors(
@@ -5693,7 +5717,6 @@ fun PlayerScreen(
                             selected = isSelected,
                             onClick = {
                                 viewModel.updateSubtitlePreferences(subtitleFontStyle = style, subtitlePreset = "Custom")
-                                tracksUpdateTrigger++
                             },
                             label = { Text(style, fontSize = 12.sp) },
                             colors = FilterChipDefaults.filterChipColors(
@@ -5738,7 +5761,6 @@ fun PlayerScreen(
                                     subtitleShadowColor = shadowHex,
                                     subtitlePreset = "Custom"
                                 )
-                                tracksUpdateTrigger++
                             },
                             label = { Text(name, fontSize = 12.sp) },
                             modifier = Modifier.weight(1f),
@@ -5764,7 +5786,6 @@ fun PlayerScreen(
                     value = prefs.subtitleOpacity.coerceIn(0.2f, 1.0f),
                     onValueChange = { newOpacity ->
                         viewModel.updateSubtitlePreferences(subtitleOpacity = newOpacity, subtitlePreset = "Custom")
-                        tracksUpdateTrigger++
                     },
                     valueRange = 0.2f..1.0f,
                     modifier = Modifier.fillMaxWidth()
@@ -5784,7 +5805,6 @@ fun PlayerScreen(
                     value = prefs.subtitleVerticalOffset.coerceIn(0.02f, 0.35f),
                     onValueChange = { newOffset ->
                         viewModel.updateSubtitlePreferences(subtitleVerticalOffset = newOffset, subtitlePreset = "Custom")
-                        tracksUpdateTrigger++
                     },
                     valueRange = 0.02f..0.35f,
                     modifier = Modifier.fillMaxWidth()
@@ -5812,7 +5832,6 @@ fun PlayerScreen(
                             selected = isSelected,
                             onClick = {
                                 viewModel.updateSubtitlePreferences(subtitleEncoding = encoding)
-                                tracksUpdateTrigger++
                             },
                             label = { Text(encoding, fontSize = 12.sp) },
                             colors = FilterChipDefaults.filterChipColors(
@@ -8733,7 +8752,6 @@ fun applySubtitleStyleToPlayerView(
         )
 
         view.subtitleView?.let { subView ->
-            subView.setViewType(androidx.media3.ui.SubtitleView.VIEW_TYPE_CANVAS)
             subView.setApplyEmbeddedStyles(false)
             subView.setApplyEmbeddedFontSizes(false)
             subView.setStyle(captionStyle)

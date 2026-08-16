@@ -502,7 +502,12 @@ fun PermissionAndNavigationContainer(viewModel: MainViewModel) {
 
     // App Navigation Flow
     var currentScreen by remember { mutableStateOf("Main") } // "Main", "Player", "Settings"
+    var previousScreen by remember { mutableStateOf("Main") }
     val currentPlayingItem by viewModel.currentPlayingItem.collectAsState()
+
+    androidx.activity.compose.BackHandler(enabled = currentScreen == "Settings") {
+        currentScreen = previousScreen.ifBlank { "Main" }
+    }
 
     val defaultOrientation = prefs.defaultOrientation
 
@@ -545,6 +550,7 @@ fun PermissionAndNavigationContainer(viewModel: MainViewModel) {
                             currentScreen = "Player"
                         },
                         onNavigateToSettings = {
+                            previousScreen = "Main"
                             currentScreen = "Settings"
                         },
                         onOpenPlayer = {
@@ -575,7 +581,7 @@ fun PermissionAndNavigationContainer(viewModel: MainViewModel) {
                     SettingsScreen(
                         viewModel = viewModel,
                         onBack = {
-                            currentScreen = "Main"
+                            currentScreen = previousScreen.ifBlank { "Main" }
                         }
                     )
                 }

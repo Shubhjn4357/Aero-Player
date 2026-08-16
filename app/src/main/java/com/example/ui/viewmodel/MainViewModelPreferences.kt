@@ -1,6 +1,8 @@
 package com.example.ui.viewmodel
 
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 fun MainViewModel.updateTheme(themeName: String) {
@@ -728,6 +730,318 @@ fun MainViewModel.updateCastSettings(
                 openGlRenderMode = openGlRenderMode ?: current.openGlRenderMode,
                 pauseOnScreenSleep = pauseOnScreenSleep ?: current.pauseOnScreenSleep,
                 keepCastingOnScreenSleep = keepCastingOnScreenSleep ?: current.keepCastingOnScreenSleep
+            )
+        )
+    }
+}
+
+// Media library
+fun MainViewModel.updateAutoScan(enabled: Boolean) = toggleAutoScan(enabled)
+fun MainViewModel.updatePlayHistoryEnabled(enabled: Boolean) = togglePlayHistoryEnabled(enabled)
+fun MainViewModel.updateSaveVideoQueueHistory(enabled: Boolean) = toggleSaveVideoQueueHistory(enabled)
+fun MainViewModel.updateSaveAudioQueueHistory(enabled: Boolean) = toggleSaveAudioQueueHistory(enabled)
+
+fun MainViewModel.updateMediaLibraryFolders(foldersJson: String) {
+    viewModelScope.launch {
+        val current = preferencesState.value
+        preferenceRepository.updatePreferences(current.copy(mediaLibraryFoldersJson = foldersJson))
+    }
+}
+
+// Video Settings from Screenshots
+fun MainViewModel.updateAlwaysFastSeek(enabled: Boolean) {
+    viewModelScope.launch {
+        val current = preferencesState.value
+        preferenceRepository.updatePreferences(current.copy(alwaysFastSeek = enabled))
+    }
+}
+
+fun MainViewModel.updateUseCustomPipPopup(enabled: Boolean) {
+    viewModelScope.launch {
+        val current = preferencesState.value
+        preferenceRepository.updatePreferences(current.copy(useCustomPipPopup = enabled))
+    }
+}
+
+fun MainViewModel.updateRestoreVideoFromBackground(enabled: Boolean) {
+    viewModelScope.launch {
+        val current = preferencesState.value
+        preferenceRepository.updatePreferences(current.copy(restoreVideoFromBackground = enabled))
+    }
+}
+
+fun MainViewModel.updateMatchDisplayFrameRate(enabled: Boolean) {
+    viewModelScope.launch {
+        val current = preferencesState.value
+        preferenceRepository.updatePreferences(current.copy(matchDisplayFrameRate = enabled))
+    }
+}
+
+fun MainViewModel.updatePreferredVideoResolution(resolution: String) {
+    viewModelScope.launch {
+        val current = preferencesState.value
+        preferenceRepository.updatePreferences(current.copy(preferredVideoResolution = resolution))
+    }
+}
+
+fun MainViewModel.updatePreferCloneSecondaryDisplay(enabled: Boolean) {
+    viewModelScope.launch {
+        val current = preferencesState.value
+        preferenceRepository.updatePreferences(current.copy(preferCloneSecondaryDisplay = enabled))
+    }
+}
+
+// Interface Settings from Screenshots
+fun MainViewModel.updateShowMissingMedia(enabled: Boolean) {
+    viewModelScope.launch {
+        val current = preferencesState.value
+        preferenceRepository.updatePreferences(current.copy(showMissingMedia = enabled))
+    }
+}
+
+fun MainViewModel.updateSleepTimer(duration: String) {
+    viewModelScope.launch {
+        val current = preferencesState.value
+        preferenceRepository.updatePreferences(current.copy(sleepTimerDuration = duration))
+
+        sleepTimerJob?.cancel()
+        if (duration != "Disabled") {
+            val minutes = when {
+                duration.contains("15") -> 15
+                duration.contains("30") -> 30
+                duration.contains("45") -> 45
+                duration.contains("60") -> 60
+                duration.contains("90") -> 90
+                duration.contains("120") -> 120
+                else -> duration.filter { it.isDigit() }.toIntOrNull() ?: 15
+            }
+            var remaining = minutes * 60
+            sleepTimerRemainingSeconds.value = remaining
+            sleepTimerJob = viewModelScope.launch {
+                while (remaining > 0) {
+                    delay(1000L)
+                    remaining--
+                    sleepTimerRemainingSeconds.value = remaining
+                }
+                PlayerControlBridge.pause()
+                sleepTimerRemainingSeconds.value = null
+                preferenceRepository.updatePreferences(preferencesState.value.copy(sleepTimerDuration = "Disabled"))
+            }
+        } else {
+            sleepTimerRemainingSeconds.value = null
+        }
+    }
+}
+
+fun MainViewModel.updateIncognitoMode(enabled: Boolean) {
+    viewModelScope.launch {
+        val current = preferencesState.value
+        preferenceRepository.updatePreferences(current.copy(incognitoMode = enabled))
+    }
+}
+
+fun MainViewModel.updatePersistentIncognitoMode(enabled: Boolean) {
+    viewModelScope.launch {
+        val current = preferencesState.value
+        preferenceRepository.updatePreferences(current.copy(persistentIncognitoMode = enabled))
+    }
+}
+
+fun MainViewModel.updateShowSeenVideoMarker(enabled: Boolean) {
+    viewModelScope.launch {
+        val current = preferencesState.value
+        preferenceRepository.updatePreferences(current.copy(showSeenVideoMarker = enabled))
+    }
+}
+
+fun MainViewModel.updateShowVideoThumbnails(enabled: Boolean) {
+    viewModelScope.launch {
+        val current = preferencesState.value
+        preferenceRepository.updatePreferences(current.copy(showVideoThumbnails = enabled))
+    }
+}
+
+fun MainViewModel.updateShowLastPlaylistTip(enabled: Boolean) {
+    viewModelScope.launch {
+        val current = preferencesState.value
+        preferenceRepository.updatePreferences(current.copy(showLastPlaylistTip = enabled))
+    }
+}
+
+fun MainViewModel.updateMediaCoverOnLockscreen(enabled: Boolean) {
+    viewModelScope.launch {
+        val current = preferencesState.value
+        preferenceRepository.updatePreferences(current.copy(mediaCoverOnLockscreen = enabled))
+    }
+}
+
+fun MainViewModel.updateSeekButtonsInNotification(enabled: Boolean) {
+    viewModelScope.launch {
+        val current = preferencesState.value
+        preferenceRepository.updatePreferences(current.copy(seekButtonsInNotification = enabled))
+    }
+}
+
+// Subtitles Settings from Screenshots
+fun MainViewModel.updateAutoLoadSubtitles(enabled: Boolean) {
+    viewModelScope.launch {
+        val current = preferencesState.value
+        preferenceRepository.updatePreferences(current.copy(autoLoadSubtitles = enabled))
+    }
+}
+
+fun MainViewModel.updateSubtitleEncoding(encoding: String) {
+    viewModelScope.launch {
+        val current = preferencesState.value
+        preferenceRepository.updatePreferences(current.copy(subtitleEncoding = encoding))
+    }
+}
+
+fun MainViewModel.updateSubtitleBold(enabled: Boolean) {
+    viewModelScope.launch {
+        val current = preferencesState.value
+        preferenceRepository.updatePreferences(current.copy(subtitleBold = enabled))
+    }
+}
+
+fun MainViewModel.updateSubtitleOpacity(opacity: Float) {
+    viewModelScope.launch {
+        val current = preferencesState.value
+        preferenceRepository.updatePreferences(current.copy(subtitleOpacity = opacity))
+    }
+}
+
+fun MainViewModel.updateSubtitleBackgroundEnabled(enabled: Boolean) {
+    viewModelScope.launch {
+        val current = preferencesState.value
+        preferenceRepository.updatePreferences(current.copy(subtitleBackgroundEnabled = enabled))
+    }
+}
+
+fun MainViewModel.updateSubtitleShadowEnabled(enabled: Boolean) {
+    viewModelScope.launch {
+        val current = preferencesState.value
+        preferenceRepository.updatePreferences(current.copy(subtitleShadowEnabled = enabled))
+    }
+}
+
+fun MainViewModel.updateSubtitleShadowColor(color: String) {
+    viewModelScope.launch {
+        val current = preferencesState.value
+        preferenceRepository.updatePreferences(current.copy(subtitleShadowColor = color))
+    }
+}
+
+// Audio Settings from Screenshots
+fun MainViewModel.updateResumePlaybackAfterCall(enabled: Boolean) {
+    viewModelScope.launch {
+        val current = preferencesState.value
+        preferenceRepository.updatePreferences(current.copy(resumePlaybackAfterCall = enabled))
+    }
+}
+
+fun MainViewModel.updateStopOnAppSwipe(enabled: Boolean) {
+    viewModelScope.launch {
+        val current = preferencesState.value
+        preferenceRepository.updatePreferences(current.copy(stopOnAppSwipe = enabled))
+    }
+}
+
+fun MainViewModel.updateDigitalAudioPassthrough(enabled: Boolean) {
+    viewModelScope.launch {
+        val current = preferencesState.value
+        preferenceRepository.updatePreferences(current.copy(digitalAudioPassthrough = enabled))
+    }
+}
+
+fun MainViewModel.updatePreferredAudioLanguage(language: String) {
+    viewModelScope.launch {
+        val current = preferencesState.value
+        preferenceRepository.updatePreferences(current.copy(preferredAudioLanguage = language))
+    }
+}
+
+fun MainViewModel.updateResumePlayedAudio(behavior: String) {
+    viewModelScope.launch {
+        val current = preferencesState.value
+        preferenceRepository.updatePreferences(current.copy(resumePlayedAudio = behavior))
+    }
+}
+
+fun MainViewModel.updateDetectHeadset(enabled: Boolean) {
+    viewModelScope.launch {
+        val current = preferencesState.value
+        preferenceRepository.updatePreferences(current.copy(detectHeadset = enabled))
+    }
+}
+
+fun MainViewModel.updateResumeOnHeadsetInsertion(enabled: Boolean) {
+    viewModelScope.launch {
+        val current = preferencesState.value
+        preferenceRepository.updatePreferences(current.copy(resumeOnHeadsetInsertion = enabled))
+    }
+}
+
+fun MainViewModel.updateIgnoreHeadsetButtons(enabled: Boolean) {
+    viewModelScope.launch {
+        val current = preferencesState.value
+        preferenceRepository.updatePreferences(current.copy(ignoreHeadsetButtons = enabled))
+    }
+}
+
+fun MainViewModel.updateEnableReplayGain(enabled: Boolean) {
+    viewModelScope.launch {
+        val current = preferencesState.value
+        preferenceRepository.updatePreferences(current.copy(enableReplayGain = enabled))
+    }
+}
+
+fun MainViewModel.updateReplayGainMode(mode: String) {
+    viewModelScope.launch {
+        val current = preferencesState.value
+        preferenceRepository.updatePreferences(current.copy(replayGainMode = mode))
+    }
+}
+
+// Advanced & Application Data Settings from Screenshots
+fun MainViewModel.updateNetworkCachingMs(ms: Int) {
+    viewModelScope.launch {
+        val current = preferencesState.value
+        preferenceRepository.updatePreferences(current.copy(networkCachingMs = ms))
+    }
+}
+
+fun MainViewModel.updatePreferSmb1(enabled: Boolean) {
+    viewModelScope.launch {
+        val current = preferencesState.value
+        preferenceRepository.updatePreferences(current.copy(preferSmb1 = enabled))
+    }
+}
+
+fun MainViewModel.updateHttpUserAgent(userAgent: String) {
+    viewModelScope.launch {
+        val current = preferencesState.value
+        preferenceRepository.updatePreferences(current.copy(httpUserAgent = userAgent))
+    }
+}
+
+// Parental Control
+fun MainViewModel.updateParentalControl(
+    enabled: Boolean? = null,
+    pin: String? = null,
+    lockSettings: Boolean? = null,
+    lockStreams: Boolean? = null,
+    lockSensitiveFolders: Boolean? = null
+) {
+    viewModelScope.launch {
+        val current = preferencesState.value
+        preferenceRepository.updatePreferences(
+            current.copy(
+                parentalControlEnabled = enabled ?: current.parentalControlEnabled,
+                parentalPin = pin ?: current.parentalPin,
+                parentalLockSettings = lockSettings ?: current.parentalLockSettings,
+                parentalLockStreams = lockStreams ?: current.parentalLockStreams,
+                parentalLockSensitiveFolders = lockSensitiveFolders ?: current.parentalLockSensitiveFolders
             )
         )
     }

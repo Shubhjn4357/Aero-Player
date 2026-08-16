@@ -51,27 +51,32 @@ data class PreferenceEntity(
     val subtitleSize: Float = 16f,
     val subtitleColor: String = "#FFFFFF",
     val autoScanEnabled: Boolean = true,
-    val defaultOrientation: String = "System Auto", // "System Auto", "Portrait", "Landscape", "Reverse Portrait", "Reverse Landscape"
+    val mediaLibraryFoldersJson: String = "[\"Internal Storage\", \"Movies\", \"Download\", \"DCIM\", \"Music\", \"WhatsApp\"]",
+    val defaultOrientation: String = "Landscape", // "Automatic (sensor)", "Locked at start", "Landscape", "Portrait", "Reverse landscape", "Reverse portrait"
     val rotationLock: Boolean = false,
     val onboardingCompleted: Boolean = false,
     val doubleTapSeekSeconds: Int = 10,
     val bannedFoldersJson: String = "[]",
     val favoriteFoldersJson: String = "[\"Movies\", \"Music\", \"WhatsApp\"]",
     val playlistsJson: String = "{}",
-    val meteredNetworkAction: String = "Warn", // "Warn", "Block", "Allow"
+    val meteredNetworkAction: String = "Warn me (the warning may be missed for audio playback)", // "Warn me (the warning may be missed for audio playback)", "Block streaming", "Allow streaming"
     val playHistoryEnabled: Boolean = true,
     val saveVideoQueueHistory: Boolean = true,
     val saveAudioQueueHistory: Boolean = true,
-    val hwAcceleration: String = "Full", // "Disabled", "Decoding", "Full"
+    val hwAcceleration: String = "Full", // "Automatic", "Disabled", "Decoding", "Full"
     val backgroundMode: String = "STOP_PLAYBACK", // "STOP_PLAYBACK", "PLAY_BACKGROUND_AUDIO", "LAUNCH_PIP_MODE"
-    val resumePlaybackBehavior: String = "Ask Every Time", // "Ask Every Time", "Always Resume", "Always Start from Beginning"
+    val resumePlaybackBehavior: String = "Always", // "Always", "Ask", "Never"
     val usePerVideoSettings: Boolean = false,
     val perVideoSettingsJson: String = "{}",
-    val defaultSubtitleLanguage: String = "English",
+    val defaultSubtitleLanguage: String = "No language preference",
+    val autoLoadSubtitles: Boolean = true,
     val subtitleBackground: String = "#00000000",
+    val subtitleBackgroundEnabled: Boolean = false,
     val subtitleTextColor: String = "#FFFFFF",
     val subtitleFontStyle: String = "Normal",
-    val subtitleShadowColor: String = "#00000000",
+    val subtitleBold: Boolean = false,
+    val subtitleShadowEnabled: Boolean = true,
+    val subtitleShadowColor: String = "#FF000000",
     val subtitleShadowRadius: Float = 3f,
     val subtitleShadowOpacity: Float = 1.0f,
     val subtitleOutlineColor: String = "#FF000000",
@@ -79,8 +84,47 @@ data class PreferenceEntity(
     val subtitleOutlineOpacity: Float = 1.0f,
     val subtitleOpacity: Float = 1.0f,
     val subtitlePreset: String = "Custom",
-    val subtitleEncoding: String = "UTF-8",
+    val subtitleEncoding: String = "Default (Windows-1252)",
     val subtitleVerticalOffset: Float = 0.08f,
+    // Video settings
+    val alwaysFastSeek: Boolean = false,
+    val useCustomPipPopup: Boolean = false,
+    val restoreVideoFromBackground: Boolean = false,
+    val matchDisplayFrameRate: Boolean = true,
+    val preferredVideoResolution: String = "Best available",
+    val preferCloneSecondaryDisplay: Boolean = false,
+    // Interface settings
+    val showMissingMedia: Boolean = true,
+    val sleepTimerDuration: String = "Disabled",
+    val incognitoMode: Boolean = false,
+    val persistentIncognitoMode: Boolean = true,
+    val showSeenVideoMarker: Boolean = true,
+    val showVideoThumbnails: Boolean = true,
+    val showLastPlaylistTip: Boolean = true,
+    val mediaCoverOnLockscreen: Boolean = true,
+    val seekButtonsInNotification: Boolean = false,
+    // Audio settings
+    val resumePlaybackAfterCall: Boolean = true,
+    val stopOnAppSwipe: Boolean = false,
+    val digitalAudioPassthrough: Boolean = false,
+    val preferredAudioLanguage: String = "No language preference",
+    val resumePlayedAudio: String = "Always", // "Always", "Ask", "Never"
+    val detectHeadset: Boolean = true,
+    val resumeOnHeadsetInsertion: Boolean = false,
+    val ignoreHeadsetButtons: Boolean = false,
+    val enableReplayGain: Boolean = false,
+    val replayGainMode: String = "Track mode", // "Track mode", "Album mode", "None"
+    // Advanced & Network settings
+    val networkCachingMs: Int = 1500,
+    val preferSmb1: Boolean = true,
+    val httpUserAgent: String = "Not set",
+    // Parental Control
+    val parentalControlEnabled: Boolean = false,
+    val parentalPin: String = "0000",
+    val parentalLockSettings: Boolean = true,
+    val parentalLockStreams: Boolean = true,
+    val parentalLockSensitiveFolders: Boolean = true,
+    // System & General
     val saveVolumeBrightnessBehavior: String = "None", // "None", "Global", "Individual"
     val globalVolume: Float = 1.0f,
     val globalBrightness: Float = 0.5f,

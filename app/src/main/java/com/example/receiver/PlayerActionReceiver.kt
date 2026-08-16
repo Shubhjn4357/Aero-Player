@@ -17,6 +17,18 @@ class PlayerActionReceiver : BroadcastReceiver() {
             return
         }
 
+        if (action == Intent.ACTION_HEADSET_PLUG) {
+            val state = intent.getIntExtra("state", -1)
+            if (state == 0) {
+                // Headset unplugged
+                PlayerControlBridge.pause()
+            } else if (state == 1) {
+                // Headset plugged in
+                PlayerControlBridge.onHeadsetPluggedIn()
+            }
+            return
+        }
+
         if (action == Intent.ACTION_MEDIA_BUTTON) {
             val keyEvent = if (android.os.Build.VERSION.SDK_INT >= 33) {
                 intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT, KeyEvent::class.java)
@@ -38,10 +50,12 @@ class PlayerActionReceiver : BroadcastReceiver() {
                     KeyEvent.KEYCODE_MEDIA_PAUSE -> {
                         PlayerControlBridge.pause()
                     }
-                    KeyEvent.KEYCODE_MEDIA_NEXT -> {
+                    KeyEvent.KEYCODE_MEDIA_NEXT,
+                    KeyEvent.KEYCODE_MEDIA_SKIP_FORWARD -> {
                         PlayerControlBridge.next()
                     }
-                    KeyEvent.KEYCODE_MEDIA_PREVIOUS -> {
+                    KeyEvent.KEYCODE_MEDIA_PREVIOUS,
+                    KeyEvent.KEYCODE_MEDIA_SKIP_BACKWARD -> {
                         PlayerControlBridge.prev()
                     }
                     KeyEvent.KEYCODE_MEDIA_STOP -> {

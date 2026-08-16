@@ -18,7 +18,7 @@ interface MediaDao {
     @Query("DELETE FROM media_items")
     suspend fun clearAllMedia()
 
-    @Query("DELETE FROM media_items WHERE artist != 'Custom Stream'")
+    @Query("DELETE FROM media_items WHERE artist != 'Custom Stream' AND genre != 'Live Stream' AND genre != 'Playlist Stream Channel'")
     suspend fun clearLocalMedia()
 
     @Transaction

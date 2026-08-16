@@ -23,6 +23,7 @@ import com.example.util.setAsRingtone as utilSetAsRingtone
 import com.example.util.shareMediaItems as utilShareMediaItems
 import java.lang.ref.WeakReference
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -455,6 +456,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return prevItem
     }
 
+    var sleepTimerJob: Job? = null
+    val sleepTimerRemainingSeconds = MutableStateFlow<Int?>(null)
+
     suspend fun getHistoryByUri(uriString: String): HistoryEntity? = historyRepository.getHistoryByUri(uriString)
 
     fun addPlaybackHistory(item: MediaEntity, progressMs: Long) {
@@ -462,6 +466,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun recordPlaybackHistory(item: MediaEntity, progressMs: Long) {
+        val prefs = preferencesState.value
+        if (prefs.incognitoMode || !prefs.playHistoryEnabled) {
+            return
+        }
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 historyRepository.addHistory(

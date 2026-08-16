@@ -5,37 +5,77 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- Center Aero Cone / Play Symbol with vibrant gradient -->
+
+    <!-- Trailing aero wing accent -->
     <path
-        android:pathData="M42,32 L74,54 L42,76 Z">
-        <aapt:attr name="android:fillColor">
+        android:pathData="M27,37 L34,42.5 L34,65.5 L27,71"
+        android:strokeWidth="3.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round">
+        <aapt:attr name="android:strokeColor">
             <gradient
-                android:startX="42"
-                android:startY="32"
-                android:endX="74"
-                android:endY="76"
+                android:startX="27"
+                android:startY="37"
+                android:endX="34"
+                android:endY="71"
                 android:type="linear">
-                <item android:offset="0.0" android:color="#FFFFB74D" />
-                <item android:offset="0.5" android:color="#FFFF9100" />
-                <item android:offset="1.0" android:color="#FFFF6D00" />
+                <item android:offset="0.0" android:color="#33D8B4FE" />
+                <item android:offset="0.5" android:color="#66C084FC" />
+                <item android:offset="1.0" android:color="#227E22CE" />
             </gradient>
         </aapt:attr>
     </path>
-    <!-- Geometric decorative accents -->
+
+    <!-- Main aerodynamic arrow body -->
     <path
-        android:pathData="M38,28 L38,80"
-        android:strokeWidth="3"
-        android:strokeLineCap="round">
-        <aapt:attr name="android:strokeColor">
+        android:pathData="M35,30 C35,27.5 38,26 40,27.5 L77,51.8 C79.2,53.2 79.2,54.8 77,56.2 L40,80.5 C38,82 35,80.5 35,78 L47,54 Z">
+        <aapt:attr name="android:fillColor">
             <gradient
-                android:startX="38"
-                android:startY="28"
-                android:endX="38"
-                android:endY="80"
+                android:startX="35"
+                android:startY="27"
+                android:endX="79"
+                android:endY="81"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#FFF3E8FF" />
+                <item android:offset="0.25" android:color="#FFD8B4FE" />
+                <item android:offset="0.6" android:color="#FFA855F7" />
+                <item android:offset="1.0" android:color="#FF7E22CE" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Top facet specular highlight for modern 3D depth -->
+    <path
+        android:pathData="M40,27.5 L77,51.8 C77.8,52.4 78.1,53.2 78,54 L47,54 L35,30 C35,27.5 38,26 40,27.5 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="35"
+                android:startY="27"
+                android:endX="78"
+                android:endY="54"
                 android:type="linear">
                 <item android:offset="0.0" android:color="#4DFFFFFF" />
-                <item android:offset="0.5" android:color="#FFFFB74D" />
-                <item android:offset="1.0" android:color="#33FF9100" />
+                <item android:offset="0.6" android:color="#1AFFFFFF" />
+                <item android:offset="1.0" android:color="#00000000" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Sleek inner arrow core accent -->
+    <path
+        android:pathData="M52,48 L60,54 L52,60"
+        android:strokeWidth="2.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round">
+        <aapt:attr name="android:strokeColor">
+            <gradient
+                android:startX="52"
+                android:startY="48"
+                android:endX="60"
+                android:endY="60"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#CCFFFFFF" />
+                <item android:offset="1.0" android:color="#66D8B4FE" />
             </gradient>
         </aapt:attr>
     </path>
