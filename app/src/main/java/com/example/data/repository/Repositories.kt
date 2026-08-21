@@ -176,6 +176,11 @@ class MediaRepository(private val mediaDao: MediaDao) : IMediaRepository {
                     ).toString()
 
                     val normPath = normalizePath(data)
+                    if (data.isNotBlank() && (data.startsWith("/") || data.startsWith("file:"))) {
+                        val checkPath = if (data.startsWith("file:")) Uri.parse(data).path ?: data else data
+                        val f = File(checkPath)
+                        if (!f.exists()) continue
+                    }
                     if (normPath.isNotBlank()) {
                         if (seenPaths.contains(normPath)) continue
                         seenPaths.add(normPath)
@@ -255,6 +260,11 @@ class MediaRepository(private val mediaDao: MediaDao) : IMediaRepository {
                     ).toString()
 
                     val normPath = normalizePath(data)
+                    if (data.isNotBlank() && (data.startsWith("/") || data.startsWith("file:"))) {
+                        val checkPath = if (data.startsWith("file:")) Uri.parse(data).path ?: data else data
+                        val f = File(checkPath)
+                        if (!f.exists()) continue
+                    }
                     if (normPath.isNotBlank()) {
                         if (seenPaths.contains(normPath)) continue
                         seenPaths.add(normPath)

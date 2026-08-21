@@ -125,16 +125,40 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val volumeOverlayTime = MutableStateFlow<Long>(0L)
     var audioOnlyPlaybackRequested: Boolean = false
 
-    val exoPlayer: ExoPlayer by lazy {
-        val audioAttributes = AudioAttributes.Builder()
-            .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
-            .setUsage(C.USAGE_MEDIA)
-            .build()
-        ExoPlayer.Builder(application)
-            .setAudioAttributes(audioAttributes, true)
-            .setHandleAudioBecomingNoisy(true)
-            .build()
-    }
+    private var _exoPlayerInstance: ExoPlayer? = null
+    val exoPlayer: ExoPlayer
+        get() {
+            if (_exoPlayerInstance == null) {
+                try {
+                    val audioAttributes = AudioAttributes.Builder()
+                        .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+                        .setUsage(C.USAGE_MEDIA)
+                        .build()
+                    _exoPlayerInstance = ExoPlayer.Builder(getApplication())
+                        .setAudioAttributes(audioAttributes, true)
+                        .setHandleAudioBecomingNoisy(true)
+                        .build()
+                } catch (e: Throwable) {
+                    android.util.Log.e("MainViewModel", "Failed to build ExoPlayer with custom attributes: ${e.message}", e)
+                    _exoPlayerInstance = ExoPlayer.Builder(getApplication()).build()
+                }
+                PlayerControlBridge.exoPlayerRef = WeakReference(_exoPlayerInstance)
+            }
+            return _exoPlayerInstance!!
+        }
+
+    private var _vlcPlayerInstance: com.example.player.VlcPlayerWrapper? = null
+    val vlcPlayer: com.example.player.VlcPlayerWrapper
+        get() {
+            if (_vlcPlayerInstance == null) {
+                _vlcPlayerInstance = com.example.player.VlcPlayerWrapper(getApplication())
+                PlayerControlBridge.vlcPlayerRef = WeakReference(_vlcPlayerInstance)
+            }
+            return _vlcPlayerInstance!!
+        }
+
+    var lastLoadedPlayerUri: String? = null
+    var lastLoadedEngineType: String? = null
 
     private val _equalizerEnabled = MutableStateFlow(false)
     val equalizerEnabled: StateFlow<Boolean> = _equalizerEnabled.asStateFlow()
@@ -161,26 +185,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         PlayerControlBridge.viewModelRef = WeakReference(this)
-        PlayerControlBridge.exoPlayerRef = WeakReference(exoPlayer)
         PlayerControlBridge.isPlayingListener = { playing ->
             _isPlaying.value = playing
         }
         PlayerControlBridge.onPlayPauseListener = {
-            if (exoPlayer.isPlaying) {
-                exoPlayer.pause()
-                _isPlaying.value = false
-            } else {
-                exoPlayer.play()
-                _isPlaying.value = true
+            try {
+                if (exoPlayer.isPlaying) {
+                    exoPlayer.pause()
+                    _isPlaying.value = false
+                } else {
+                    exoPlayer.play()
+                    _isPlaying.value = true
+                }
+            } catch (e: Throwable) {
+                e.printStackTrace()
             }
         }
         PlayerControlBridge.onPlayListener = {
-            exoPlayer.play()
-            _isPlaying.value = true
+            try {
+                exoPlayer.play()
+                _isPlaying.value = true
+            } catch (e: Throwable) {
+                e.printStackTrace()
+            }
         }
         PlayerControlBridge.onPauseListener = {
-            exoPlayer.pause()
-            _isPlaying.value = false
+            try {
+                exoPlayer.pause()
+                _isPlaying.value = false
+            } catch (e: Throwable) {
+                e.printStackTrace()
+            }
         }
         PlayerControlBridge.onNextListener = {
             playNext()
@@ -189,8 +224,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             playPrevious()
         }
 
-        viewModelScope.launch {
-            scanLocalMedia()
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                scanLocalMedia()
+            } catch (e: Throwable) {
+                e.printStackTrace()
+            }
         }
     }
 
@@ -303,7 +342,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _playQueue.value = currentQueue + item
                 _currentQueueIndex.value = _playQueue.value.size - 1
             }
-            recordPlaybackHistory(item, 0L)
         }
     }
 
@@ -312,7 +350,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val safeIndex = if (index in queue.indices) index else queue.indexOfFirst { it.uriString == item.uriString }.coerceAtLeast(0)
         _currentQueueIndex.value = safeIndex
         _currentPlayingItem.value = item
-        recordPlaybackHistory(item, 0L)
     }
 
     fun autoLoadFolderToQueue(item: MediaEntity) {
@@ -520,8 +557,38 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private var pendingDeleteItemsList: List<MediaEntity> = emptyList()
+
     fun clearPendingDeleteIntent() {
         _pendingDeleteIntent.value = null
+    }
+
+    fun onDeleteRequestGranted() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val toDelete = pendingDeleteItemsList.toList()
+            pendingDeleteItemsList = emptyList()
+            toDelete.forEach { item ->
+                try {
+                    val uri = android.net.Uri.parse(item.uriString)
+                    if (uri.scheme == "file" || uri.scheme == null) {
+                        val path = uri.path ?: item.path
+                        if (path.isNotBlank()) {
+                            val f = java.io.File(path)
+                            if (f.exists()) f.delete()
+                        }
+                    }
+                } catch (e: Exception) {}
+                try {
+                    if (item.path.isNotBlank()) {
+                        val f = java.io.File(item.path)
+                        if (f.exists()) f.delete()
+                    }
+                } catch (e: Exception) {}
+                mediaRepository.deleteMedia(item.uriString)
+                historyRepository.deleteHistory(item.uriString)
+            }
+            scanLocalMedia()
+        }
     }
 
     fun deleteMedia(item: MediaEntity) {
@@ -534,7 +601,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             deleteMediaItem(found)
         } else {
             viewModelScope.launch(Dispatchers.IO) {
+                try {
+                    val uri = android.net.Uri.parse(uriString)
+                    if (uri.scheme == "file" || uri.scheme == null) {
+                        val path = uri.path ?: uriString
+                        val f = java.io.File(path)
+                        if (f.exists()) f.delete()
+                    }
+                } catch (e: Exception) {}
                 mediaRepository.deleteMedia(uriString)
+                historyRepository.deleteHistory(uriString)
             }
         }
     }
@@ -550,21 +626,78 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun deleteMediaItems(items: List<MediaEntity>) {
         viewModelScope.launch(Dispatchers.IO) {
             val context: Context = getApplication()
-            val uris = items.map { android.net.Uri.parse(it.uriString) }
+            val contentUris = mutableListOf<android.net.Uri>()
+            val nonContentItems = mutableListOf<MediaEntity>()
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                try {
-                    val pi = MediaStore.createDeleteRequest(context.contentResolver, uris)
-                    _pendingDeleteIntent.value = pi
-                } catch (e: Exception) {
-                    items.forEach { mediaRepository.deleteMedia(it.uriString) }
+            items.forEach { item ->
+                val uri = android.net.Uri.parse(item.uriString)
+                if (uri.scheme == "content" && (item.uriString.contains("media", ignoreCase = true) || item.uriString.contains("providers", ignoreCase = true))) {
+                    contentUris.add(uri)
+                } else {
+                    nonContentItems.add(item)
                 }
-            } else {
-                items.forEach { item ->
+            }
+
+            // Immediately delete physical files and local DB entries for non-content or file:// items
+            nonContentItems.forEach { item ->
+                try {
+                    val uri = android.net.Uri.parse(item.uriString)
+                    if (uri.scheme == "file" || uri.scheme == null) {
+                        val path = uri.path ?: item.path
+                        if (path.isNotBlank()) {
+                            val f = java.io.File(path)
+                            if (f.exists()) f.delete()
+                        }
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.e("MainViewModel", "Error deleting file", e)
+                }
+                try {
+                    if (item.path.isNotBlank()) {
+                        val f = java.io.File(item.path)
+                        if (f.exists()) f.delete()
+                    }
+                } catch (e: Exception) {}
+                mediaRepository.deleteMedia(item.uriString)
+                historyRepository.deleteHistory(item.uriString)
+            }
+
+            if (contentUris.isNotEmpty()) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                     try {
-                        context.contentResolver.delete(android.net.Uri.parse(item.uriString), null, null)
-                    } catch (e: Exception) {}
-                    mediaRepository.deleteMedia(item.uriString)
+                        val pi = MediaStore.createDeleteRequest(context.contentResolver, contentUris)
+                        pendingDeleteItemsList = items
+                        _pendingDeleteIntent.value = pi
+                    } catch (e: Exception) {
+                        // Fallback direct delete & db cleanup
+                        items.forEach { item ->
+                            try {
+                                context.contentResolver.delete(android.net.Uri.parse(item.uriString), null, null)
+                            } catch (ex: Exception) {}
+                            try {
+                                if (item.path.isNotBlank()) {
+                                    val f = java.io.File(item.path)
+                                    if (f.exists()) f.delete()
+                                }
+                            } catch (ex: Exception) {}
+                            mediaRepository.deleteMedia(item.uriString)
+                            historyRepository.deleteHistory(item.uriString)
+                        }
+                    }
+                } else {
+                    items.forEach { item ->
+                        try {
+                            context.contentResolver.delete(android.net.Uri.parse(item.uriString), null, null)
+                        } catch (e: Exception) {}
+                        try {
+                            if (item.path.isNotBlank()) {
+                                val f = java.io.File(item.path)
+                                if (f.exists()) f.delete()
+                            }
+                        } catch (e: Exception) {}
+                        mediaRepository.deleteMedia(item.uriString)
+                        historyRepository.deleteHistory(item.uriString)
+                    }
                 }
             }
         }
@@ -938,7 +1071,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     override fun onCleared() {
         super.onCleared()
         try {
-            exoPlayer.release()
+            _exoPlayerInstance?.release()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        try {
+            _vlcPlayerInstance?.release()
         } catch (e: Exception) {
             e.printStackTrace()
         }

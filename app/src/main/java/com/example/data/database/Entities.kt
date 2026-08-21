@@ -87,6 +87,7 @@ data class PreferenceEntity(
     val subtitleEncoding: String = "Default (Windows-1252)",
     val subtitleVerticalOffset: Float = 0.08f,
     // Video settings
+    val videoOutput: String = "Automatic", // "Automatic", "OpenGL ES 2.0", "OpenGL ES 3.0", "Android SurfaceView"
     val alwaysFastSeek: Boolean = false,
     val useCustomPipPopup: Boolean = false,
     val restoreVideoFromBackground: Boolean = false,
@@ -104,6 +105,7 @@ data class PreferenceEntity(
     val mediaCoverOnLockscreen: Boolean = true,
     val seekButtonsInNotification: Boolean = false,
     // Audio settings
+    val audioOutput: String = "AudioTrack", // "AudioTrack", "OpenSL ES", "AAudio"
     val resumePlaybackAfterCall: Boolean = true,
     val stopOnAppSwipe: Boolean = false,
     val digitalAudioPassthrough: Boolean = false,

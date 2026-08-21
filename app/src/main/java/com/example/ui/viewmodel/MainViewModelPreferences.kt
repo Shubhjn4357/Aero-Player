@@ -1,75 +1,76 @@
 package com.example.ui.viewmodel
 
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 fun MainViewModel.updateTheme(themeName: String) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(themeMode = themeName))
     }
 }
 
 fun MainViewModel.updateDynamicColor(enabled: Boolean) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(useDynamicColor = enabled))
     }
 }
 
 fun MainViewModel.updateGroupWiseFolderStyle(enabled: Boolean) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(useGroupWiseFolderStyle = enabled))
     }
 }
 
 fun MainViewModel.updateListStyle(style: String) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(listStyle = style))
     }
 }
 
 fun MainViewModel.updateUseGroupWiseFolderStyle(enabled: Boolean) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(useGroupWiseFolderStyle = enabled))
     }
 }
 
 fun MainViewModel.updateSorting(sortBy: String, ascending: Boolean) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(sortBy = sortBy, sortAscending = ascending))
     }
 }
 
 fun MainViewModel.updateGroupByStyle(style: String) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(groupByStyle = style))
     }
 }
 
 fun MainViewModel.updatePlaybackSettings(speed: Float, resizeMode: Int) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(playbackSpeed = speed, resizeMode = resizeMode))
     }
 }
 
 fun MainViewModel.updateSubtitleSettings(size: Float, color: String) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(subtitleSize = size, subtitleColor = color, subtitleTextColor = color))
     }
 }
 
 fun MainViewModel.updateSubtitleLanguage(language: String) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(defaultSubtitleLanguage = language))
     }
@@ -82,7 +83,7 @@ fun MainViewModel.updateSubtitleCustomization(
     fontStyle: String,
     verticalOffset: Float? = null
 ) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(
             subtitleBackground = background,
@@ -107,7 +108,7 @@ fun MainViewModel.updateAdvancedSubtitleSettings(
     encoding: String? = null,
     verticalOffset: Float? = null
 ) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(
             subtitleShadowColor = shadowColor ?: current.subtitleShadowColor,
@@ -125,7 +126,7 @@ fun MainViewModel.updateAdvancedSubtitleSettings(
 }
 
 fun MainViewModel.applySubtitlePreset(preset: String) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         val updated = when (preset) {
             "White on Black" -> {
@@ -193,42 +194,42 @@ fun MainViewModel.applySubtitlePreset(preset: String) {
 }
 
 fun MainViewModel.toggleAutoScan(enabled: Boolean) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(autoScanEnabled = enabled))
     }
 }
 
 fun MainViewModel.toggleUsePerVideoSettings(enabled: Boolean) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(usePerVideoSettings = enabled))
     }
 }
 
 fun MainViewModel.updateSaveVolumeBrightnessBehavior(behavior: String) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(saveVolumeBrightnessBehavior = behavior))
     }
 }
 
 fun MainViewModel.updateGlobalVolume(volume: Float) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(globalVolume = volume))
     }
 }
 
 fun MainViewModel.updateGlobalBrightness(brightness: Float) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(globalBrightness = brightness))
     }
 }
 
 fun MainViewModel.updatePerVideoVolumeBrightness(uriString: String, volume: Float, brightness: Float) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         try {
             val json = if (current.perVideoSettingsJson.isBlank()) org.json.JSONObject() else org.json.JSONObject(current.perVideoSettingsJson)
@@ -253,7 +254,7 @@ fun MainViewModel.updatePerVideoSettings(
     eqPreset: String,
     brightness: Float = -1f
 ) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         try {
             val json = if (current.perVideoSettingsJson.isBlank()) org.json.JSONObject() else org.json.JSONObject(current.perVideoSettingsJson)
@@ -283,7 +284,7 @@ fun MainViewModel.updatePerVideoSubtitle(
     subtitleTrackName: String? = null,
     subtitleLanguage: String? = null
 ) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         try {
             val json = if (current.perVideoSettingsJson.isBlank()) org.json.JSONObject() else org.json.JSONObject(current.perVideoSettingsJson)
@@ -334,7 +335,7 @@ fun MainViewModel.updatePerVideoAudio(
     audioTrackName: String? = null,
     audioLanguage: String? = null
 ) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         try {
             val json = if (current.perVideoSettingsJson.isBlank()) org.json.JSONObject() else org.json.JSONObject(current.perVideoSettingsJson)
@@ -359,7 +360,7 @@ fun MainViewModel.updatePerVideoAudio(
 }
 
 fun MainViewModel.updatePerVideoEngine(uriString: String, engine: String) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         try {
             val json = if (current.perVideoSettingsJson.isBlank()) org.json.JSONObject() else org.json.JSONObject(current.perVideoSettingsJson)
@@ -374,28 +375,28 @@ fun MainViewModel.updatePerVideoEngine(uriString: String, engine: String) {
 }
 
 fun MainViewModel.updateDefaultPlayerEngine(engine: String) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(defaultPlayerEngine = engine))
     }
 }
 
 fun MainViewModel.updateDefaultOrientation(orientation: String) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(defaultOrientation = orientation))
     }
 }
 
 fun MainViewModel.updateDoubleTapSeekSeconds(seconds: Int) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(doubleTapSeekSeconds = seconds))
     }
 }
 
 fun MainViewModel.toggleRotationLock(locked: Boolean) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(rotationLock = locked))
     }
@@ -408,14 +409,14 @@ fun MainViewModel.completeOnboarding() {
     } catch (e: Exception) {
         android.util.Log.e("MainViewModel", "Failed to write onboarding to SharedPreferences", e)
     }
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(onboardingCompleted = true))
     }
 }
 
 fun MainViewModel.toggleBannedFolder(folderPath: String) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         val array = try {
             org.json.JSONArray(current.bannedFoldersJson)
@@ -437,7 +438,7 @@ fun MainViewModel.toggleBannedFolder(folderPath: String) {
 }
 
 fun MainViewModel.toggleFavoriteFolder(folderPath: String) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         val array = try {
             org.json.JSONArray(current.favoriteFoldersJson)
@@ -460,7 +461,7 @@ fun MainViewModel.toggleFavoriteFolder(folderPath: String) {
 
 fun MainViewModel.toggleFavoriteMedia(mediaUri: String) {
     val playlistName = "Favorites"
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         val jsonObj = try {
             org.json.JSONObject(current.playlistsJson)
@@ -518,56 +519,56 @@ fun MainViewModel.isMediaFavorite(mediaUri: String): Boolean {
 }
 
 fun MainViewModel.updateMeteredNetworkAction(action: String) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(meteredNetworkAction = action))
     }
 }
 
 fun MainViewModel.togglePlayHistoryEnabled(enabled: Boolean) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(playHistoryEnabled = enabled))
     }
 }
 
 fun MainViewModel.toggleSaveVideoQueueHistory(enabled: Boolean) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(saveVideoQueueHistory = enabled))
     }
 }
 
 fun MainViewModel.toggleSaveAudioQueueHistory(enabled: Boolean) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(saveAudioQueueHistory = enabled))
     }
 }
 
 fun MainViewModel.updateResumePlaybackBehavior(behavior: String) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(resumePlaybackBehavior = behavior))
     }
 }
 
 fun MainViewModel.updateHwAcceleration(mode: String) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(hwAcceleration = mode))
     }
 }
 
 fun MainViewModel.updateBackgroundMode(mode: String) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(backgroundMode = mode))
     }
 }
 
 fun MainViewModel.addMediaToPlaylist(playlistName: String, mediaUri: String) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         val jsonObj = try {
             org.json.JSONObject(current.playlistsJson)
@@ -595,7 +596,7 @@ fun MainViewModel.addMediaToPlaylist(playlistName: String, mediaUri: String) {
 }
 
 fun MainViewModel.addMultipleMediaToPlaylist(playlistName: String, mediaUris: List<String>) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         val jsonObj = try {
             org.json.JSONObject(current.playlistsJson)
@@ -623,7 +624,7 @@ fun MainViewModel.addMultipleMediaToPlaylist(playlistName: String, mediaUris: Li
 }
 
 fun MainViewModel.createPlaylist(playlistName: String, initialUris: List<String> = emptyList()) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         val jsonObj = try {
             org.json.JSONObject(current.playlistsJson)
@@ -642,7 +643,7 @@ fun MainViewModel.createPlaylist(playlistName: String, initialUris: List<String>
 }
 
 fun MainViewModel.removeMediaFromPlaylist(playlistName: String, uriString: String) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         val jsonObj = try {
             org.json.JSONObject(current.playlistsJson)
@@ -665,7 +666,7 @@ fun MainViewModel.removeMediaFromPlaylist(playlistName: String, uriString: Strin
 }
 
 fun MainViewModel.updatePlaylistTracks(playlistName: String, mediaUris: List<String>) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         val jsonObj = try {
             org.json.JSONObject(current.playlistsJson)
@@ -684,7 +685,7 @@ fun MainViewModel.updatePlaylistTracks(playlistName: String, mediaUris: List<Str
 }
 
 fun MainViewModel.deletePlaylist(playlistName: String) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         val jsonObj = try {
             org.json.JSONObject(current.playlistsJson)
@@ -713,7 +714,7 @@ fun MainViewModel.updateCastSettings(
     pauseOnScreenSleep: Boolean? = null,
     keepCastingOnScreenSleep: Boolean? = null
 ) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(
             current.copy(
@@ -742,50 +743,57 @@ fun MainViewModel.updateSaveVideoQueueHistory(enabled: Boolean) = toggleSaveVide
 fun MainViewModel.updateSaveAudioQueueHistory(enabled: Boolean) = toggleSaveAudioQueueHistory(enabled)
 
 fun MainViewModel.updateMediaLibraryFolders(foldersJson: String) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(mediaLibraryFoldersJson = foldersJson))
     }
 }
 
 // Video Settings from Screenshots
+fun MainViewModel.updateVideoOutput(output: String) {
+    viewModelScope.launch(Dispatchers.IO) {
+        val current = preferencesState.value
+        preferenceRepository.updatePreferences(current.copy(videoOutput = output))
+    }
+}
+
 fun MainViewModel.updateAlwaysFastSeek(enabled: Boolean) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(alwaysFastSeek = enabled))
     }
 }
 
 fun MainViewModel.updateUseCustomPipPopup(enabled: Boolean) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(useCustomPipPopup = enabled))
     }
 }
 
 fun MainViewModel.updateRestoreVideoFromBackground(enabled: Boolean) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(restoreVideoFromBackground = enabled))
     }
 }
 
 fun MainViewModel.updateMatchDisplayFrameRate(enabled: Boolean) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(matchDisplayFrameRate = enabled))
     }
 }
 
 fun MainViewModel.updatePreferredVideoResolution(resolution: String) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(preferredVideoResolution = resolution))
     }
 }
 
 fun MainViewModel.updatePreferCloneSecondaryDisplay(enabled: Boolean) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(preferCloneSecondaryDisplay = enabled))
     }
@@ -793,14 +801,14 @@ fun MainViewModel.updatePreferCloneSecondaryDisplay(enabled: Boolean) {
 
 // Interface Settings from Screenshots
 fun MainViewModel.updateShowMissingMedia(enabled: Boolean) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(showMissingMedia = enabled))
     }
 }
 
 fun MainViewModel.updateSleepTimer(duration: String) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(sleepTimerDuration = duration))
 
@@ -834,49 +842,49 @@ fun MainViewModel.updateSleepTimer(duration: String) {
 }
 
 fun MainViewModel.updateIncognitoMode(enabled: Boolean) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(incognitoMode = enabled))
     }
 }
 
 fun MainViewModel.updatePersistentIncognitoMode(enabled: Boolean) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(persistentIncognitoMode = enabled))
     }
 }
 
 fun MainViewModel.updateShowSeenVideoMarker(enabled: Boolean) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(showSeenVideoMarker = enabled))
     }
 }
 
 fun MainViewModel.updateShowVideoThumbnails(enabled: Boolean) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(showVideoThumbnails = enabled))
     }
 }
 
 fun MainViewModel.updateShowLastPlaylistTip(enabled: Boolean) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(showLastPlaylistTip = enabled))
     }
 }
 
 fun MainViewModel.updateMediaCoverOnLockscreen(enabled: Boolean) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(mediaCoverOnLockscreen = enabled))
     }
 }
 
 fun MainViewModel.updateSeekButtonsInNotification(enabled: Boolean) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(seekButtonsInNotification = enabled))
     }
@@ -884,120 +892,127 @@ fun MainViewModel.updateSeekButtonsInNotification(enabled: Boolean) {
 
 // Subtitles Settings from Screenshots
 fun MainViewModel.updateAutoLoadSubtitles(enabled: Boolean) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(autoLoadSubtitles = enabled))
     }
 }
 
 fun MainViewModel.updateSubtitleEncoding(encoding: String) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(subtitleEncoding = encoding))
     }
 }
 
 fun MainViewModel.updateSubtitleBold(enabled: Boolean) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(subtitleBold = enabled))
     }
 }
 
 fun MainViewModel.updateSubtitleOpacity(opacity: Float) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(subtitleOpacity = opacity))
     }
 }
 
 fun MainViewModel.updateSubtitleBackgroundEnabled(enabled: Boolean) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(subtitleBackgroundEnabled = enabled))
     }
 }
 
 fun MainViewModel.updateSubtitleShadowEnabled(enabled: Boolean) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(subtitleShadowEnabled = enabled))
     }
 }
 
 fun MainViewModel.updateSubtitleShadowColor(color: String) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(subtitleShadowColor = color))
     }
 }
 
 // Audio Settings from Screenshots
+fun MainViewModel.updateAudioOutput(output: String) {
+    viewModelScope.launch(Dispatchers.IO) {
+        val current = preferencesState.value
+        preferenceRepository.updatePreferences(current.copy(audioOutput = output))
+    }
+}
+
 fun MainViewModel.updateResumePlaybackAfterCall(enabled: Boolean) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(resumePlaybackAfterCall = enabled))
     }
 }
 
 fun MainViewModel.updateStopOnAppSwipe(enabled: Boolean) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(stopOnAppSwipe = enabled))
     }
 }
 
 fun MainViewModel.updateDigitalAudioPassthrough(enabled: Boolean) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(digitalAudioPassthrough = enabled))
     }
 }
 
 fun MainViewModel.updatePreferredAudioLanguage(language: String) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(preferredAudioLanguage = language))
     }
 }
 
 fun MainViewModel.updateResumePlayedAudio(behavior: String) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(resumePlayedAudio = behavior))
     }
 }
 
 fun MainViewModel.updateDetectHeadset(enabled: Boolean) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(detectHeadset = enabled))
     }
 }
 
 fun MainViewModel.updateResumeOnHeadsetInsertion(enabled: Boolean) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(resumeOnHeadsetInsertion = enabled))
     }
 }
 
 fun MainViewModel.updateIgnoreHeadsetButtons(enabled: Boolean) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(ignoreHeadsetButtons = enabled))
     }
 }
 
 fun MainViewModel.updateEnableReplayGain(enabled: Boolean) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(enableReplayGain = enabled))
     }
 }
 
 fun MainViewModel.updateReplayGainMode(mode: String) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(replayGainMode = mode))
     }
@@ -1005,21 +1020,21 @@ fun MainViewModel.updateReplayGainMode(mode: String) {
 
 // Advanced & Application Data Settings from Screenshots
 fun MainViewModel.updateNetworkCachingMs(ms: Int) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(networkCachingMs = ms))
     }
 }
 
 fun MainViewModel.updatePreferSmb1(enabled: Boolean) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(preferSmb1 = enabled))
     }
 }
 
 fun MainViewModel.updateHttpUserAgent(userAgent: String) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(current.copy(httpUserAgent = userAgent))
     }
@@ -1033,7 +1048,7 @@ fun MainViewModel.updateParentalControl(
     lockStreams: Boolean? = null,
     lockSensitiveFolders: Boolean? = null
 ) {
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
         val current = preferencesState.value
         preferenceRepository.updatePreferences(
             current.copy(
@@ -1046,4 +1061,5 @@ fun MainViewModel.updateParentalControl(
         )
     }
 }
+
 

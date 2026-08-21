@@ -4,6 +4,10 @@ import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
 import com.example.player.VlcPlayerWrapper
@@ -15,30 +19,41 @@ import org.videolan.libvlc.util.VLCVideoLayout
 @Composable
 fun VlcPlayerView(
     vlcPlayer: VlcPlayerWrapper,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    aspectRatio: String? = null,
+    scale: Float = 0f
 ) {
+    var boundLayout by remember { mutableStateOf<VLCVideoLayout?>(null) }
+
     AndroidView(
         factory = { context ->
             VLCVideoLayout(context).apply {
+                keepScreenOn = true
                 layoutParams = FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT
                 )
+                boundLayout = this
                 vlcPlayer.attachLayout(this)
+                vlcPlayer.setAspectRatio(aspectRatio)
+                vlcPlayer.setScale(scale)
             }
         },
         update = { layout ->
+            boundLayout = layout
             vlcPlayer.attachLayout(layout)
+            vlcPlayer.setAspectRatio(aspectRatio)
+            vlcPlayer.setScale(scale)
         },
-        onRelease = { _ ->
-            // Retain layout binding across transient recompositions
+        onRelease = { layout ->
+            // Retain layout during transient recomposition to prevent blank frames
         },
         modifier = modifier
     )
 
     DisposableEffect(vlcPlayer) {
         onDispose {
-            vlcPlayer.detachLayout()
+            boundLayout?.let { vlcPlayer.detachLayout(it) }
         }
     }
 }

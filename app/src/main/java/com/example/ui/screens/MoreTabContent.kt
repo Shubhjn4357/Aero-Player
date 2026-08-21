@@ -47,6 +47,13 @@ fun MoreTabContent(
     onDeleteStream: (MediaEntity) -> Unit
 ) {
     var showEqDialog by remember { mutableStateOf(false) }
+    var showFormatSupportDialog by remember { mutableStateOf(false) }
+
+    if (showFormatSupportDialog) {
+        com.example.ui.components.FormatSupportDialog(
+            onDismiss = { showFormatSupportDialog = false }
+        )
+    }
 
     val currentEqPreset by viewModel.currentEqualizerPreset.collectAsState()
     val isEqEnabled by viewModel.equalizerEnabled.collectAsState()
@@ -126,12 +133,12 @@ fun MoreTabContent(
 
             UtilityCard(
                 modifier = Modifier.weight(1f),
-                title = "App Widgets",
-                subtitle = "Live Previews & Pinning",
-                icon = Icons.Default.Widgets,
-                accentColor = MaterialTheme.colorScheme.tertiary,
-                onClick = onNavigateToSettings,
-                testTag = "quick_tool_widgets"
+                title = "Format Support",
+                subtitle = "Codecs & Direct Play",
+                icon = Icons.Default.Category,
+                accentColor = MaterialTheme.colorScheme.primary,
+                onClick = { showFormatSupportDialog = true },
+                testTag = "quick_tool_format_support"
             )
         }
 

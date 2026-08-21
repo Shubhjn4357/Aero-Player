@@ -476,6 +476,7 @@ fun MainScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .background(Color.Transparent)
+                        .statusBarsPadding()
                 ) {
                     val accentOrange = MaterialTheme.colorScheme.primary
                     
@@ -498,7 +499,6 @@ fun MainScreen(
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .statusBarsPadding()
                                     .padding(horizontal = 16.dp, vertical = 8.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.SpaceBetween
@@ -775,7 +775,6 @@ fun MainScreen(
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .statusBarsPadding()
                                     .padding(horizontal = 16.dp, vertical = 8.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
@@ -809,7 +808,6 @@ fun MainScreen(
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .statusBarsPadding()
                                     .padding(horizontal = 16.dp, vertical = 8.dp),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
@@ -1026,8 +1024,8 @@ fun MainScreen(
                         .fillMaxWidth()
                         .navigationBarsPadding()
                 ) {
-                    val activeItem by viewModel.currentPlayingItem.collectAsState()
-                    if (activeItem != null) {
+                    val currentItem = activeItem
+                    if (currentItem != null) {
                         var isPlaying by remember { mutableStateOf(false) }
                         DisposableEffect(viewModel.exoPlayer) {
                             val listener = object : androidx.media3.common.Player.Listener {
@@ -1035,10 +1033,18 @@ fun MainScreen(
                                     isPlaying = playing
                                 }
                             }
-                            viewModel.exoPlayer.addListener(listener)
-                            isPlaying = viewModel.exoPlayer.isPlaying
+                            try {
+                                viewModel.exoPlayer.addListener(listener)
+                                isPlaying = viewModel.exoPlayer.isPlaying
+                            } catch (e: Throwable) {
+                                e.printStackTrace()
+                            }
                             onDispose {
-                                viewModel.exoPlayer.removeListener(listener)
+                                try {
+                                    viewModel.exoPlayer.removeListener(listener)
+                                } catch (e: Throwable) {
+                                    e.printStackTrace()
+                                }
                             }
                         }
 
@@ -1066,14 +1072,14 @@ fun MainScreen(
                                     contentAlignment = Alignment.Center
                                 ) {
                                     MediaThumbnail(
-                                        item = activeItem!!,
+                                        item = currentItem,
                                         modifier = Modifier.fillMaxSize()
                                     )
                                 }
 
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
-                                        text = activeItem!!.title,
+                                        text = currentItem.title,
                                         color = MaterialTheme.colorScheme.onSurface,
                                         fontSize = 13.sp,
                                         fontWeight = FontWeight.Bold,
@@ -1081,7 +1087,7 @@ fun MainScreen(
                                         modifier = Modifier.basicMarquee()
                                     )
                                     Text(
-                                        text = activeItem!!.displayArtist,
+                                        text = currentItem.displayArtist,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
                                         fontSize = 11.sp,
                                         maxLines = 1,
@@ -4435,6 +4441,14 @@ fun MediaInfoDialog(
     val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
     var details by remember(media.uriString) { mutableStateOf(MediaExtendedDetails()) }
     var isLoading by remember(media.uriString) { mutableStateOf(true) }
+    val categoryMeta = remember(media) { com.example.util.CategoryMetadataManager.extractCategoryMetadata(media) }
+    var showFormatCatalog by remember { mutableStateOf(false) }
+
+    if (showFormatCatalog) {
+        com.example.ui.components.FormatSupportDialog(
+            onDismiss = { showFormatCatalog = false }
+        )
+    }
 
     LaunchedEffect(media.path, media.uriString) {
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
@@ -4575,7 +4589,11 @@ fun MediaInfoDialog(
                                 media.path.lowercase().endsWith(".mkv") -> "MKV"
                                 media.path.lowercase().endsWith(".mp4") -> "MP4"
                                 media.path.lowercase().endsWith(".webm") -> "WEBM"
+                                media.path.lowercase().endsWith(".flac") -> "FLAC"
                                 media.path.lowercase().endsWith(".mp3") -> "MP3"
+                                media.path.lowercase().endsWith(".m4a") -> "M4A"
+                                media.path.lowercase().endsWith(".avi") -> "AVI"
+                                media.path.lowercase().endsWith(".ts") -> "TS"
                                 else -> "MEDIA"
                             }
                             Surface(
@@ -4598,6 +4616,79 @@ fun MediaInfoDialog(
                             fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+
+                        // Category Badges
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            categoryMeta.badges.forEach { badge ->
+                                Surface(
+                                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
+                                    shape = RoundedCornerShape(4.dp)
+                                ) {
+                                    Text(
+                                        text = badge,
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Category-Wise Format Metadata Card
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.7f),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = "CATEGORY & FORMAT SPEC",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Black,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+
+                            TextButton(
+                                onClick = { showFormatCatalog = true },
+                                contentPadding = PaddingValues(0.dp)
+                            ) {
+                                Icon(Icons.Default.Category, contentDescription = null, modifier = Modifier.size(14.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("All Formats", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Category:", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(categoryMeta.category.title, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        }
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Container:", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(categoryMeta.containerFormat, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Quality Tier:", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(categoryMeta.qualityTier, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Playback Engine:", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(categoryMeta.recommendedEngine, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.primary)
+                        }
                     }
                 }
 

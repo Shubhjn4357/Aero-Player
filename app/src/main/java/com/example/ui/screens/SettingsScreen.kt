@@ -831,6 +831,7 @@ private fun VideoSettingsSubScreen(
     viewModel: MainViewModel
 ) {
     var showResolutionDialog by remember { mutableStateOf(false) }
+    var showVideoOutputDialog by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -838,6 +839,12 @@ private fun VideoSettingsSubScreen(
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 16.dp, vertical = 8.dp)
     ) {
+        SettingsClickableItem(
+            title = "Video output",
+            subtitle = prefs.videoOutput,
+            onClick = { showVideoOutputDialog = true }
+        )
+
         SettingsCheckboxItem(
             title = "Always use fast seek",
             subtitle = "Seek is faster but may be less precise",
@@ -891,6 +898,20 @@ private fun VideoSettingsSubScreen(
         )
 
         Spacer(modifier = Modifier.height(32.dp))
+    }
+
+    if (showVideoOutputDialog) {
+        val options = listOf("Automatic", "OpenGL ES 2.0", "OpenGL ES 3.0", "Android SurfaceView")
+        SingleChoiceOptionDialog(
+            title = "Video output",
+            options = options,
+            selectedOption = prefs.videoOutput,
+            onDismiss = { showVideoOutputDialog = false },
+            onSelect = {
+                viewModel.updateVideoOutput(it)
+                showVideoOutputDialog = false
+            }
+        )
     }
 
     if (showResolutionDialog) {
@@ -1342,6 +1363,7 @@ private fun AudioSettingsSubScreen(
     prefs: PreferenceEntity,
     viewModel: MainViewModel
 ) {
+    var showAudioOutputDialog by remember { mutableStateOf(false) }
     var showLangDialog by remember { mutableStateOf(false) }
     var showResumeDialog by remember { mutableStateOf(false) }
     var showReplayGainDialog by remember { mutableStateOf(false) }
@@ -1352,6 +1374,12 @@ private fun AudioSettingsSubScreen(
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 16.dp, vertical = 8.dp)
     ) {
+        SettingsClickableItem(
+            title = "Audio output",
+            subtitle = prefs.audioOutput,
+            onClick = { showAudioOutputDialog = true }
+        )
+
         SettingsCheckboxItem(
             title = "Resume playback after a call",
             subtitle = "Stay in pause otherwise",
@@ -1434,6 +1462,20 @@ private fun AudioSettingsSubScreen(
         )
 
         Spacer(modifier = Modifier.height(32.dp))
+    }
+
+    if (showAudioOutputDialog) {
+        val options = listOf("AudioTrack", "OpenSL ES", "AAudio")
+        SingleChoiceOptionDialog(
+            title = "Audio output",
+            options = options,
+            selectedOption = prefs.audioOutput,
+            onDismiss = { showAudioOutputDialog = false },
+            onSelect = {
+                viewModel.updateAudioOutput(it)
+                showAudioOutputDialog = false
+            }
+        )
     }
 
     if (showLangDialog) {
@@ -1935,6 +1977,9 @@ private fun SettingsSearchResults(
             SearchItem("Always use fast seek", "Seek is faster but may be less precise", SettingsSubScreen.VIDEO),
             SearchItem("Use custom Picture-in-Picture popup", "Resizable popup overlay", SettingsSubScreen.VIDEO),
             SearchItem("Restore video from background", "Restore video when reopening app", SettingsSubScreen.VIDEO),
+            SearchItem("Audio output", "Select audio output method: AudioTrack, OpenSL ES, AAudio", SettingsSubScreen.AUDIO),
+            SearchItem("Digital audio output (passthrough)", "Audio Digital Output passthrough mode", SettingsSubScreen.AUDIO),
+            SearchItem("Video output", "Configure video output: Automatic, OpenGL ES 2.0/3.0, Android SurfaceView", SettingsSubScreen.VIDEO),
             SearchItem("Match Display Frame Rate", "Match display refresh rate to media 24p", SettingsSubScreen.VIDEO),
             SearchItem("Preferred video resolution", "Max video stream quality target", SettingsSubScreen.VIDEO),
             SearchItem("Show missing media", "Show distant media even if not present", SettingsSubScreen.INTERFACE),

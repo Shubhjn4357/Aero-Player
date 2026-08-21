@@ -114,15 +114,9 @@ fun PlayerScreen(
         }
     }
 
-    // Playback Engines: ExoPlayer & LibVLC Universal Engine
+    // Playback Engines: ExoPlayer & LibVLC Universal Engine (Managed at ViewModel scope to prevent reinitiation)
     val exoPlayer = viewModel.exoPlayer
-    val vlcPlayer = remember { VlcPlayerWrapper(context) }
-
-    DisposableEffect(vlcPlayer) {
-        onDispose {
-            vlcPlayer.release()
-        }
-    }
+    val vlcPlayer = viewModel.vlcPlayer
 
     var activeEngine by remember(prefs.defaultPlayerEngine) {
         mutableStateOf(
@@ -142,6 +136,10 @@ fun PlayerScreen(
         "VLC" -> "VLC"
         "ExoPlayer" -> "ExoPlayer"
         else -> if (isVlcRequiredFormat) "VLC" else "ExoPlayer"
+    }
+
+    LaunchedEffect(effectiveEngine) {
+        com.example.ui.viewmodel.PlayerControlBridge.activeEngineType = effectiveEngine
     }
 
     var showResumePrompt by remember { mutableStateOf(false) }
@@ -286,23 +284,39 @@ fun PlayerScreen(
     }
 
     // Load Uri Source Configurations & Primary Player Setup
-    LaunchedEffect(activeMediaItem, effectiveEngine) {
+    LaunchedEffect(activeMediaItem.uriString, effectiveEngine) {
         audioFallbackAttempted = false
         isNewSession = false
 
-        // 1. Fetch history position BEFORE starting playback
-        val history = viewModel.getHistoryByUri(activeMediaItem.uriString)
+        // Determine seek start point: if engine switched mid-playback, seamlessly continue from last pos
         var startSeekMs = 0L
-        if (history != null && history.progressMs > 1000L && history.progressMs < (history.duration - 5000L).coerceAtLeast(10000L)) {
-            resumePosition = history.progressMs
-            if (prefs.resumePlaybackBehavior == "Ask Every Time") {
-                showResumePrompt = true
-                startSeekMs = history.progressMs
-            } else if (prefs.resumePlaybackBehavior == "Always Resume") {
-                startSeekMs = history.progressMs
+        val lastLoadedUri = viewModel.lastLoadedPlayerUri
+        val lastLoadedEngine = viewModel.lastLoadedEngineType
+        val isEngineSwitch = lastLoadedEngine != null && lastLoadedEngine != effectiveEngine && lastLoadedUri == activeMediaItem.uriString
+
+        if (isEngineSwitch) {
+            val previousPos = if (lastLoadedEngine == "VLC") vlcPlayer.currentPositionMs else exoPlayer.currentPosition
+            if (previousPos > 0L) {
+                startSeekMs = previousPos
             }
         } else {
-            resumePosition = 0L
+            // 1. Fetch history position BEFORE starting playback
+            val history = viewModel.getHistoryByUri(activeMediaItem.uriString)
+            val isNearEnd = history != null && history.duration > 0L && history.progressMs >= (history.duration - 5000L).coerceAtLeast(10000L)
+            if (history != null && history.progressMs > 1500L && !isNearEnd) {
+                resumePosition = history.progressMs
+                val behavior = prefs.resumePlaybackBehavior
+                if (behavior.contains("Ask", ignoreCase = true)) {
+                    showResumePrompt = true
+                    startSeekMs = history.progressMs
+                } else if (behavior.contains("Never", ignoreCase = true)) {
+                    startSeekMs = 0L
+                } else {
+                    startSeekMs = history.progressMs
+                }
+            } else {
+                resumePosition = 0L
+            }
         }
 
         // 2. Load per-video preferences or individual settings
@@ -410,32 +424,46 @@ fun PlayerScreen(
         // 3. Player Engine Media Loading
         playbackErrorMsg = null
         if (effectiveEngine == "VLC") {
-            try {
-                vlcPlayer.loadMedia(
-                    uriString = activeMediaItem.uriString,
-                    path = activeMediaItem.path,
-                    initialSeekMs = startSeekMs,
-                    initialAudioTrackId = savedVlcAudioTrackId,
-                    initialSubtitleTrackId = savedVlcSubTrackId
-                )
-                if (savedExternalSubUri != null) {
-                    vlcPlayer.loadSubtitle(savedExternalSubUri)
+            val isSameUriAlreadyLoaded = vlcPlayer.currentPlayingUri == activeMediaItem.uriString &&
+                    (vlcPlayer.isPlaying || vlcPlayer.currentPositionMs > 0L) &&
+                    viewModel.lastLoadedEngineType == "VLC"
+            if (!isSameUriAlreadyLoaded || isEngineSwitch) {
+                try {
+                    vlcPlayer.loadMedia(
+                        uriString = activeMediaItem.uriString,
+                        path = activeMediaItem.path,
+                        initialSeekMs = startSeekMs,
+                        initialAudioTrackId = savedVlcAudioTrackId,
+                        initialSubtitleTrackId = savedVlcSubTrackId
+                    )
+                    if (savedExternalSubUri != null) {
+                        vlcPlayer.loadSubtitle(savedExternalSubUri)
+                    }
+                    if (savedVlcAudioTrackId != -1) {
+                        vlcPlayer.selectAudioTrack(savedVlcAudioTrackId)
+                    }
+                    if (savedVlcSubTrackId != -2) {
+                        vlcPlayer.selectSubtitleTrack(savedVlcSubTrackId)
+                    }
+                } catch (e: Throwable) {
+                    playbackErrorMsg = "VLC Error: ${e.localizedMessage ?: "Playback error"}"
                 }
-                if (savedVlcAudioTrackId != -1) {
-                    vlcPlayer.selectAudioTrack(savedVlcAudioTrackId)
+            } else {
+                if (startSeekMs > 0L && kotlin.math.abs(vlcPlayer.currentPositionMs - startSeekMs) > 2000L) {
+                    vlcPlayer.seekTo(startSeekMs)
                 }
-                if (savedVlcSubTrackId != -2) {
-                    vlcPlayer.selectSubtitleTrack(savedVlcSubTrackId)
+                if (!vlcPlayer.isPlaying) {
+                    vlcPlayer.play()
                 }
-            } catch (e: Throwable) {
-                playbackErrorMsg = "VLC Error: ${e.localizedMessage ?: "Playback error"}"
             }
         } else {
             val currentMediaId = exoPlayer.currentMediaItem?.mediaId
             val currentPlayingUri = exoPlayer.currentMediaItem?.localConfiguration?.uri?.toString()
-            val isAlreadyPlayingThisItem = exoPlayer.currentMediaItem != null &&
-                    (currentMediaId == activeMediaItem.uriString || currentPlayingUri == activeMediaItem.uriString)
-            if (!isAlreadyPlayingThisItem) {
+            val isSameUriAlreadyLoaded = exoPlayer.currentMediaItem != null &&
+                    (currentMediaId == activeMediaItem.uriString || currentPlayingUri == activeMediaItem.uriString) &&
+                    (exoPlayer.playbackState == Player.STATE_READY || exoPlayer.playbackState == Player.STATE_BUFFERING || exoPlayer.isPlaying) &&
+                    viewModel.lastLoadedEngineType == "ExoPlayer"
+            if (!isSameUriAlreadyLoaded || isEngineSwitch) {
                 val newItem = buildMediaItemWithSubtitles(
                     uriString = activeMediaItem.uriString,
                     context = context,
@@ -446,9 +474,13 @@ fun PlayerScreen(
                     album = activeMediaItem.album
                 )
                 try {
-                    exoPlayer.setMediaItem(newItem)
+                    if (startSeekMs > 0L) {
+                        exoPlayer.setMediaItem(newItem, startSeekMs)
+                    } else {
+                        exoPlayer.setMediaItem(newItem)
+                    }
                     exoPlayer.prepare()
-                    if (startSeekMs > 0) {
+                    if (startSeekMs > 0L) {
                         exoPlayer.seekTo(startSeekMs)
                     }
                     exoPlayer.playWhenReady = true
@@ -457,11 +489,16 @@ fun PlayerScreen(
                     playbackErrorMsg = "Playback Error: ${e.localizedMessage ?: "Unknown media error"}"
                 }
             } else {
+                if (startSeekMs > 0L && kotlin.math.abs(exoPlayer.currentPosition - startSeekMs) > 2000L) {
+                    exoPlayer.seekTo(startSeekMs)
+                }
                 if (!exoPlayer.isPlaying && exoPlayer.playbackState != Player.STATE_ENDED) {
                     exoPlayer.play()
                 }
             }
         }
+        viewModel.lastLoadedPlayerUri = activeMediaItem.uriString
+        viewModel.lastLoadedEngineType = effectiveEngine
     }
 
     // Log History periodically
@@ -868,6 +905,10 @@ fun PlayerScreen(
                     vlcPlayer.setAspectRatio("4:3")
                     vlcPlayer.setScale(0f)
                 }
+                100 -> {
+                    vlcPlayer.setAspectRatio("21:9")
+                    vlcPlayer.setScale(0f)
+                }
                 else -> {
                     vlcPlayer.setAspectRatio(null)
                     vlcPlayer.setScale(0f)
@@ -1091,10 +1132,11 @@ fun PlayerScreen(
     DisposableEffect(isPlaying, isSleepTimerRunning, sleepTimeLeftMinutes, isLocked) {
         val activity = context as? android.app.Activity
         val isSleepExpired = isSleepTimerRunning && sleepTimeLeftMinutes <= 0
-        if (isPlaying && !isSleepExpired) {
+        val shouldKeepAwake = !isSleepExpired && (isPlaying || isLocked)
+        if (shouldKeepAwake) {
             try {
                 if (!wakeLock.isHeld) {
-                    wakeLock.acquire(24 * 60 * 60 * 1000L) // 24 hours lock for active playback
+                    wakeLock.acquire(24 * 60 * 60 * 1000L) // 24 hours lock for active playback / lock mode
                 }
                 if (!wifiLock.isHeld) {
                     wifiLock.acquire()
@@ -2012,39 +2054,104 @@ fun PlayerScreen(
             ) {
                 if (activeMediaItem.isVideo && !playAsAudioOnly) {
                     if (effectiveEngine == "VLC") {
+                        val vlcAspectRatio = when (resizeMode) {
+                            AspectRatioFrameLayout.RESIZE_MODE_FIT -> null
+                            AspectRatioFrameLayout.RESIZE_MODE_FILL -> "0"
+                            AspectRatioFrameLayout.RESIZE_MODE_ZOOM -> null
+                            AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH -> "16:9"
+                            AspectRatioFrameLayout.RESIZE_MODE_FIXED_HEIGHT -> "4:3"
+                            100 -> "21:9"
+                            else -> null
+                        }
+                        val vlcScale = if (resizeMode == AspectRatioFrameLayout.RESIZE_MODE_ZOOM) 1.35f else 0f
                         VlcPlayerView(
                             vlcPlayer = vlcPlayer,
-                            modifier = Modifier.fillMaxSize()
+                            modifier = Modifier.fillMaxSize(),
+                            aspectRatio = vlcAspectRatio,
+                            scale = vlcScale
                         )
                     } else {
-                        AndroidView(
-                            factory = { ctx ->
-                                PlayerView(ctx).apply {
-                                    useController = false
-                                    keepScreenOn = true
-                                    setShutterBackgroundColor(android.graphics.Color.TRANSPARENT)
-                                    setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
-                                    player = exoPlayer
-                                    layoutParams = FrameLayout.LayoutParams(
-                                        ViewGroup.LayoutParams.MATCH_PARENT,
-                                        ViewGroup.LayoutParams.MATCH_PARENT
-                                    )
-                                }
-                            },
-                            update = { view -> 
-                                if (view.player != exoPlayer) {
-                                    view.player = exoPlayer
-                                }
-                                if (view.resizeMode != resizeMode) {
-                                    view.resizeMode = resizeMode
-                                }
-                                applySubtitleStyleToPlayerView(view, prefs)
-                            },
-                            onRelease = { view ->
-                                // Retain player binding to prevent blank frame on transient recomposition
-                            },
-                            modifier = Modifier.fillMaxSize()
-                        )
+                        val exoResizeMode = when (resizeMode) {
+                            AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH,
+                            AspectRatioFrameLayout.RESIZE_MODE_FIXED_HEIGHT,
+                            100 -> AspectRatioFrameLayout.RESIZE_MODE_FIT
+                            else -> resizeMode
+                        }
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            AndroidView(
+                                factory = { ctx ->
+                                    PlayerView(ctx).apply {
+                                        useController = false
+                                        keepScreenOn = true
+                                        setShutterBackgroundColor(android.graphics.Color.TRANSPARENT)
+                                        setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
+                                        player = exoPlayer
+                                        this.resizeMode = exoResizeMode
+                                        layoutParams = FrameLayout.LayoutParams(
+                                            ViewGroup.LayoutParams.MATCH_PARENT,
+                                            ViewGroup.LayoutParams.MATCH_PARENT
+                                        )
+                                        val contentFrame = findViewById<AspectRatioFrameLayout>(androidx.media3.ui.R.id.exo_content_frame)
+                                        if (contentFrame != null) {
+                                            when (resizeMode) {
+                                                AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH -> contentFrame.setAspectRatio(16f / 9f)
+                                                AspectRatioFrameLayout.RESIZE_MODE_FIXED_HEIGHT -> contentFrame.setAspectRatio(4f / 3f)
+                                                100 -> contentFrame.setAspectRatio(21f / 9f)
+                                                AspectRatioFrameLayout.RESIZE_MODE_FILL -> contentFrame.setAspectRatio(0f)
+                                                else -> {
+                                                    val vFormat = exoPlayer.videoFormat
+                                                    val naturalAspect = if (vFormat != null && vFormat.width > 0 && vFormat.height > 0) {
+                                                        (vFormat.width.toFloat() / vFormat.height.toFloat()) * (if (vFormat.pixelWidthHeightRatio > 0f) vFormat.pixelWidthHeightRatio else 1.0f)
+                                                    } else if (exoPlayer.videoSize.width > 0 && exoPlayer.videoSize.height > 0) {
+                                                        exoPlayer.videoSize.width.toFloat() / exoPlayer.videoSize.height.toFloat()
+                                                    } else {
+                                                        0f
+                                                    }
+                                                    contentFrame.setAspectRatio(naturalAspect)
+                                                }
+                                            }
+                                        }
+                                        applySubtitleStyleToPlayerView(this, prefs)
+                                    }
+                                },
+                                update = { view -> 
+                                    if (view.player != exoPlayer) {
+                                        view.player = exoPlayer
+                                    }
+                                    if (view.resizeMode != exoResizeMode) {
+                                        view.resizeMode = exoResizeMode
+                                    }
+                                    val contentFrame = view.findViewById<AspectRatioFrameLayout>(androidx.media3.ui.R.id.exo_content_frame)
+                                    if (contentFrame != null) {
+                                        when (resizeMode) {
+                                            AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH -> contentFrame.setAspectRatio(16f / 9f)
+                                            AspectRatioFrameLayout.RESIZE_MODE_FIXED_HEIGHT -> contentFrame.setAspectRatio(4f / 3f)
+                                            100 -> contentFrame.setAspectRatio(21f / 9f)
+                                            AspectRatioFrameLayout.RESIZE_MODE_FILL -> contentFrame.setAspectRatio(0f)
+                                            else -> {
+                                                val vFormat = exoPlayer.videoFormat
+                                                val naturalAspect = if (vFormat != null && vFormat.width > 0 && vFormat.height > 0) {
+                                                    (vFormat.width.toFloat() / vFormat.height.toFloat()) * (if (vFormat.pixelWidthHeightRatio > 0f) vFormat.pixelWidthHeightRatio else 1.0f)
+                                                } else if (exoPlayer.videoSize.width > 0 && exoPlayer.videoSize.height > 0) {
+                                                    exoPlayer.videoSize.width.toFloat() / exoPlayer.videoSize.height.toFloat()
+                                                } else {
+                                                    0f
+                                                }
+                                                contentFrame.setAspectRatio(naturalAspect)
+                                            }
+                                        }
+                                    }
+                                    applySubtitleStyleToPlayerView(view, prefs)
+                                },
+                                onRelease = { view ->
+                                    // Retain player binding to prevent blank frame on transient recomposition
+                                },
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
                     }
                 } else {
                     AudioVinylPlayer(
@@ -3081,11 +3188,12 @@ fun PlayerScreen(
                                         onClick = {
                                             hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
                                             val modes = listOf(
-                                                AspectRatioFrameLayout.RESIZE_MODE_FIT to "Fit",
-                                                AspectRatioFrameLayout.RESIZE_MODE_FILL to "Stretch/Fill",
-                                                AspectRatioFrameLayout.RESIZE_MODE_ZOOM to "Zoom/Crop",
-                                                AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH to "Fixed Width",
-                                                AspectRatioFrameLayout.RESIZE_MODE_FIXED_HEIGHT to "Fixed Height"
+                                                AspectRatioFrameLayout.RESIZE_MODE_FIT to "Fit (Original)",
+                                                AspectRatioFrameLayout.RESIZE_MODE_FILL to "Stretch / Fill",
+                                                AspectRatioFrameLayout.RESIZE_MODE_ZOOM to "Zoom / Crop",
+                                                AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH to "16:9 Widescreen",
+                                                AspectRatioFrameLayout.RESIZE_MODE_FIXED_HEIGHT to "4:3 Standard",
+                                                100 to "21:9 Cinema"
                                             )
                                             val currentModeIndex = modes.indexOfFirst { it.first == resizeMode }.coerceAtLeast(0)
                                             val nextModeIndex = (currentModeIndex + 1) % modes.size
@@ -5697,38 +5805,6 @@ fun PlayerScreen(
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // Font Style & Family
-                Text(
-                    text = "Font Style & Family",
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 13.sp,
-                    color = MaterialTheme.colorScheme.secondary,
-                    modifier = Modifier.align(Alignment.Start)
-                )
-                Spacer(modifier = Modifier.height(6.dp))
-                val fontStyles = listOf("Normal", "Bold", "Italic", "Bold Italic", "Monospace", "Serif", "Sans-Serif")
-                LazyRow(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    items(fontStyles) { style ->
-                        val isSelected = prefs.subtitleFontStyle == style
-                        FilterChip(
-                            selected = isSelected,
-                            onClick = {
-                                viewModel.updateSubtitlePreferences(subtitleFontStyle = style, subtitlePreset = "Custom")
-                            },
-                            label = { Text(style, fontSize = 12.sp) },
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                                selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
-                            )
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-
                 // Edge Effect (Outline / Shadow)
                 Text(
                     text = "Edge Effect",
@@ -6665,6 +6741,36 @@ fun PlayerScreen(
                                      }
                                  }
                              }
+                         }
+                     }
+
+                     Spacer(modifier = Modifier.height(10.dp))
+                     Text(
+                         text = "Audio Output",
+                         fontWeight = FontWeight.Bold,
+                         fontSize = 14.sp,
+                         color = MaterialTheme.colorScheme.secondary
+                     )
+                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+
+                     val audioOutputs = listOf("AudioTrack", "OpenSL ES", "AAudio")
+                     Row(
+                         modifier = Modifier.fillMaxWidth(),
+                         horizontalArrangement = Arrangement.spacedBy(8.dp)
+                     ) {
+                         audioOutputs.forEach { outName ->
+                             val isOutSelected = prefs.audioOutput == outName
+                             FilterChip(
+                                 selected = isOutSelected,
+                                 onClick = {
+                                     viewModel.updateAudioOutput(outName)
+                                 },
+                                 label = { Text(outName, fontSize = 11.sp) },
+                                 colors = FilterChipDefaults.filterChipColors(
+                                     selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                                     selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                                 )
+                             )
                          }
                      }
                  }
@@ -8675,6 +8781,9 @@ fun parseMediaUri(uriString: String): android.net.Uri {
     return parseMediaUri(uriString, null, null)
 }
 
+private const val TAG_SUBTITLE_STYLE_HASH = 0x7F0A0FFF
+private const val TAG_ASPECT_RATIO_OVERRIDE = 0x7F0A0FFE
+
 fun applySubtitleStyleToPlayerView(
     view: androidx.media3.ui.PlayerView,
     prefs: com.example.data.database.PreferenceEntity,
@@ -8757,6 +8866,8 @@ fun applySubtitleStyleToPlayerView(
             subView.setStyle(captionStyle)
             subView.setFixedTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, sizeToUse)
             subView.setBottomPaddingFraction(verticalOffsetToUse)
+            subView.requestLayout()
+            subView.invalidate()
         }
     } catch (e: Exception) {
         e.printStackTrace()

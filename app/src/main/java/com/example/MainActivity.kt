@@ -44,37 +44,60 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 
-class MainActivity : ComponentActivity() {
-    private lateinit var mainViewModel: MainViewModel
+object CrashTracker {
+    private var initialized = false
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        
-        // Capture crashes in background/main thread and save to preferences
+    fun init(context: android.content.Context) {
+        if (initialized) return
+        initialized = true
         val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            val stackTrace = android.util.Log.getStackTraceString(throwable)
+            android.util.Log.e("CrashTracker", "Uncaught exception on thread ${thread.name}: $stackTrace")
             try {
-                val prefs = getSharedPreferences("crash_prefs", MODE_PRIVATE)
-                val stackTrace = android.util.Log.getStackTraceString(throwable)
-                prefs.edit().putString("last_crash", stackTrace).commit()
-            } catch (e: Exception) {
+                val prefs = context.getSharedPreferences("aero_crash_prefs", android.content.Context.MODE_PRIVATE)
+                prefs.edit().putString("last_crash_log", stackTrace).commit()
+            } catch (e: Throwable) {
                 e.printStackTrace()
             }
             defaultHandler?.uncaughtException(thread, throwable)
         }
+    }
+}
 
-        var initError: Throwable? = null
+class MainActivity : ComponentActivity() {
+    private lateinit var mainViewModel: MainViewModel
+    private var initError: Throwable? = null
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        CrashTracker.init(applicationContext)
+
         try {
             mainViewModel = androidx.lifecycle.ViewModelProvider(this)[MainViewModel::class.java]
         } catch (t: Throwable) {
             initError = t
+            android.util.Log.e("MainActivity", "Failed to initialize MainViewModel: ${t.message}", t)
+        }
+
+        // Handle direct video/audio file opening from external apps / file manager / browser
+        try {
+            handleIncomingIntent(intent)
+        } catch (t: Throwable) {
+            android.util.Log.e("MainActivity", "Failed to handle incoming intent: ${t.message}", t)
         }
 
         enableEdgeToEdge()
         setContent {
             val context = LocalContext.current
-            val crashPrefs = remember { context.getSharedPreferences("crash_prefs", MODE_PRIVATE) }
-            var crashLog by remember { mutableStateOf(crashPrefs.getString("last_crash", null)) }
+            val crashPrefs = remember { context.getSharedPreferences("aero_crash_prefs", android.content.Context.MODE_PRIVATE) }
+            var crashLog by remember {
+                mutableStateOf(
+                    initError?.let { android.util.Log.getStackTraceString(it) }
+                        ?: crashPrefs.getString("last_crash_log", null)
+                )
+            }
 
             if (crashLog != null) {
                 MyApplicationTheme(themeMode = "Dark", useDynamicColor = false) {
@@ -82,171 +105,102 @@ class MainActivity : ComponentActivity() {
                         modifier = Modifier.fillMaxSize(),
                         color = MaterialTheme.colorScheme.background
                     ) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(24.dp)
-                                .systemBarsPadding(),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.Center
-                        ) {
-                            Text(
-                                text = "Aero Player Crashed",
-                                fontSize = 24.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.error,
-                                modifier = Modifier.padding(bottom = 16.dp)
-                            )
-                            Text(
-                                text = "The application encountered an unexpected error. Traceback:",
-                                fontSize = 14.sp,
-                                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
-                                textAlign = TextAlign.Center,
-                                modifier = Modifier.padding(bottom = 16.dp)
-                            )
-                            Card(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .fillMaxWidth(),
-                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-                            ) {
-                                Box(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-                                    androidx.compose.foundation.text.selection.SelectionContainer {
-                                        LazyColumn(modifier = Modifier.fillMaxSize()) {
-                                            item {
-                                                Text(
-                                                    text = crashLog ?: "",
-                                                    fontSize = 11.sp,
-                                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                                                    color = MaterialTheme.colorScheme.error
-                                                )
-                                            }
-                                        }
-                                    }
+                        CrashFallbackScreen(
+                            crashLog = crashLog ?: "Unknown error occurred",
+                            onDismiss = {
+                                try {
+                                    crashPrefs.edit().remove("last_crash_log").commit()
+                                } catch (e: Throwable) {
+                                    e.printStackTrace()
                                 }
+                                crashLog = null
+                                finish()
+                                startActivity(intent)
+                            },
+                            onResetDatabase = {
+                                try {
+                                    crashPrefs.edit().clear().commit()
+                                    context.deleteDatabase("aero_player_main.db")
+                                    context.deleteDatabase("vlc_player_ai_db")
+                                    context.getSharedPreferences("vlc_player_prefs", android.content.Context.MODE_PRIVATE).edit().clear().commit()
+                                    context.getSharedPreferences("aero_player_prefs", android.content.Context.MODE_PRIVATE).edit().clear().commit()
+                                } catch (e: Throwable) {
+                                    e.printStackTrace()
+                                }
+                                crashLog = null
+                                finish()
+                                startActivity(intent)
                             }
-                            Spacer(modifier = Modifier.height(16.dp))
-                            val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(12.dp)
-                            ) {
-                                Button(
-                                    onClick = {
-                                        clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(crashLog ?: ""))
-                                        android.widget.Toast.makeText(context, "Copied traceback to clipboard!", android.widget.Toast.LENGTH_SHORT).show()
-                                    },
-                                    modifier = Modifier.weight(1f),
-                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-                                ) {
-                                    Text("Copy Full Traceback")
-                                }
-                                Button(
-                                    onClick = {
-                                        crashPrefs.edit().remove("last_crash").commit()
-                                        crashLog = null
-                                        finish()
-                                        startActivity(intent)
-                                    },
-                                    modifier = Modifier.weight(1f),
-                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
-                                ) {
-                                    Text("Clear & Restart")
-                                }
-                            }
-                        }
+                        )
+                    }
+                }
+            } else if (::mainViewModel.isInitialized) {
+                val prefs by mainViewModel.preferencesState.collectAsState()
+
+                MyApplicationTheme(
+                    themeMode = prefs.themeMode,
+                    useDynamicColor = prefs.useDynamicColor
+                ) {
+                    Surface(
+                        modifier = Modifier.fillMaxSize(),
+                        color = MaterialTheme.colorScheme.background
+                    ) {
+                        PermissionAndNavigationContainer(viewModel = mainViewModel)
                     }
                 }
             } else {
-                var composeError by remember { mutableStateOf<Throwable?>(initError) }
-                
-                if (composeError != null) {
-                    MyApplicationTheme(themeMode = "Dark", useDynamicColor = false) {
-                        Surface(
-                            modifier = Modifier.fillMaxSize(),
-                            color = MaterialTheme.colorScheme.background
-                        ) {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .padding(24.dp)
-                                    .systemBarsPadding(),
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.Center
-                            ) {
-                                Text(
-                                    text = "UI Render Error",
-                                    fontSize = 24.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.error,
-                                    modifier = Modifier.padding(bottom = 16.dp)
-                                )
-                                Card(
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .fillMaxWidth(),
-                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-                                ) {
-                                    Box(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-                                        androidx.compose.foundation.text.selection.SelectionContainer {
-                                            LazyColumn(modifier = Modifier.fillMaxSize()) {
-                                                item {
-                                                    Text(
-                                                        text = android.util.Log.getStackTraceString(composeError),
-                                                        fontSize = 11.sp,
-                                                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                                                        color = MaterialTheme.colorScheme.error
-                                                    )
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                Spacer(modifier = Modifier.height(16.dp))
-                                val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                                ) {
-                                    Button(
-                                        onClick = {
-                                            clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(android.util.Log.getStackTraceString(composeError)))
-                                            android.widget.Toast.makeText(context, "Copied traceback to clipboard!", android.widget.Toast.LENGTH_SHORT).show()
-                                        },
-                                        modifier = Modifier.weight(1f),
-                                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-                                    ) {
-                                        Text("Copy Full Traceback")
-                                    }
-                                    Button(
-                                        onClick = {
-                                            composeError = null
-                                            finish()
-                                            startActivity(intent)
-                                        },
-                                        modifier = Modifier.weight(1f)
-                                    ) {
-                                        Text("Restart App")
-                                    }
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    val prefs by mainViewModel.preferencesState.collectAsState()
-
-                    MyApplicationTheme(
-                        themeMode = prefs.themeMode,
-                        useDynamicColor = prefs.useDynamicColor
+                MyApplicationTheme(themeMode = "Dark", useDynamicColor = false) {
+                    Surface(
+                        modifier = Modifier.fillMaxSize(),
+                        color = MaterialTheme.colorScheme.background
                     ) {
-                        Surface(
-                            modifier = Modifier.fillMaxSize(),
-                            color = MaterialTheme.colorScheme.background
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .systemBarsPadding()
+                                .padding(24.dp),
+                            contentAlignment = Alignment.Center
                         ) {
-                            PermissionAndNavigationContainer(viewModel = mainViewModel)
+                            CircularProgressIndicator()
                         }
                     }
                 }
+            }
+        }
+    }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIncomingIntent(intent)
+    }
+
+    private fun handleIncomingIntent(intent: android.content.Intent?) {
+        if (intent == null || !::mainViewModel.isInitialized) return
+        val action = intent.action ?: return
+        val uri: android.net.Uri? = when (action) {
+            android.content.Intent.ACTION_VIEW -> intent.data
+            android.content.Intent.ACTION_SEND -> {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    intent.getParcelableExtra(android.content.Intent.EXTRA_STREAM, android.net.Uri::class.java)
+                } else {
+                    @Suppress("DEPRECATION")
+                    intent.getParcelableExtra(android.content.Intent.EXTRA_STREAM)
+                }
+            }
+            else -> intent.data
+        }
+
+        if (uri != null && uri != android.net.Uri.EMPTY) {
+            try {
+                val mediaEntity = com.example.util.CategoryMetadataManager.createMediaEntityFromIntent(
+                    context = applicationContext,
+                    uri = uri,
+                    intentMimeType = intent.type
+                )
+                mainViewModel.setPlayingItem(mediaEntity)
+            } catch (e: Exception) {
+                android.util.Log.e("MainActivity", "Failed to load direct intent file: ${e.message}", e)
             }
         }
     }
@@ -383,27 +337,35 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@OptIn(ExperimentalPermissionsApi::class)
 @Composable
 fun PermissionAndNavigationContainer(viewModel: MainViewModel) {
     val context = LocalContext.current
     val activity = context as? ComponentActivity
 
     // Determine permissions required by Android version
-    val permissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        listOf(
-            Manifest.permission.READ_MEDIA_VIDEO,
-            Manifest.permission.READ_MEDIA_AUDIO,
-            Manifest.permission.POST_NOTIFICATIONS
-        )
-    } else {
-        listOf(
-            Manifest.permission.READ_EXTERNAL_STORAGE,
-            Manifest.permission.WRITE_EXTERNAL_STORAGE
-        )
+    val permissions = remember {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            arrayOf(
+                Manifest.permission.READ_MEDIA_VIDEO,
+                Manifest.permission.READ_MEDIA_AUDIO,
+                Manifest.permission.POST_NOTIFICATIONS
+            )
+        } else {
+            arrayOf(
+                Manifest.permission.READ_EXTERNAL_STORAGE,
+                Manifest.permission.WRITE_EXTERNAL_STORAGE
+            )
+        }
     }
 
-    val permissionState = rememberMultiplePermissionsState(permissions)
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { grants ->
+        val hasAny = grants.values.any { it }
+        if (hasAny) {
+            viewModel.scanLocalMedia()
+        }
+    }
 
     // Observe pending delete intent from ViewModel to request storage deletion permission (Android 10+)
     val pendingDeleteIntent by viewModel.pendingDeleteIntent.collectAsState()
@@ -411,9 +373,10 @@ fun PermissionAndNavigationContainer(viewModel: MainViewModel) {
         contract = ActivityResultContracts.StartIntentSenderForResult()
     ) { result ->
         if (result.resultCode == android.app.Activity.RESULT_OK) {
+            viewModel.onDeleteRequestGranted()
             android.widget.Toast.makeText(context, "Storage file physically deleted", android.widget.Toast.LENGTH_SHORT).show()
-            viewModel.scanLocalMedia()
         } else {
+            viewModel.clearPendingDeleteIntent()
             android.widget.Toast.makeText(context, "File deletion permission denied", android.widget.Toast.LENGTH_SHORT).show()
         }
     }
@@ -450,8 +413,8 @@ fun PermissionAndNavigationContainer(viewModel: MainViewModel) {
     LaunchedEffect(isOnboardingCompleted) {
         if (isOnboardingCompleted) {
             try {
-                kotlinx.coroutines.delay(500)
-                permissionState.launchMultiplePermissionRequest()
+                kotlinx.coroutines.delay(300)
+                permissionLauncher.launch(permissions)
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !android.os.Environment.isExternalStorageManager()) {
                     showAllFilesAccessDialog = true
@@ -493,9 +456,9 @@ fun PermissionAndNavigationContainer(viewModel: MainViewModel) {
         )
     }
 
-    // Automatically trigger scan once permissions are granted and onboarding is completed
-    LaunchedEffect(permissionState.allPermissionsGranted, isOnboardingCompleted) {
-        if (permissionState.allPermissionsGranted && isOnboardingCompleted) {
+    // Trigger scan on startup if onboarding is completed
+    LaunchedEffect(isOnboardingCompleted) {
+        if (isOnboardingCompleted) {
             viewModel.scanLocalMedia()
         }
     }
@@ -504,6 +467,14 @@ fun PermissionAndNavigationContainer(viewModel: MainViewModel) {
     var currentScreen by remember { mutableStateOf("Main") } // "Main", "Player", "Settings"
     var previousScreen by remember { mutableStateOf("Main") }
     val currentPlayingItem by viewModel.currentPlayingItem.collectAsState()
+
+    // When direct intent opens a video/audio file, auto switch to Player and bypass onboarding
+    LaunchedEffect(currentPlayingItem) {
+        if (currentPlayingItem != null && currentScreen != "Player") {
+            currentScreen = "Player"
+            isOnboardingCompleted = true
+        }
+    }
 
     androidx.activity.compose.BackHandler(enabled = currentScreen == "Settings") {
         currentScreen = previousScreen.ifBlank { "Main" }
@@ -599,3 +570,124 @@ fun PermissionAndNavigationContainer(viewModel: MainViewModel) {
         }
     }
 }
+
+@Composable
+fun CrashFallbackScreen(
+    crashLog: String,
+    onDismiss: () -> Unit,
+    onResetDatabase: () -> Unit
+) {
+    val context = LocalContext.current
+    val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .systemBarsPadding()
+            .padding(20.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.errorContainer,
+                modifier = Modifier.size(48.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Text(
+                        text = "!",
+                        fontSize = 24.sp,
+                        fontWeight = FontWeight.Black,
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                }
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Aero Player Error Fallback",
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.error
+                )
+                Text(
+                    text = "The application caught an exception. Traceback details:",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        Card(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+            )
+        ) {
+            Box(modifier = Modifier.fillMaxSize().padding(14.dp)) {
+                androidx.compose.foundation.text.selection.SelectionContainer {
+                    LazyColumn(modifier = Modifier.fillMaxSize()) {
+                        item {
+                            Text(
+                                text = crashLog,
+                                fontSize = 11.sp,
+                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                color = MaterialTheme.colorScheme.error.copy(alpha = 0.9f)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Button(
+                onClick = {
+                    clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(crashLog))
+                    android.widget.Toast.makeText(context, "Copied error log to clipboard!", android.widget.Toast.LENGTH_SHORT).show()
+                },
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+            ) {
+                Text("Copy Full Error Log", fontWeight = FontWeight.SemiBold)
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedButton(
+                    onClick = onResetDatabase,
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error
+                    )
+                ) {
+                    Text("Reset Database & Cache", fontSize = 12.sp)
+                }
+
+                Button(
+                    onClick = onDismiss,
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                    )
+                ) {
+                    Text("Dismiss & Launch", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
+    }
+}
+

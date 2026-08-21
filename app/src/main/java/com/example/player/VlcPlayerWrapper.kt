@@ -86,6 +86,8 @@ class VlcPlayerWrapper(private val context: Context) {
     private var targetAudioTrackId: Int = -1
     private var targetSubtitleTrackId: Int = -2
     private var pendingInitialSeekMs: Long = 0L
+    private var currentAspectRatio: String? = null
+    private var currentScale: Float = 0f
 
     private var currentSubtitleSizeSp: Float = 18f
     private var currentSubtitleTextColor: String = "#FFFFFFFF"
@@ -263,6 +265,10 @@ class VlcPlayerWrapper(private val context: Context) {
                             if (targetSubtitleTrackId >= -1) {
                                 player.spuTrack = targetSubtitleTrackId
                             }
+                            if (currentAspectRatio != null) {
+                                player.aspectRatio = currentAspectRatio
+                            }
+                            player.scale = currentScale
                             if (pendingInitialSeekMs > 0L) {
                                 val seekTarget = pendingInitialSeekMs
                                 pendingInitialSeekMs = 0L
@@ -367,18 +373,27 @@ class VlcPlayerWrapper(private val context: Context) {
             } else {
                 player.attachViews(layout, null, true, false)
             }
+            layout.post {
+                layout.requestLayout()
+                layout.invalidate()
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Error attaching VLCVideoLayout", e)
         }
     }
 
-    fun detachLayout() {
+    fun detachLayout(layout: VLCVideoLayout? = null) {
         try {
+            if (layout != null && attachedLayout !== layout) {
+                return
+            }
             val player = mediaPlayer
             if (player != null && player.vlcVout.areViewsAttached()) {
                 player.detachViews()
             }
-            attachedLayout = null
+            if (layout == null || attachedLayout === layout) {
+                attachedLayout = null
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Error detaching VLCVideoLayout", e)
         }
@@ -388,10 +403,9 @@ class VlcPlayerWrapper(private val context: Context) {
         val layout = attachedLayout ?: return
         try {
             val player = mediaPlayer ?: return
-            if (player.vlcVout.areViewsAttached()) {
-                player.detachViews()
+            if (!player.vlcVout.areViewsAttached()) {
+                player.attachViews(layout, null, true, false)
             }
-            player.attachViews(layout, null, true, false)
             layout.post {
                 layout.requestLayout()
                 layout.invalidate()
@@ -633,6 +647,8 @@ class VlcPlayerWrapper(private val context: Context) {
     }
 
     fun setAspectRatio(aspect: String?) {
+        if (currentAspectRatio == aspect) return
+        currentAspectRatio = aspect
         try {
             mediaPlayer?.aspectRatio = aspect
         } catch (e: Exception) {
@@ -641,6 +657,8 @@ class VlcPlayerWrapper(private val context: Context) {
     }
 
     fun setScale(scale: Float) {
+        if (currentScale == scale) return
+        currentScale = scale
         try {
             mediaPlayer?.scale = scale
         } catch (e: Exception) {
@@ -679,6 +697,19 @@ class VlcPlayerWrapper(private val context: Context) {
 
     fun setAudioTrack(trackId: Int): Boolean {
         return selectAudioTrack(trackId)
+    }
+
+    fun setAudioOutput(aout: String): Boolean {
+        return try {
+            val mappedAout = when {
+                aout.contains("OpenSL", ignoreCase = true) -> "opensles_android"
+                aout.contains("AAudio", ignoreCase = true) -> "aaudio"
+                else -> "audiotrack"
+            }
+            mediaPlayer?.setAudioOutput(mappedAout) ?: false
+        } catch (e: Exception) {
+            false
+        }
     }
 
     fun getSubtitleTracks(): List<VlcTrackInfo> {
