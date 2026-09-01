@@ -59,6 +59,7 @@ import androidx.compose.ui.unit.sp
 import com.example.data.database.HistoryEntity
 import com.example.data.database.MediaEntity
 import com.example.data.database.displayArtist
+import com.example.ui.components.FolderListComponent
 import com.example.ui.viewmodel.*
 import kotlinx.coroutines.launch
 import androidx.compose.foundation.BorderStroke
@@ -106,7 +107,7 @@ fun MainScreen(
     var showSortMenu by remember { mutableStateOf(false) }
     var showDisplaySettingsBottomSheet by remember { mutableStateOf(false) }
     var showOnlyFavourites by rememberSaveable { mutableStateOf(false) }
-    var activeFolderGroup by remember { mutableStateOf<String?>(null) }
+    val activeFolderGroup by viewModel.activeFolder.collectAsState()
 
     // Additional interactive dialog / sheet control states (Requirements Layer 2)
     var selectedFolderForOptions by remember { mutableStateOf<Pair<String, List<MediaEntity>>?>(null) }
@@ -201,7 +202,7 @@ fun MainScreen(
                 showAboutAppSection = false
             }
             activeFolderGroup != null -> {
-                activeFolderGroup = null
+                viewModel.setActiveFolder(null)
             }
             isSelectModeActive -> {
                 isSelectModeActive = false
@@ -254,7 +255,7 @@ fun MainScreen(
     }
 
     LaunchedEffect(playSubTab, prefs.groupByStyle) {
-        activeFolderGroup = null
+        viewModel.setActiveFolder(null)
     }
 
     // Grouping computation for folder / artist / file_type sorting
@@ -534,12 +535,23 @@ fun MainScreen(
                                     IconButton(
                                         onClick = {
                                             if (isSelectModeActive) {
-                                                val nonStreams = mediaList.filter { it.genre != "Live Stream" }
-                                                if (selectedMediaSet.size >= nonStreams.size) {
-                                                    selectedMediaSet.clear()
+                                                val nonStreams = mediaList.filter { 
+                                                    it.genre != "Live Stream" &&
+                                                    if (playSubTab == "Video") it.isVideo else if (playSubTab == "Audio") !it.isVideo else true
+                                                }
+                                                val targetItems = if (activeFolderGroup != null) {
+                                                    nonStreams.filter {
+                                                        val f = java.io.File(it.path)
+                                                        (f.parentFile?.name ?: "Root Folder") == activeFolderGroup
+                                                    }
                                                 } else {
-                                                    selectedMediaSet.clear()
-                                                    selectedMediaSet.addAll(nonStreams)
+                                                    nonStreams
+                                                }
+                                                if (targetItems.isNotEmpty() && selectedMediaSet.containsAll(targetItems)) {
+                                                    selectedMediaSet.removeAll(targetItems.toSet())
+                                                    if (selectedMediaSet.isEmpty()) isSelectModeActive = false
+                                                } else {
+                                                    selectedMediaSet.addAll(targetItems)
                                                 }
                                             } else if (selectionState.isInSelectionMode) {
                                                 val nonStreams = mediaList.filter { it.genre != "Live Stream" }
@@ -1338,432 +1350,23 @@ fun MainScreen(
                                             }
                                         )
                                     } else if (prefs.groupByStyle == "folder") {
-                                        // -----------------------------------------------------------------
-                                        // NEW FOLDER OPENING SYSTEM (Instead of collapsible accordion style)
-                                        // -----------------------------------------------------------------
-                                        if (activeFolderGroup == null) {
-                                            // Root Folder level
-                                            val foldersList = remember(nonStreamGroupedMediaMap, prefs.sortBy, prefs.sortAscending) {
-                                                val keys = nonStreamGroupedMediaMap.keys.toList()
-                                                keys.sortedWith(Comparator { f1, f2 ->
-                                                    val files1 = nonStreamGroupedMediaMap[f1] ?: emptyList()
-                                                    val files2 = nonStreamGroupedMediaMap[f2] ?: emptyList()
-                                                    val cmp = when (prefs.sortBy) {
-                                                        "date" -> {
-                                                            val d1 = files1.maxOfOrNull { it.dateAdded } ?: 0L
-                                                            val d2 = files2.maxOfOrNull { it.dateAdded } ?: 0L
-                                                            d1.compareTo(d2)
-                                                        }
-                                                        "size" -> {
-                                                            val s1 = files1.sumOf { it.size }
-                                                            val s2 = files2.sumOf { it.size }
-                                                            s1.compareTo(s2)
-                                                        }
-                                                        "length", "duration" -> {
-                                                            val dur1 = files1.sumOf { it.duration }
-                                                            val dur2 = files2.sumOf { it.duration }
-                                                            dur1.compareTo(dur2)
-                                                        }
-                                                        "artist" -> {
-                                                            val a1 = files1.firstOrNull()?.displayArtist?.lowercase() ?: ""
-                                                            val a2 = files2.firstOrNull()?.displayArtist?.lowercase() ?: ""
-                                                            a1.compareTo(a2)
-                                                        }
-                                                        else -> f1.lowercase().compareTo(f2.lowercase())
-                                                    }
-                                                    if (prefs.sortAscending) cmp else -cmp
-                                                })
-                                            }
-                                            if (foldersList.isEmpty()) {
-                                                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                                    Text("No folders found", color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f))
-                                                }
-                                            } else {
-                                                if (prefs.useGroupWiseFolderStyle) {
-                                                    // Grid layout for folders
-                                                    LazyVerticalGrid(
-                                                        columns = GridCells.Fixed(3),
-                                                        contentPadding = PaddingValues(bottom = 120.dp, start = 16.dp, end = 16.dp, top = 12.dp),
-                                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                                        verticalArrangement = Arrangement.spacedBy(10.dp),
-                                                        modifier = Modifier.fillMaxSize()
-                                                    ) {
-                                                        items(foldersList) { folderName ->
-                                                            val folderVideos = nonStreamGroupedMediaMap[folderName] ?: emptyList()
-                                                            val isFolderSelected = selectionState.selectedFolderPaths.contains(folderName) || (isSelectModeActive && selectedMediaSet.any { (java.io.File(it.path).parentFile?.name ?: "Root Folder") == folderName || it.album == folderName || it.artist == folderName })
-                                                            Card(
-                                                                modifier = Modifier
-                                                                    .fillMaxWidth()
-                                                                    .aspectRatio(0.82f)
-                                                                    .combinedClickable(
-                                                                        onClick = {
-                                                                            if (selectionState.isInSelectionMode || isSelectModeActive) {
-                                                                                viewModel.toggleFolderSelection(folderName)
-                                                                            } else {
-                                                                                activeFolderGroup = folderName
-                                                                            }
-                                                                        },
-                                                                        onLongClick = {
-                                                                            viewModel.toggleFolderSelection(folderName)
-                                                                        }
-                                                                    ),
-                                                                shape = RoundedCornerShape(12.dp),
-                                                                colors = CardDefaults.cardColors(
-                                                                    containerColor = if (isFolderSelected) accentOrange.copy(alpha = 0.25f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
-                                                                ),
-                                                                border = BorderStroke(
-                                                                    if (isFolderSelected) 2.dp else 0.dp,
-                                                                    if (isFolderSelected) accentOrange else Color.Transparent
-                                                                )
-                                                            ) {
-                                                                Box(modifier = Modifier.fillMaxSize()) {
-                                                                    Column(
-                                                                        modifier = Modifier
-                                                                            .fillMaxSize()
-                                                                            .padding(8.dp),
-                                                                        verticalArrangement = Arrangement.SpaceBetween,
-                                                                        horizontalAlignment = Alignment.CenterHorizontally
-                                                                    ) {
-                                                                        FolderThumbnail(
-                                                                            folderFiles = folderVideos,
-                                                                            modifier = Modifier
-                                                                                .fillMaxWidth()
-                                                                                .aspectRatio(1.2f)
-                                                                        )
-                                                                        Spacer(modifier = Modifier.height(4.dp))
-                                                                        Text(
-                                                                            text = folderName,
-                                                                            fontSize = 12.sp,
-                                                                            fontWeight = FontWeight.Bold,
-                                                                            color = MaterialTheme.colorScheme.onSurface,
-                                                                            maxLines = 2,
-                                                                            overflow = TextOverflow.Ellipsis,
-                                                                            textAlign = TextAlign.Center
-                                                                        )
-                                                                        val totalFolderSize = folderVideos.sumOf { it.size }
-                                                                        val folderSizeStr = formatMediaFileSize(totalFolderSize)
-                                                                        val folderSubtext = if (folderSizeStr.isNotEmpty()) "${folderVideos.size} files • $folderSizeStr" else "${folderVideos.size} files"
-                                                                        Text(
-                                                                            text = folderSubtext,
-                                                                            fontSize = 10.sp,
-                                                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                                                                            textAlign = TextAlign.Center
-                                                                        )
-                                                                    }
-                                                                    if (isFolderSelected) {
-                                                                        Box(
-                                                                            modifier = Modifier
-                                                                                .align(Alignment.TopEnd)
-                                                                                .padding(6.dp)
-                                                                                .size(24.dp)
-                                                                                .clip(CircleShape)
-                                                                                .background(accentOrange),
-                                                                            contentAlignment = Alignment.Center
-                                                                        ) {
-                                                                            Icon(
-                                                                                imageVector = Icons.Default.Check,
-                                                                                contentDescription = "Selected",
-                                                                                tint = Color.White,
-                                                                                modifier = Modifier.size(16.dp)
-                                                                            )
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                } else {
-                                                    // List layout for folders
-                                                    LazyColumn(
-                                                        contentPadding = PaddingValues(bottom = 120.dp, start = 16.dp, end = 16.dp, top = 12.dp),
-                                                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                                                        modifier = Modifier.fillMaxSize()
-                                                    ) {
-                                                        items(foldersList) { folderName ->
-                                                            val folderVideos = nonStreamGroupedMediaMap[folderName] ?: emptyList()
-                                                            val isFolderSelected = selectionState.selectedFolderPaths.contains(folderName) || (isSelectModeActive && selectedMediaSet.any { (java.io.File(it.path).parentFile?.name ?: "Root Folder") == folderName || it.album == folderName || it.artist == folderName })
-                                                            Card(
-                                                                modifier = Modifier
-                                                                    .fillMaxWidth()
-                                                                    .combinedClickable(
-                                                                        onClick = {
-                                                                            if (selectionState.isInSelectionMode || isSelectModeActive) {
-                                                                                viewModel.toggleFolderSelection(folderName)
-                                                                            } else {
-                                                                                activeFolderGroup = folderName
-                                                                            }
-                                                                        },
-                                                                        onLongClick = {
-                                                                            viewModel.toggleFolderSelection(folderName)
-                                                                        }
-                                                                    ),
-                                                                shape = RoundedCornerShape(8.dp),
-                                                                colors = CardDefaults.cardColors(
-                                                                    containerColor = if (isFolderSelected) accentOrange.copy(alpha = 0.25f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.2f)
-                                                                ),
-                                                                border = BorderStroke(
-                                                                    if (isFolderSelected) 2.dp else 0.dp,
-                                                                    if (isFolderSelected) accentOrange else Color.Transparent
-                                                                )
-                                                            ) {
-                                                                Row(
-                                                                    modifier = Modifier
-                                                                        .fillMaxWidth()
-                                                                        .padding(12.dp),
-                                                                    verticalAlignment = Alignment.CenterVertically,
-                                                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                                                                ) {
-                                                                    FolderThumbnail(
-                                                                        folderFiles = folderVideos,
-                                                                        modifier = Modifier.size(52.dp)
-                                                                    )
-                                                                    Column(modifier = Modifier.weight(1f)) {
-                                                                        Text(
-                                                                            text = folderName,
-                                                                            fontWeight = FontWeight.Bold,
-                                                                            fontSize = 14.sp,
-                                                                            color = MaterialTheme.colorScheme.onSurface
-                                                                        )
-                                                                        val totalFolderSize = folderVideos.sumOf { it.size }
-                                                                        val folderSizeStr = formatMediaFileSize(totalFolderSize)
-                                                                        val folderSubtext = if (folderSizeStr.isNotEmpty()) "${folderVideos.size} files • $folderSizeStr" else "${folderVideos.size} files"
-                                                                        Text(
-                                                                            text = folderSubtext,
-                                                                            fontSize = 11.sp,
-                                                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                                                                        )
-                                                                    }
-                                                                    if (isFolderSelected) {
-                                                                        Box(
-                                                                            modifier = Modifier
-                                                                                .size(24.dp)
-                                                                                .clip(CircleShape)
-                                                                                .background(accentOrange),
-                                                                            contentAlignment = Alignment.Center
-                                                                        ) {
-                                                                            Icon(
-                                                                                imageVector = Icons.Default.Check,
-                                                                                contentDescription = "Selected",
-                                                                                tint = Color.White,
-                                                                                modifier = Modifier.size(16.dp)
-                                                                            )
-                                                                        }
-                                                                    } else {
-                                                                        Icon(
-                                                                            imageVector = Icons.Default.KeyboardArrowRight,
-                                                                            contentDescription = null,
-                                                                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
-                                                                            modifier = Modifier.size(18.dp)
-                                                                        )
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        } else {
-                                            // Open Folder level
-                                            val rawFolderFiles = nonStreamGroupedMediaMap[activeFolderGroup] ?: emptyList()
-                                            val files = remember(rawFolderFiles, prefs.sortBy, prefs.sortAscending) {
-                                                when (prefs.sortBy) {
-                                                    "date" -> if (prefs.sortAscending) rawFolderFiles.sortedBy { it.dateAdded } else rawFolderFiles.sortedByDescending { it.dateAdded }
-                                                    "size" -> if (prefs.sortAscending) rawFolderFiles.sortedBy { it.size } else rawFolderFiles.sortedByDescending { it.size }
-                                                    "length", "duration" -> if (prefs.sortAscending) rawFolderFiles.sortedBy { it.duration } else rawFolderFiles.sortedByDescending { it.duration }
-                                                    "artist" -> if (prefs.sortAscending) rawFolderFiles.sortedBy { (it.artist ?: "").lowercase() } else rawFolderFiles.sortedByDescending { (it.artist ?: "").lowercase() }
-                                                    else -> if (prefs.sortAscending) rawFolderFiles.sortedBy { it.title.lowercase() } else rawFolderFiles.sortedByDescending { it.title.lowercase() }
-                                                }
-                                            }
-                                            Column(modifier = Modifier.fillMaxSize()) {
-                                                // Breadcrumb / Folder path header
-                                                Row(
-                                                    modifier = Modifier
-                                                        .fillMaxWidth()
-                                                        .padding(horizontal = 16.dp, vertical = 8.dp)
-                                                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f), RoundedCornerShape(8.dp))
-                                                        .padding(10.dp),
-                                                    verticalAlignment = Alignment.CenterVertically
-                                                ) {
-                                                    IconButton(
-                                                        onClick = { activeFolderGroup = null },
-                                                        modifier = Modifier.size(24.dp)
-                                                    ) {
-                                                        Icon(
-                                                            imageVector = Icons.Default.ArrowBack,
-                                                            contentDescription = "Back",
-                                                            tint = accentOrange,
-                                                            modifier = Modifier.size(16.dp)
-                                                        )
-                                                    }
-                                                    Spacer(modifier = Modifier.width(8.dp))
-                                                    Icon(
-                                                        imageVector = Icons.Default.FolderOpen,
-                                                        contentDescription = null,
-                                                        tint = accentOrange,
-                                                        modifier = Modifier.size(18.dp)
-                                                    )
-                                                    Spacer(modifier = Modifier.width(6.dp))
-                                                    Text(
-                                                        text = activeFolderGroup!!,
-                                                        fontSize = 13.sp,
-                                                        fontWeight = FontWeight.Bold,
-                                                        color = accentOrange
-                                                    )
-                                                }
-
-                                                // Play all / Queue all controls row
-                                                Row(
-                                                    modifier = Modifier
-                                                        .fillMaxWidth()
-                                                        .padding(horizontal = 16.dp, vertical = 4.dp),
-                                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                                    verticalAlignment = Alignment.CenterVertically
-                                                ) {
-                                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                                        Button(
-                                                            onClick = { viewModel.playAll(files) },
-                                                            enabled = files.isNotEmpty(),
-                                                            colors = ButtonDefaults.buttonColors(
-                                                                containerColor = accentOrange,
-                                                                contentColor = MaterialTheme.colorScheme.onPrimary
-                                                            ),
-                                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                                                            shape = RoundedCornerShape(8.dp),
-                                                            modifier = Modifier.height(32.dp)
-                                                        ) {
-                                                            Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onPrimary)
-                                                            Spacer(modifier = Modifier.width(4.dp))
-                                                            Text("Play All", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimary)
-                                                        }
-
-                                                        OutlinedButton(
-                                                            onClick = { viewModel.addToQueue(files) },
-                                                            enabled = files.isNotEmpty(),
-                                                            colors = ButtonDefaults.outlinedButtonColors(contentColor = accentOrange),
-                                                            border = BorderStroke(1.dp, accentOrange),
-                                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                                                            shape = RoundedCornerShape(8.dp),
-                                                            modifier = Modifier.height(32.dp)
-                                                        ) {
-                                                            Icon(Icons.Default.PlaylistAdd, contentDescription = null, modifier = Modifier.size(16.dp))
-                                                            Spacer(modifier = Modifier.width(4.dp))
-                                                            Text("Queue All", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                                        }
-                                                    }
-
-                                                    // Quick toggle grid/list for folder level
-                                                    IconButton(
-                                                        onClick = {
-                                                            val newStyle = if (prefs.listStyle == "Grid") "List" else "Grid"
-                                                            viewModel.updateListStyle(newStyle)
-                                                        },
-                                                        modifier = Modifier.size(32.dp)
-                                                    ) {
-                                                        Icon(
-                                                            imageVector = if (prefs.listStyle == "Grid") Icons.Default.List else Icons.Default.GridView,
-                                                            contentDescription = "Toggle Grid/List View",
-                                                            tint = accentOrange,
-                                                            modifier = Modifier.size(20.dp)
-                                                        )
-                                                    }
-                                                }
-
-                                                // Grid or List view for files in opened folder
-                                                if (prefs.listStyle == "Grid") {
-                                                    LazyVerticalGrid(
-                                                        columns = GridCells.Adaptive(150.dp),
-                                                        contentPadding = PaddingValues(bottom = 120.dp, start = 16.dp, end = 16.dp, top = 8.dp),
-                                                        horizontalArrangement = Arrangement.spacedBy(16.dp),
-                                                        verticalArrangement = Arrangement.spacedBy(16.dp),
-                                                        modifier = Modifier.fillMaxSize()
-                                                    ) {
-                                                        items(files, key = { it.uriString }) { item ->
-                                                            val isSelected = selectedMediaSet.any { it.uriString == item.uriString }
-                                                            MediaGridCard(
-                                                                item = item,
-                                                                isSelected = isSelected,
-                                                                isSelectModeActive = isSelectModeActive,
-                                                                onMenuClick = { selectedMediaForOptions = item },
-                                                                isActive = (activeItem?.uriString == item.uriString),
-                                                                progress = historyProgressMap[item.uriString],
-                                                                onClick = {
-                                                                    if (isSelectModeActive) {
-                                                                        if (isSelected) {
-                                                                            selectedMediaSet.removeAll { it.uriString == item.uriString }
-                                                                            if (selectedMediaSet.isEmpty()) isSelectModeActive = false
-                                                                        } else {
-                                                                            selectedMediaSet.add(item)
-                                                                        }
-                                                                    } else {
-                                                                        viewModel.setPlayingItemWithQueue(item, files)
-                                                                        onPlayItem(item)
-                                                                    }
-                                                                },
-                                                                onLongClick = {
-                                                                    if (!isSelectModeActive) {
-                                                                        isSelectModeActive = true
-                                                                        selectedMediaSet.clear()
-                                                                        selectedMediaSet.add(item)
-                                                                    } else {
-                                                                        if (isSelected) {
-                                                                            selectedMediaSet.removeAll { it.uriString == item.uriString }
-                                                                            if (selectedMediaSet.isEmpty()) isSelectModeActive = false
-                                                                        } else {
-                                                                            selectedMediaSet.add(item)
-                                                                        }
-                                                                    }
-                                                                }
-                                                            )
-                                                        }
-                                                    }
-                                                } else {
-                                                    LazyColumn(
-                                                        contentPadding = PaddingValues(bottom = 120.dp, start = 16.dp, end = 16.dp, top = 8.dp),
-                                                        verticalArrangement = Arrangement.spacedBy(12.dp),
-                                                        modifier = Modifier.fillMaxSize()
-                                                    ) {
-                                                        items(files, key = { item -> item.uriString }) { item ->
-                                                            val isSelected = selectedMediaSet.any { it.uriString == item.uriString }
-                                                            MediaListRow(
-                                                                item = item,
-                                                                isSelected = isSelected,
-                                                                isSelectModeActive = isSelectModeActive,
-                                                                onMenuClick = { selectedMediaForOptions = item },
-                                                                isActive = (activeItem?.uriString == item.uriString),
-                                                                progress = historyProgressMap[item.uriString],
-                                                                onClick = {
-                                                                    if (isSelectModeActive) {
-                                                                        if (isSelected) {
-                                                                            selectedMediaSet.removeAll { it.uriString == item.uriString }
-                                                                            if (selectedMediaSet.isEmpty()) isSelectModeActive = false
-                                                                        } else {
-                                                                            selectedMediaSet.add(item)
-                                                                        }
-                                                                    } else {
-                                                                        viewModel.setPlayingItemWithQueue(item, files)
-                                                                        onPlayItem(item)
-                                                                    }
-                                                                },
-                                                                onLongClick = {
-                                                                    if (!isSelectModeActive) {
-                                                                        isSelectModeActive = true
-                                                                        selectedMediaSet.clear()
-                                                                        selectedMediaSet.add(item)
-                                                                    } else {
-                                                                        if (isSelected) {
-                                                                            selectedMediaSet.removeAll { it.uriString == item.uriString }
-                                                                            if (selectedMediaSet.isEmpty()) isSelectModeActive = false
-                                                                        } else {
-                                                                            selectedMediaSet.add(item)
-                                                                        }
-                                                                    }
-                                                                }
-                                                            )
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
+                                        FolderListComponent(
+                                            mediaList = nonStreamMediaList,
+                                            viewModel = viewModel,
+                                            prefs = prefs,
+                                            activeFolder = activeFolderGroup,
+                                            onFolderSelect = { folder ->
+                                                viewModel.setActiveFolder(folder)
+                                            },
+                                            onPlayItem = onPlayItem,
+                                            onMediaMenuClick = { selectedMediaForOptions = it },
+                                            activeItem = activeItem,
+                                            historyProgressMap = historyProgressMap,
+                                            selectedMediaSet = selectedMediaSet,
+                                            isSelectModeActive = isSelectModeActive,
+                                            onToggleSelectMode = { isSelectModeActive = it },
+                                            modifier = Modifier.fillMaxSize()
+                                        )
                                     } else {
                                         if (prefs.listStyle == "Grid") {
                                             LazyVerticalGrid(

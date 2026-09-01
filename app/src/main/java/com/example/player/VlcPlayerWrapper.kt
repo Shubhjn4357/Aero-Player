@@ -91,6 +91,7 @@ class VlcPlayerWrapper(private val context: Context) {
 
     private var currentSubtitleSizeSp: Float = 18f
     private var currentSubtitleTextColor: String = "#FFFFFFFF"
+    private var currentSubtitleEncoding: String = "UTF-8"
 
     // Audio Focus & Earbuds Audio Becoming Noisy Management
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
@@ -837,6 +838,7 @@ class VlcPlayerWrapper(private val context: Context) {
     ) {
         currentSubtitleSizeSp = subtitleSizeSp
         currentSubtitleTextColor = subtitleTextColorHex
+        currentSubtitleEncoding = subtitleEncoding
     }
 
     fun release() {

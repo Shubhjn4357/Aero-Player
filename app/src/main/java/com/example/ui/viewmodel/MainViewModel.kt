@@ -125,6 +125,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val volumeOverlayTime = MutableStateFlow<Long>(0L)
     var audioOnlyPlaybackRequested: Boolean = false
 
+    private val _activeFolder = MutableStateFlow<String?>(null)
+    val activeFolder: StateFlow<String?> = _activeFolder.asStateFlow()
+
+    fun setActiveFolder(folder: String?) {
+        _activeFolder.value = folder
+    }
+
     private var _exoPlayerInstance: ExoPlayer? = null
     val exoPlayer: ExoPlayer
         get() {
@@ -134,9 +141,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
                         .setUsage(C.USAGE_MEDIA)
                         .build()
+                    val loadControl = androidx.media3.exoplayer.DefaultLoadControl.Builder()
+                        .setBufferDurationsMs(
+                            1500,  // minBufferMs for instant start
+                            15000, // maxBufferMs
+                            500,   // bufferForPlaybackMs
+                            1000   // bufferForPlaybackAfterRebufferMs
+                        )
+                        .setPrioritizeTimeOverSizeThresholds(true)
+                        .build()
                     _exoPlayerInstance = ExoPlayer.Builder(getApplication())
                         .setAudioAttributes(audioAttributes, true)
                         .setHandleAudioBecomingNoisy(true)
+                        .setLoadControl(loadControl)
                         .build()
                 } catch (e: Throwable) {
                     android.util.Log.e("MainViewModel", "Failed to build ExoPlayer with custom attributes: ${e.message}", e)
@@ -247,6 +264,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun updateSearchQuery(query: String) {
         _searchQuery.value = query
+    }
+
+    fun updateListStyle(style: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val current = preferencesState.value
+            preferenceRepository.updatePreferences(current.copy(listStyle = style))
+        }
     }
 
     fun clearSelection() {

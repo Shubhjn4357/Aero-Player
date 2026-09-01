@@ -1108,7 +1108,7 @@ fun PlayerScreen(
                     isPlaying = false
                     isSleepTimerRunning = false
                     gestureFeedbackType = "seek"
-                    gestureFeedbackValue = "Sleep Timer Finished ‚è∞"
+                    gestureFeedbackValue = "Sleep Timer Finished "
                 }
             }
         }
@@ -1833,7 +1833,7 @@ fun PlayerScreen(
             onToggleFavorite = {
                 viewModel.toggleFavoriteMedia(activeMediaItem.uriString)
                 hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
-                val msg = if (!isSaved) "Saved to Library ‚ù§Ô∏è" else "Removed from Library"
+                val msg = if (!isSaved) "Saved to Library " else "Removed from Library"
                 android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
             },
             onOpenAdvancedControls = { showAdvancedControlsSheet = true }
@@ -3295,7 +3295,7 @@ fun PlayerScreen(
                                                             onClick = {
                                                                 viewModel.toggleFavoriteMedia(activeMediaItem.uriString)
                                                                 hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
-                                                                val msg = if (!isSaved) "Saved to Library ‚ù§Ô∏è" else "Removed from Library"
+                                                                val msg = if (!isSaved) "Saved to Library " else "Removed from Library"
                                                                 android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
                                                             },
                                                             modifier = Modifier.size(36.dp).graphicsLayer {
@@ -3469,7 +3469,7 @@ fun PlayerScreen(
                                                             onClick = {
                                                                 viewModel.toggleFavoriteMedia(activeMediaItem.uriString)
                                                                 hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
-                                                                val msg = if (!isSaved) "Saved to Library ‚ù§Ô∏è" else "Removed from Library"
+                                                                val msg = if (!isSaved) "Saved to Library " else "Removed from Library"
                                                                 android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
                                                             },
                                                             modifier = Modifier.size(36.dp).graphicsLayer {
@@ -6184,7 +6184,7 @@ fun PlayerScreen(
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
-                                text = if (isCastingActive) "Active ‚Ä¢ ${connectedCastDevice ?: prefs.selectedCastDevice}" else "Ready to cast",
+                                text = if (isCastingActive) "Active  -  ${connectedCastDevice ?: prefs.selectedCastDevice}" else "Ready to cast",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = if (isCastingActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -6248,15 +6248,15 @@ fun PlayerScreen(
                 }
 
                 val defaultCastDevices = listOf(
-                    "Living Room TV (Chromecast)" to "Smart TV ‚Ä¢ 192.168.1.102 ‚Ä¢ mDNS",
-                    "Aero Audio Receiver (DLNA)" to "High-Res Speaker ‚Ä¢ 192.168.1.115 ‚Ä¢ UPnP",
-                    "Bedroom Soundbar (AirPlay)" to "Wireless Soundbar ‚Ä¢ 192.168.1.120 ‚Ä¢ AirPlay",
-                    "Kitchen Smart Speaker (Local Stream)" to "Smart Speaker ‚Ä¢ 192.168.1.134 ‚Ä¢ HTTP"
+                    "Living Room TV (Chromecast)" to "Smart TV  -  192.168.1.102  -  mDNS",
+                    "Aero Audio Receiver (DLNA)" to "High-Res Speaker  -  192.168.1.115  -  UPnP",
+                    "Bedroom Soundbar (AirPlay)" to "Wireless Soundbar  -  192.168.1.120  -  AirPlay",
+                    "Kitchen Smart Speaker (Local Stream)" to "Smart Speaker  -  192.168.1.134  -  HTTP"
                 )
 
                 val allDevicesToDisplay = mutableListOf<Pair<String, String>>()
                 discoveredNetworkDevices.forEach { dev ->
-                    allDevicesToDisplay.add(dev.name to "Live Discovered ‚Ä¢ ${dev.protocol} (${dev.ipAddress}:${dev.port})")
+                    allDevicesToDisplay.add(dev.name to "Live Discovered  -  ${dev.protocol} (${dev.ipAddress}:${dev.port})")
                 }
                 defaultCastDevices.forEach { defaultDev ->
                     if (allDevicesToDisplay.none { it.first.contains(defaultDev.first.take(8), ignoreCase = true) }) {
@@ -6508,7 +6508,7 @@ fun PlayerScreen(
                      parts.add(mime)
                  }
                  
-                 return if (parts.isNotEmpty()) parts.joinToString(" ‚Ä¢ ") else "Audio Track ${index + 1}"
+                 return if (parts.isNotEmpty()) parts.joinToString("  -  ") else "Audio Track ${index + 1}"
              }
 
              fun getFullSubtitleTrackName(format: androidx.media3.common.Format, index: Int): String {
@@ -6541,7 +6541,7 @@ fun PlayerScreen(
                      parts.add(roleFlagsList.joinToString(", "))
                  }
                  
-                 return if (parts.isNotEmpty()) parts.joinToString(" ‚Ä¢ ") else "Subtitle ${index + 1}"
+                 return if (parts.isNotEmpty()) parts.joinToString("  -  ") else "Subtitle ${index + 1}"
              }
 
              fun getFullVideoTrackName(format: androidx.media3.common.Format, index: Int): String {
@@ -6559,7 +6559,7 @@ fun PlayerScreen(
                  if (bitrate > 0) {
                      parts.add("${(bitrate / 1000000.0).let { "%.1f".format(it) }} Mbps")
                  }
-                 return if (parts.isNotEmpty()) parts.joinToString(" ‚Ä¢ ") else "Video Quality ${index + 1}"
+                 return if (parts.isNotEmpty()) parts.joinToString("  -  ") else "Video Quality ${index + 1}"
              }
 
              // 1. Parse Audio Tracks
@@ -9336,36 +9336,5 @@ fun PlayingEqualizerIndicator(
     val anim3 by infiniteTransition.animateFloat(
         initialValue = 0.35f,
         targetValue = 0.95f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 380, easing = LinearEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "bar3"
-    )
-    val anim4 by infiniteTransition.animateFloat(
-        initialValue = 0.7f,
-        targetValue = 0.25f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 490, easing = LinearEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "bar4"
-    )
-
-    Row(
-        modifier = modifier.size(width = 18.dp, height = 16.dp),
-        horizontalArrangement = Arrangement.spacedBy(2.dp),
-        verticalAlignment = Alignment.Bottom
-    ) {
-        val barHeights = if (isPlaying) listOf(anim1, anim2, anim3, anim4) else listOf(0.4f, 0.7f, 0.5f, 0.3f)
-        barHeights.forEach { fraction ->
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxHeight(fraction)
-                    .clip(RoundedCornerShape(1.dp))
-                    .background(color)
-            )
-        }
-    }
-}
+        animationSpecxúºRMo‘0ΩÔØ∞zÚJ¡⁄è °HlUƒÅ(E‹'…8’kGé∑€m’ˇéÌêØ¢ﬁ9å=„˜2œoÃÆiIöfÿ 8»Úõ|†È éåf◊Ãù5/è6ˆ§µæºΩZ%°%]˘Ïi{”e2˚óç=ˆ¶DèÀÜDd¯Ä∂≈;°)»QyÙEv{ÀÀ@Em)Àœ√%~Z–-q¢”ç_î7ﬁ(†‘/P«†a%>»±ó[°œ6óì√¡áªˆO|K?˛ﬂ“ﬁ∑∏dÊ4*=òí$°ı»~+ZzB~¢“’æ∫æeì∞©™]»ﬂ˚|“ß6ñûåv†>[o~Ö‘7…D€@ÅÂÓÃ7sÆÔ®LEïÓy˝^ÏåsÊ–)gœ#…œ›ﬂÈk\$…8µ?úÉqÃ[ÎæKÏ_'q
+õnŸvK∫d®ZÏq+ë §{>^∆∏ïÀ°›ÿJH„ßS‘ÏôIEÌªO≥9ÌÃ„¸º≤xˇg˚&|‚˚ı§˚Ï\˙w≥á«NÔ5º.5<3G]byc¨F{WCÉ|F'á‚æ≤Å√£åù√∆Ïe—≈ó≈o   ˇˇ ú≈,‹
