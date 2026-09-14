@@ -26,51 +26,74 @@ import java.net.URL
 import java.util.UUID
 
 object ContentResolverUtils {
+    /**
+     * Resolves a URI for internal media player engines (ExoPlayer & LibVLC).
+     * Strictly avoids FileProvider wrapping for internal playback to ensure direct,
+     * zero-overhead POSIX file I/O (FileDataSource / RandomAccessFile) on large 1GB+ files.
+     */
     fun resolvePlayableUri(context: Context?, uriString: String, path: String? = null): Uri {
+        // 1. Direct file path check (highest performance, zero IPC)
+        if (!path.isNullOrBlank()) {
+            try {
+                val file = File(path)
+                if (file.exists() && file.canRead()) {
+                    return Uri.fromFile(file)
+                }
+            } catch (e: Exception) {}
+        }
+        // 2. Direct file:// URI check
+        if (uriString.startsWith("file://")) {
+            try {
+                val pathFromUri = Uri.parse(uriString).path
+                if (!pathFromUri.isNullOrBlank()) {
+                    val file = File(pathFromUri)
+                    if (file.exists() && file.canRead()) {
+                        return Uri.fromFile(file)
+                    }
+                }
+            } catch (e: Exception) {}
+            return Uri.parse(uriString)
+        }
+        // 3. Network or Content URIs
         if (uriString.startsWith("content://") || uriString.startsWith("http://") || 
             uriString.startsWith("https://") || uriString.startsWith("rtsp://") || 
             uriString.startsWith("rtmp://") || uriString.startsWith("mms://")) {
             return Uri.parse(uriString)
         }
-        if (uriString.startsWith("file://")) {
-            if (context != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                try {
-                    val file = File(Uri.parse(uriString).path ?: "")
-                    if (file.exists()) {
-                        return FileProvider.getUriForFile(
-                            context,
-                            "${context.packageName}.fileprovider",
-                            file
-                        )
-                    }
-                } catch (e: Exception) {
-                    // Fallback to Uri.parse
-                }
+        // 4. Fallback path string
+        return try {
+            val file = File(uriString)
+            if (file.exists() && file.canRead()) {
+                Uri.fromFile(file)
+            } else {
+                Uri.parse(uriString)
             }
+        } catch (e: Exception) {
+            Uri.parse(uriString)
+        }
+    }
+
+    /**
+     * Resolves a shareable URI with FileProvider when exposing media to external apps.
+     */
+    fun getShareableUri(context: Context, uriString: String, path: String? = null): Uri {
+        if (uriString.startsWith("content://")) {
             return Uri.parse(uriString)
         }
-        if (!path.isNullOrBlank()) {
-            val file = File(path)
+        val targetPath = path ?: (if (uriString.startsWith("file://")) Uri.parse(uriString).path else uriString)
+        if (!targetPath.isNullOrBlank()) {
+            val file = File(targetPath)
             if (file.exists()) {
-                if (context != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                    try {
-                        return FileProvider.getUriForFile(
-                            context,
-                            "${context.packageName}.fileprovider",
-                            file
-                        )
-                    } catch (e: Exception) {
-                        // Fallback
-                    }
-                }
-                return Uri.fromFile(file)
+                try {
+                    return FileProvider.getUriForFile(
+                        context,
+                        "${context.packageName}.fileprovider",
+                        file
+                    )
+                } catch (e: Exception) {}
             }
         }
-        return try {
-            Uri.parse(uriString)
-        } catch (e: Exception) {
-            Uri.EMPTY
-        }
+        return Uri.parse(uriString)
     }
 
     fun inferMimeType(uriString: String, path: String?, context: Context?): String? {
@@ -110,7 +133,7 @@ object ContentResolverUtils {
 
     fun openInExternalPlayer(context: Context, uriString: String, path: String? = null) {
         try {
-            val uri = resolvePlayableUri(context, uriString, path)
+            val uri = getShareableUri(context, uriString, path)
             val mime = inferMimeType(uriString, path, context) ?: "video/*"
             val intent = Intent(Intent.ACTION_VIEW).apply {
                 setDataAndType(uri, mime)
@@ -317,7 +340,7 @@ fun shareMediaItems(context: Context, items: List<MediaEntity>) {
     try {
         if (items.size == 1) {
             val item = items.first()
-            val uri = ContentResolverUtils.resolvePlayableUri(context, item.uriString, item.path)
+            val uri = ContentResolverUtils.getShareableUri(context, item.uriString, item.path)
             val intent = Intent(Intent.ACTION_SEND).apply {
                 type = item.mimeType ?: if (item.isVideo) "video/*" else "audio/*"
                 putExtra(Intent.EXTRA_STREAM, uri)
@@ -329,7 +352,7 @@ fun shareMediaItems(context: Context, items: List<MediaEntity>) {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             })
         } else {
-            val uris = items.map { ContentResolverUtils.resolvePlayableUri(context, it.uriString, it.path) }
+            val uris = items.map { ContentResolverUtils.getShareableUri(context, it.uriString, it.path) }
             val intent = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
                 type = "*/*"
                 putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))

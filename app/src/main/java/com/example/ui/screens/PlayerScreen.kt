@@ -71,6 +71,8 @@ import androidx.media3.ui.PlayerView
 import com.example.data.database.MediaEntity
 import com.example.data.database.displayArtist
 import com.example.player.VlcPlayerWrapper
+import com.example.player.subtitle.UnifiedSubtitleEngine
+import com.example.ui.components.UnifiedSubtitleOverlay
 import com.example.ui.components.VlcPlayerView
 import com.example.ui.viewmodel.*
 import kotlinx.coroutines.delay
@@ -127,11 +129,10 @@ fun PlayerScreen(
     }
 
     val targetPath = (activeMediaItem.path ?: activeMediaItem.uriString).lowercase()
-    val isVlcRequiredFormat = targetPath.endsWith(".mkv") || targetPath.endsWith(".avi") ||
-            targetPath.endsWith(".flv") || targetPath.endsWith(".ts") || targetPath.endsWith(".wmv") ||
+    val isVlcRequiredFormat = targetPath.endsWith(".avi") ||
+            targetPath.endsWith(".flv") || targetPath.endsWith(".wmv") ||
             targetPath.endsWith(".vob") || targetPath.endsWith(".ogv") || targetPath.endsWith(".divx") ||
-            targetPath.endsWith(".rmvb") || targetPath.contains(".dts") || targetPath.contains(".ac3") ||
-            targetPath.contains(".eac3") || targetPath.contains(".truehd") || targetPath.endsWith(".iso")
+            targetPath.endsWith(".rmvb") || targetPath.endsWith(".rm") || targetPath.endsWith(".iso")
     val effectiveEngine = when (activeEngine) {
         "VLC" -> "VLC"
         "ExoPlayer" -> "ExoPlayer"
@@ -152,6 +153,7 @@ fun PlayerScreen(
     var playbackErrorMsg by remember { mutableStateOf<String?>(null) }
     var isBuffering by remember { mutableStateOf(false) }
     val currentEqualizerPreset by viewModel.currentEqualizerPreset.collectAsState()
+    val subEngineState by viewModel.subtitleEngine.state.collectAsState()
     var resizeMode by remember { mutableStateOf(AspectRatioFrameLayout.RESIZE_MODE_FIT) }
     var currentBrightness by remember { mutableStateOf(-1f) }
     var showOnlineSubtitleDownloader by remember { mutableStateOf(false) }
@@ -264,8 +266,9 @@ fun PlayerScreen(
                 }
             } else if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
                 if (effectiveEngine == "VLC") {
-                    vlcPlayer.ensureInitialized()
-                    vlcPlayer.refreshVideoSurface()
+                    vlcPlayer.ensureInitializedAsync {
+                        vlcPlayer.refreshVideoSurface()
+                    }
                 }
                 if (!inPip && wasPlayingBeforePause) {
                     wasPlayingBeforePause = false
@@ -300,8 +303,9 @@ fun PlayerScreen(
                 startSeekMs = previousPos
             }
         } else {
-            // 1. Fetch history position BEFORE starting playback
-            val history = viewModel.getHistoryByUri(activeMediaItem.uriString)
+            // 1. Fetch history position BEFORE starting playback (instant in-memory cache first, background fallback)
+            val history = viewModel.historyState.value.firstOrNull { it.uriString == activeMediaItem.uriString }
+                ?: kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { viewModel.getHistoryByUri(activeMediaItem.uriString) }
             val isNearEnd = history != null && history.duration > 0L && history.progressMs >= (history.duration - 5000L).coerceAtLeast(10000L)
             if (history != null && history.progressMs > 1500L && !isNearEnd) {
                 resumePosition = history.progressMs
@@ -327,6 +331,7 @@ fun PlayerScreen(
         var brightnessToApply = currentBrightness
 
         var savedSubDisabled = false
+        var savedSubDelay = 0L
         var savedExternalSubUri: String? = null
         var savedVlcAudioTrackId = -1
         var savedVlcSubTrackId = -2
@@ -350,6 +355,7 @@ fun PlayerScreen(
                     brightnessToApply = videoObj.getDouble("brightness").toFloat()
                 }
                 savedSubDisabled = videoObj.optBoolean("subDisabled", false)
+                savedSubDelay = videoObj.optLong("subDelayMs", 0L)
                 if (videoObj.has("externalSubUri")) {
                     savedExternalSubUri = videoObj.getString("externalSubUri")
                 }
@@ -363,6 +369,41 @@ fun PlayerScreen(
             e.printStackTrace()
         }
 
+        // Initialize Subtitle Engine for active media item
+        viewModel.subtitleEngine.clear()
+        viewModel.subtitleEngine.setSubtitleDelay(savedSubDelay)
+        viewModel.subtitleEngine.setEnabled(!savedSubDisabled)
+
+        var externalSubToLoad = savedExternalSubUri
+        if (externalSubToLoad == null && prefs.autoLoadSubtitles) {
+            val videoPath = activeMediaItem.path
+            if (!videoPath.isNullOrBlank()) {
+                val detectedSub = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    val dotIndex = videoPath.lastIndexOf('.')
+                    if (dotIndex > 0) {
+                        val basePath = videoPath.substring(0, dotIndex)
+                        listOf(".srt", ".vtt", ".ass", ".ssa").firstOrNull { ext ->
+                            val f = java.io.File(basePath + ext)
+                            f.exists() && f.length() > 0
+                        }?.let { ext ->
+                            android.net.Uri.fromFile(java.io.File(basePath + ext)).toString()
+                        }
+                    } else null
+                }
+                if (detectedSub != null) {
+                    externalSubToLoad = detectedSub
+                }
+            }
+        }
+
+        if (externalSubToLoad != null) {
+            viewModel.subtitleEngine.loadExternalSubtitle(
+                context = context,
+                uriString = externalSubToLoad!!,
+                encoding = prefs.subtitleEncoding
+            )
+        }
+
         // Apply configurations
         resizeMode = resizeToApply
         if (effectiveEngine == "VLC") {
@@ -371,8 +412,8 @@ fun PlayerScreen(
             vlcPlayer.volume = volumeToApply
             vlcPlayer.setSubtitleSizeSp(prefs.subtitleSize)
             vlcPlayer.setSubtitleTextColor(prefs.subtitleTextColor)
-            if (savedExternalSubUri != null) {
-                vlcPlayer.loadSubtitle(savedExternalSubUri)
+            if (externalSubToLoad != null) {
+                vlcPlayer.loadSubtitle(externalSubToLoad!!)
             }
         } else {
             vlcPlayer.pause()
@@ -434,7 +475,17 @@ fun PlayerScreen(
                         path = activeMediaItem.path,
                         initialSeekMs = startSeekMs,
                         initialAudioTrackId = savedVlcAudioTrackId,
-                        initialSubtitleTrackId = savedVlcSubTrackId
+                        initialSubtitleTrackId = savedVlcSubTrackId,
+                        subtitleSizeSp = prefs.subtitleSize,
+                        subtitleTextColorHex = prefs.subtitleTextColor,
+                        subtitleBgColorHex = if (prefs.subtitleBackgroundEnabled) prefs.subtitleBackground else "#00000000",
+                        subtitleOutlineColorHex = prefs.subtitleOutlineColor,
+                        subtitleShadowColorHex = if (prefs.subtitleShadowEnabled) prefs.subtitleShadowColor else "#00000000",
+                        subtitleEncoding = prefs.subtitleEncoding,
+                        subtitleVerticalOffset = prefs.subtitleVerticalOffset,
+                        subtitleOpacity = prefs.subtitleOpacity,
+                        subtitleBgOpacity = if (prefs.subtitleBackgroundEnabled) 0.8f else 0.0f,
+                        subtitleFontStyle = if (prefs.subtitleBold) "Bold" else prefs.subtitleFontStyle
                     )
                     if (savedExternalSubUri != null) {
                         vlcPlayer.loadSubtitle(savedExternalSubUri)
@@ -464,15 +515,17 @@ fun PlayerScreen(
                     (exoPlayer.playbackState == Player.STATE_READY || exoPlayer.playbackState == Player.STATE_BUFFERING || exoPlayer.isPlaying) &&
                     viewModel.lastLoadedEngineType == "ExoPlayer"
             if (!isSameUriAlreadyLoaded || isEngineSwitch) {
-                val newItem = buildMediaItemWithSubtitles(
-                    uriString = activeMediaItem.uriString,
-                    context = context,
-                    path = activeMediaItem.path,
-                    externalSubtitleUri = savedExternalSubUri,
-                    title = activeMediaItem.title,
-                    artist = activeMediaItem.artist,
-                    album = activeMediaItem.album
-                )
+                val newItem = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    buildMediaItemWithSubtitles(
+                        uriString = activeMediaItem.uriString,
+                        context = context,
+                        path = activeMediaItem.path,
+                        externalSubtitleUri = savedExternalSubUri,
+                        title = activeMediaItem.title,
+                        artist = activeMediaItem.artist,
+                        album = activeMediaItem.album
+                    )
+                }
                 try {
                     if (startSeekMs > 0L) {
                         exoPlayer.setMediaItem(newItem, startSeekMs)
@@ -504,7 +557,7 @@ fun PlayerScreen(
     // Log History periodically
     LaunchedEffect(activeMediaItem, effectiveEngine) {
         while (true) {
-            delay(5000)
+            delay(15000)
             val pos = if (effectiveEngine == "VLC") vlcPlayer.currentPositionMs else exoPlayer.currentPosition
             val playing = if (effectiveEngine == "VLC") vlcPlayer.isPlaying else exoPlayer.isPlaying
             if (playing && pos > 0) {
@@ -595,7 +648,7 @@ fun PlayerScreen(
     }
 
     // Keep PlayerControlBridge updated with active player engine reference & controls
-    LaunchedEffect(effectiveEngine, duration, currentPosition) {
+    LaunchedEffect(effectiveEngine) {
         com.example.ui.viewmodel.PlayerControlBridge.activeEngineType = effectiveEngine
         com.example.ui.viewmodel.PlayerControlBridge.activeEngineName = if (effectiveEngine == "VLC") "LibVLC Universal Engine" else "Media3 ExoPlayer"
         com.example.ui.viewmodel.PlayerControlBridge.vlcPlayerRef = java.lang.ref.WeakReference(vlcPlayer)
@@ -645,8 +698,10 @@ fun PlayerScreen(
             viewModel.playPrevious()
         }
         com.example.ui.viewmodel.PlayerControlBridge.onSeekByListener = { offsetMs ->
-            val maxDur = if (duration > 0) duration else Long.MAX_VALUE
-            val target = (currentPosition + offsetMs).coerceIn(0L, maxDur)
+            val cur = if (effectiveEngine == "VLC") vlcPlayer.currentPositionMs else exoPlayer.currentPosition
+            val dur = if (effectiveEngine == "VLC") vlcPlayer.durationMs else exoPlayer.duration
+            val maxDur = if (dur > 0) dur else Long.MAX_VALUE
+            val target = (cur + offsetMs).coerceIn(0L, maxDur)
             performSeek(target)
         }
         com.example.ui.viewmodel.PlayerControlBridge.onSeekToListener = { targetMs ->
@@ -692,73 +747,11 @@ fun PlayerScreen(
 
     // Async thumbnail extractor during scrubbing (highly optimized, preloaded, cached seek frame system)
     var cachedRetriever by remember { mutableStateOf<android.media.MediaMetadataRetriever?>(null) }
+    var cachedPfd by remember { mutableStateOf<android.os.ParcelFileDescriptor?>(null) }
 
-    // Background Auto-Preload Keyframe Thumbnails for instant scrub preview (local files only to protect network & ExoPlayer)
+    // Background Auto-Preload Keyframe Thumbnails for instant scrub preview (disabled to prevent FD exhaustion/crashes)
     LaunchedEffect(activeMediaItem) {
-        val isHttp = activeMediaItem.uriString.startsWith("http://") || activeMediaItem.uriString.startsWith("https://")
-        if (activeMediaItem.isVideo && !isHttp) {
-            kotlinx.coroutines.delay(1200L) // Yield initial CPU & disk I/O completely to ExoPlayer video startup
-            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                var retriever: android.media.MediaMetadataRetriever? = null
-                var pfd: android.os.ParcelFileDescriptor? = null
-                try {
-                    retriever = android.media.MediaMetadataRetriever()
-                    if (activeMediaItem.uriString.startsWith("content://")) {
-                        try {
-                            val uri = parseMediaUri(activeMediaItem.uriString, activeMediaItem.path, context)
-                            if (uri.scheme == "file") {
-                                retriever.setDataSource(uri.path)
-                            } else {
-                                pfd = context.contentResolver.openFileDescriptor(uri, "r")
-                                if (pfd != null) {
-                                    retriever.setDataSource(pfd.fileDescriptor)
-                                } else {
-                                    retriever.setDataSource(context, uri)
-                                }
-                            }
-                        } catch (e: Exception) {
-                            if (!activeMediaItem.path.isNullOrBlank() && java.io.File(activeMediaItem.path).exists()) {
-                                retriever.setDataSource(activeMediaItem.path)
-                            } else {
-                                retriever.setDataSource(context, parseMediaUri(activeMediaItem.uriString, activeMediaItem.path, context))
-                            }
-                        }
-                    } else {
-                        retriever.setDataSource(activeMediaItem.path ?: activeMediaItem.uriString)
-                    }
-                    val videoId = activeMediaItem.uriString.hashCode().toString()
-                    val durSec = (activeMediaItem.duration / 1000L).coerceAtLeast(10L)
-                    val stepSec = (durSec / 12L).coerceIn(3L, 30L)
-                    for (sec in 0L..durSec step stepSec) {
-                        kotlinx.coroutines.yield()
-                        val key = "${videoId}_$sec"
-                        if (thumbnailCache.get(key) == null) {
-                            val frame = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O_MR1) {
-                                retriever.getScaledFrameAtTime(
-                                    sec * 1000000L,
-                                    android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
-                                    160,
-                                    90
-                                )
-                            } else {
-                                retriever.getFrameAtTime(
-                                    sec * 1000000L,
-                                    android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC
-                                )
-                            }
-                            if (frame != null) {
-                                thumbnailCache.put(key, frame)
-                            }
-                        }
-                    }
-                } catch (e: Exception) {
-                    // Ignore non-fatal thumbnail extraction exceptions
-                } finally {
-                    try { pfd?.close() } catch (e: Exception) {}
-                    try { retriever?.release() } catch (e: Exception) {}
-                }
-            }
-        }
+        // Background preloading bypassed for performance and stability
     }
 
     LaunchedEffect(isScrubbing, activeMediaItem) {
@@ -766,28 +759,23 @@ fun PlayerScreen(
             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                 try {
                     val r = android.media.MediaMetadataRetriever()
-                    if (activeMediaItem.uriString.startsWith("content://")) {
-                        var pfd: android.os.ParcelFileDescriptor? = null
-                        try {
-                            val uri = parseMediaUri(activeMediaItem.uriString, activeMediaItem.path, context)
-                            if (uri.scheme == "file") {
-                                r.setDataSource(uri.path)
+                    var openedDescriptor: android.os.ParcelFileDescriptor? = null
+                    val directPath = activeMediaItem.path
+                    if (!directPath.isNullOrBlank() && java.io.File(directPath).let { it.exists() && it.canRead() }) {
+                        r.setDataSource(directPath)
+                    } else if (activeMediaItem.uriString.startsWith("content://")) {
+                        val uri = parseMediaUri(activeMediaItem.uriString, activeMediaItem.path, context)
+                        if (uri.scheme == "file" && uri.path != null) {
+                            r.setDataSource(uri.path)
+                        } else {
+                            try {
+                                openedDescriptor = context.contentResolver.openFileDescriptor(uri, "r")
+                            } catch (e: Throwable) {}
+                            if (openedDescriptor != null) {
+                                r.setDataSource(openedDescriptor.fileDescriptor)
                             } else {
-                                pfd = context.contentResolver.openFileDescriptor(uri, "r")
-                                if (pfd != null) {
-                                    r.setDataSource(pfd.fileDescriptor)
-                                } else {
-                                    r.setDataSource(context, uri)
-                                }
+                                r.setDataSource(context, uri)
                             }
-                        } catch (e: Exception) {
-                            if (!activeMediaItem.path.isNullOrBlank() && java.io.File(activeMediaItem.path).exists()) {
-                                r.setDataSource(activeMediaItem.path)
-                            } else {
-                                r.setDataSource(context, parseMediaUri(activeMediaItem.uriString, activeMediaItem.path, context))
-                            }
-                        } finally {
-                            try { pfd?.close() } catch (e: Exception) {}
                         }
                     } else if (activeMediaItem.uriString.startsWith("http://") || activeMediaItem.uriString.startsWith("https://")) {
                         r.setDataSource(activeMediaItem.uriString, HashMap<String, String>())
@@ -795,17 +783,23 @@ fun PlayerScreen(
                         r.setDataSource(activeMediaItem.path ?: activeMediaItem.uriString)
                     }
                     cachedRetriever = r
-                } catch (e: Exception) {
-                    e.printStackTrace()
+                    cachedPfd = openedDescriptor
+                } catch (e: Throwable) {
+                    // Handled safely
                 }
             }
         } else {
             val r = cachedRetriever
+            val pfd = cachedPfd
             cachedRetriever = null
+            cachedPfd = null
             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                 try {
                     r?.release()
-                } catch (e: Exception) {}
+                } catch (e: Throwable) {}
+                try {
+                    pfd?.close()
+                } catch (e: Throwable) {}
             }
             scrubbingBitmap = null
         }
@@ -858,8 +852,8 @@ fun PlayerScreen(
                             thumbnailCache.put(exactKey, frame)
                             scrubbingBitmap = frame
                         }
-                    } catch (e: Exception) {
-                        e.printStackTrace()
+                    } catch (e: Throwable) {
+                        // Handled safely
                     }
                 }
             }
@@ -948,8 +942,9 @@ fun PlayerScreen(
                     android.content.Intent.ACTION_SCREEN_ON,
                     android.content.Intent.ACTION_USER_PRESENT -> {
                         if (effectiveEngine == "VLC") {
-                            vlcPlayer.ensureInitialized()
-                            vlcPlayer.refreshVideoSurface()
+                            vlcPlayer.ensureInitializedAsync {
+                                vlcPlayer.refreshVideoSurface()
+                            }
                         }
                     }
                     android.media.AudioManager.ACTION_AUDIO_BECOMING_NOISY -> {
@@ -1219,6 +1214,9 @@ fun PlayerScreen(
             override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
                 tracksUpdateTrigger++
             }
+            override fun onCues(cueGroup: androidx.media3.common.text.CueGroup) {
+                viewModel.subtitleEngine.onExoCues(cueGroup.cues)
+            }
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
                 playbackErrorMsg = "Playback Error: ${error.localizedMessage ?: "Format not supported"}"
             }
@@ -1254,7 +1252,7 @@ fun PlayerScreen(
                 if (dur > 0) duration = dur
             }
             vlcPlayer.onPositionChanged = { pos ->
-                // Handled in tracking loop
+                viewModel.subtitleEngine.updatePosition(pos)
             }
             vlcPlayer.onPlaybackEnded = {
                 if (repeatModeState == 1) { // Repeat One
@@ -1401,26 +1399,6 @@ fun PlayerScreen(
         }
     }
 
-    // Auto-unblock buffering stall watchdog
-    LaunchedEffect(isBuffering, effectiveEngine) {
-        if (isBuffering && effectiveEngine == "ExoPlayer") {
-            delay(3500)
-            if (isBuffering && exoPlayer.playbackState == Player.STATE_BUFFERING) {
-                val pos = exoPlayer.currentPosition
-                try {
-                    exoPlayer.prepare()
-                    if (pos > 0) {
-                        exoPlayer.seekTo(pos)
-                    }
-                    exoPlayer.playWhenReady = true
-                    exoPlayer.play()
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                }
-            }
-        }
-    }
-
     // Playback loop tracking position with post-seek position buffer filter suppressing stale engine timestamps for 600ms
     LaunchedEffect(abRepeatEnabled, pointA, pointB, effectiveEngine) {
         while (true) {
@@ -1448,6 +1426,7 @@ fun PlayerScreen(
                 if (rawDur > 0) duration = rawDur
             }
             val currentPos = currentPosition
+            viewModel.subtitleEngine.updatePosition(currentPos)
             if (abRepeatEnabled && pointA != null && pointB != null) {
                 if (currentPos >= pointB!!) {
                     performSeek(pointA!!)
@@ -1562,7 +1541,7 @@ fun PlayerScreen(
                                         if (view.resizeMode != resizeMode) {
                                             view.resizeMode = resizeMode
                                         }
-                                        applySubtitleStyleToPlayerView(view, prefs)
+                                        applySubtitleStyleToPlayerView(view, prefs, isBitmapActive = subEngineState.isBitmapSubtitleActive)
                                     },
                                     onRelease = { view ->
                                         // Retain player binding to prevent blank frame on transient recomposition
@@ -2114,7 +2093,7 @@ fun PlayerScreen(
                                                 }
                                             }
                                         }
-                                        applySubtitleStyleToPlayerView(this, prefs)
+                                        applySubtitleStyleToPlayerView(this, prefs, isBitmapActive = subEngineState.isBitmapSubtitleActive)
                                     }
                                 },
                                 update = { view -> 
@@ -2144,7 +2123,7 @@ fun PlayerScreen(
                                             }
                                         }
                                     }
-                                    applySubtitleStyleToPlayerView(view, prefs)
+                                    applySubtitleStyleToPlayerView(view, prefs, isBitmapActive = subEngineState.isBitmapSubtitleActive)
                                 },
                                 onRelease = { view ->
                                     // Retain player binding to prevent blank frame on transient recomposition
@@ -2159,6 +2138,48 @@ fun PlayerScreen(
                         isPlaying = isPlaying
                     )
                 }
+
+                // Synchronize custom subtitle styling to player wrappers
+                LaunchedEffect(
+                    prefs.subtitleSize,
+                    prefs.subtitleTextColor,
+                    prefs.subtitleBackground,
+                    prefs.subtitleBackgroundEnabled,
+                    prefs.subtitleOutlineColor,
+                    prefs.subtitleShadowColor,
+                    prefs.subtitleShadowEnabled,
+                    prefs.subtitleEncoding,
+                    prefs.subtitleVerticalOffset,
+                    prefs.subtitleOpacity,
+                    prefs.subtitleFontStyle,
+                    prefs.subtitleBold,
+                    effectiveEngine
+                ) {
+                    if (effectiveEngine == "VLC") {
+                        vlcPlayer.applySubtitlePreferences(
+                            subtitleSizeSp = prefs.subtitleSize,
+                            subtitleTextColorHex = prefs.subtitleTextColor,
+                            subtitleBgColorHex = if (prefs.subtitleBackgroundEnabled) prefs.subtitleBackground else "#00000000",
+                            subtitleOutlineColorHex = prefs.subtitleOutlineColor,
+                            subtitleShadowColorHex = if (prefs.subtitleShadowEnabled) prefs.subtitleShadowColor else "#00000000",
+                            subtitleEncoding = prefs.subtitleEncoding,
+                            subtitleVerticalOffset = prefs.subtitleVerticalOffset,
+                            subtitleOpacity = prefs.subtitleOpacity,
+                            subtitleBgOpacity = if (prefs.subtitleBackgroundEnabled) 0.8f else 0.0f,
+                            subtitleFontStyle = if (prefs.subtitleBold) "Bold" else prefs.subtitleFontStyle
+                        )
+                    }
+                }
+
+                // Unified Subtitle Engine Overlay (renders dynamically styled subtitles across both VLC & ExoPlayer)
+                val isSubtitleOverlayVisible = subEngineState.isEnabled && !subEngineState.isBitmapSubtitleActive
+
+                UnifiedSubtitleOverlay(
+                    cues = subEngineState.currentCues,
+                    prefs = prefs,
+                    isVisible = isSubtitleOverlayVisible,
+                    modifier = Modifier.fillMaxSize()
+                )
 
                 // Double Tap Ripple Animations (Native Curved Sector Clip with Big Curve, No Circular Ripples)
                 val primaryColor = MaterialTheme.colorScheme.primary
@@ -2422,9 +2443,10 @@ fun PlayerScreen(
                 modifier = Modifier.align(Alignment.Center)
             ) {
                 Card(
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.65f)),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f)),
                     shape = RoundedCornerShape(24.dp),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.40f))
+                    elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                    border = null
                 ) {
                     Row(
                         modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp),
@@ -2463,9 +2485,10 @@ fun PlayerScreen(
             ) {
                 hwVolPercent?.let { percent ->
                     Card(
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.65f)),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f)),
                         shape = RoundedCornerShape(24.dp),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.40f)),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                        border = null,
                         modifier = Modifier.padding(16.dp)
                     ) {
                         Column(
@@ -2578,23 +2601,25 @@ fun PlayerScreen(
                                         playbackErrorMsg = null
                                         generalRetryCount = 0
                                         audioFallbackAttempted = false
-                                        try {
-                                            if (effectiveEngine == "VLC") {
-                                                vlcPlayer.loadMedia(activeMediaItem.uriString, activeMediaItem.path, currentPosition)
-                                            } else {
-                                                exoPlayer.stop()
-                                                val newItem = buildMediaItemWithSubtitles(
-                                                    uriString = activeMediaItem.uriString,
-                                                    context = context,
-                                                    path = activeMediaItem.path
-                                                )
-                                                exoPlayer.setMediaItem(newItem)
-                                                exoPlayer.prepare()
-                                                exoPlayer.playWhenReady = true
-                                                exoPlayer.play()
+                                        coroutineScope.launch {
+                                            try {
+                                                if (effectiveEngine == "VLC") {
+                                                    vlcPlayer.loadMedia(activeMediaItem.uriString, activeMediaItem.path, currentPosition)
+                                                } else {
+                                                    exoPlayer.stop()
+                                                    val newItem = buildMediaItemWithSubtitles(
+                                                        uriString = activeMediaItem.uriString,
+                                                        context = context,
+                                                        path = activeMediaItem.path
+                                                    )
+                                                    exoPlayer.setMediaItem(newItem)
+                                                    exoPlayer.prepare()
+                                                    exoPlayer.playWhenReady = true
+                                                    exoPlayer.play()
+                                                }
+                                            } catch (e: Exception) {
+                                                playbackErrorMsg = "Retry failed: ${e.localizedMessage}"
                                             }
-                                        } catch (e: Exception) {
-                                            playbackErrorMsg = "Retry failed: ${e.localizedMessage}"
                                         }
                                     },
                                     colors = ButtonDefaults.buttonColors(
@@ -2690,12 +2715,17 @@ fun PlayerScreen(
                                             generalRetryCount = 0
                                             audioFallbackAttempted = false
                                             val resumePos = exoPlayer.currentPosition
-                                            exoPlayer.setMediaItem(buildMediaItemWithSubtitles(activeMediaItem.uriString, context, activeMediaItem.path))
-                                            exoPlayer.prepare()
-                                            if (resumePos > 0) {
-                                                exoPlayer.seekTo(resumePos)
+                                            coroutineScope.launch {
+                                                val newItem = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                                    buildMediaItemWithSubtitles(activeMediaItem.uriString, context, activeMediaItem.path)
+                                                }
+                                                exoPlayer.setMediaItem(newItem)
+                                                exoPlayer.prepare()
+                                                if (resumePos > 0) {
+                                                    exoPlayer.seekTo(resumePos)
+                                                }
+                                                exoPlayer.play()
                                             }
-                                            exoPlayer.play()
                                         },
                                         colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.onErrorContainer, contentColor = MaterialTheme.colorScheme.errorContainer),
                                         modifier = Modifier.weight(1f)
@@ -2734,9 +2764,9 @@ fun PlayerScreen(
                             // File Title Badge - Size adaptable to content with frosted glass styling
                             Surface(
                                 shape = CircleShape,
-                                color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.65f),
-                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.40f)),
-                                shadowElevation = 8.dp,
+                                color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f),
+                                border = null,
+                                shadowElevation = 0.dp,
                                 modifier = Modifier
                                     .widthIn(max = 280.dp)
                                     .wrapContentWidth()
@@ -2769,8 +2799,7 @@ fun PlayerScreen(
                                     isLockControlVisible = true
                                 },
                                 modifier = Modifier
-                                    .background(MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.65f), CircleShape)
-                                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.40f), CircleShape)
+                                    .background(MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f), CircleShape)
                             ) {
                                 Icon(Icons.Default.Lock, contentDescription = "Locked", tint = MaterialTheme.colorScheme.error)
                             }
@@ -2788,9 +2817,9 @@ fun PlayerScreen(
                                 // Progress Bar on top of Swipe To Unlock with frosted glass styling
                                 Surface(
                                     shape = RoundedCornerShape(20.dp),
-                                    color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.65f),
-                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.40f)),
-                                    shadowElevation = 8.dp,
+                                    color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f),
+                                    border = null,
+                                    shadowElevation = 0.dp,
                                     modifier = Modifier.widthIn(max = 300.dp).fillMaxWidth()
                                 ) {
                                     Column(
@@ -2874,7 +2903,6 @@ fun PlayerScreen(
                                         onClick = safeOnBack,
                                         modifier = Modifier
                                             .background(MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f), CircleShape)
-                                            .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f), CircleShape)
                                             .testTag("player_back_button")
                                     ) {
                                         Icon(
@@ -2892,13 +2920,15 @@ fun PlayerScreen(
                                             maxLines = 1,
                                             modifier = Modifier.basicMarquee()
                                         )
-                                        Text(
-                                            text = "@" + activeMediaItem.displayArtist,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            fontSize = 11.sp,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
+                                        if (activeMediaItem.displayArtist.isNotBlank()) {
+                                            Text(
+                                                text = "@" + activeMediaItem.displayArtist,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                fontSize = 11.sp,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
                                     }
                                 }
 
@@ -2918,7 +2948,6 @@ fun PlayerScreen(
                                                     if (isCastingActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f),
                                                     CircleShape
                                                 )
-                                                .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f), CircleShape)
                                         ) {
                                             Icon(
                                                 imageVector = if (isCastingActive) Icons.Default.CastConnected else Icons.Default.Cast,
@@ -2935,7 +2964,6 @@ fun PlayerScreen(
                                         },
                                         modifier = Modifier
                                             .background(MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f), CircleShape)
-                                            .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f), CircleShape)
                                     ) {
                                         Icon(Icons.Default.ClosedCaption, contentDescription = "Subtitles & Audio", tint = MaterialTheme.colorScheme.onSurface)
                                     }
@@ -2956,7 +2984,6 @@ fun PlayerScreen(
                                         modifier = Modifier
                                             .size(if (isMini) 42.dp else 52.dp)
                                             .background(Color.Black.copy(alpha = 0.45f), CircleShape)
-                                            .border(1.dp, Color.White.copy(alpha = 0.1f), CircleShape)
                                             .pointerInput(Unit) {
                                                 detectTapGestures(
                                                     onTap = {
@@ -3003,8 +3030,7 @@ fun PlayerScreen(
                                             }
                                         },
                                         modifier = Modifier
-                                            .size(if (isMini) 52.dp else 76.dp)
-                                            .border(1.dp, Color.White, CircleShape),
+                                            .size(if (isMini) 52.dp else 76.dp),
                                         iconSize = if (isMini) 28.dp else 42.dp,
                                         containerColor = Color.White.copy(alpha = 0.95f),
                                         contentColor = Color.Black
@@ -3015,7 +3041,6 @@ fun PlayerScreen(
                                         modifier = Modifier
                                             .size(if (isMini) 42.dp else 52.dp)
                                             .background(Color.Black.copy(alpha = 0.45f), CircleShape)
-                                            .border(1.dp, Color.White.copy(alpha = 0.1f), CircleShape)
                                             .pointerInput(Unit) {
                                                 detectTapGestures(
                                                     onTap = {
@@ -3085,9 +3110,9 @@ fun PlayerScreen(
                                             ) {
                                                 Card(
                                                     colors = CardDefaults.cardColors(containerColor = Color.Black.copy(alpha = 0.95f)),
-                                                    border = BorderStroke(1.5.dp, Color.Red.copy(alpha = 0.9f)),
+                                                    border = null,
                                                     shape = RoundedCornerShape(12.dp),
-                                                    elevation = CardDefaults.cardElevation(8.dp),
+                                                    elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
                                                     modifier = Modifier
                                                         .width(cardWidth)
                                                         .height(96.dp)
@@ -3271,7 +3296,6 @@ fun PlayerScreen(
                                                     .wrapContentSize()
                                                     .clip(RoundedCornerShape(24.dp))
                                                     .background(MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.88f))
-                                                    .border(1.2.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f), RoundedCornerShape(24.dp))
                                                     .padding(horizontal = 6.dp, vertical = 8.dp),
                                                 verticalArrangement = Arrangement.spacedBy(4.dp),
                                                 horizontalAlignment = Alignment.CenterHorizontally
@@ -3429,7 +3453,6 @@ fun PlayerScreen(
                                                     .wrapContentSize()
                                                     .clip(CircleShape)
                                                     .background(MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.88f))
-                                                    .border(1.2.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f), CircleShape)
                                                     .padding(horizontal = 8.dp, vertical = 6.dp),
                                                 horizontalArrangement = Arrangement.spacedBy(4.dp),
                                                 verticalAlignment = Alignment.CenterVertically
@@ -3602,7 +3625,6 @@ fun PlayerScreen(
                                                     .wrapContentSize()
                                                     .clip(RoundedCornerShape(24.dp))
                                                     .background(MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.88f))
-                                                    .border(1.2.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f), RoundedCornerShape(24.dp))
                                                     .padding(horizontal = 6.dp, vertical = 8.dp),
                                                 verticalArrangement = Arrangement.spacedBy(4.dp),
                                                 horizontalAlignment = Alignment.CenterHorizontally
@@ -3698,7 +3720,6 @@ fun PlayerScreen(
                                                     .wrapContentSize()
                                                     .clip(CircleShape)
                                                     .background(MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.88f))
-                                                    .border(1.2.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f), CircleShape)
                                                     .padding(horizontal = 8.dp, vertical = 6.dp),
                                                 horizontalArrangement = Arrangement.spacedBy(4.dp),
                                                 verticalAlignment = Alignment.CenterVertically
@@ -3894,8 +3915,9 @@ fun PlayerScreen(
                     )
 
                     Card(
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                        border = null,
                         shape = RoundedCornerShape(16.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
@@ -3928,7 +3950,6 @@ fun PlayerScreen(
                                     modifier = Modifier
                                         .clip(RoundedCornerShape(6.dp))
                                         .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f))
-                                        .border(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f), RoundedCornerShape(6.dp))
                                         .padding(horizontal = 8.dp, vertical = 3.dp)
                                 ) {
                                     Text(
@@ -3969,11 +3990,6 @@ fun PlayerScreen(
                                             .background(
                                                 if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
                                             )
-                                            .border(
-                                                width = 1.dp,
-                                                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
-                                                shape = RoundedCornerShape(8.dp)
-                                            )
                                             .clickable {
                                                 hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
                                                 localSpeed = preset
@@ -4006,8 +4022,9 @@ fun PlayerScreen(
                     )
 
                     Card(
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                        border = null,
                         shape = RoundedCornerShape(16.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
@@ -4117,8 +4134,9 @@ fun PlayerScreen(
                     )
 
                     Card(
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                        border = null,
                         shape = RoundedCornerShape(16.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
@@ -4200,7 +4218,6 @@ fun PlayerScreen(
                                                 .weight(1f)
                                                 .clip(RoundedCornerShape(8.dp))
                                                 .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-                                                .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
                                                 .clickable {
                                                     hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
                                                     sleepTimeLeftMinutes = mins
@@ -4235,8 +4252,9 @@ fun PlayerScreen(
                     )
 
                     Card(
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                        border = null,
                         shape = RoundedCornerShape(16.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
@@ -4297,7 +4315,6 @@ fun PlayerScreen(
                                             .weight(1f)
                                             .clip(RoundedCornerShape(8.dp))
                                             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-                                            .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
                                             .clickable {
                                                 hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
                                                 val targetSeek = (currentPosition + seconds * 1000L).coerceIn(0L, duration)
@@ -4331,8 +4348,9 @@ fun PlayerScreen(
                     )
 
                     Card(
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                        border = null,
                         shape = RoundedCornerShape(16.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
@@ -4381,7 +4399,6 @@ fun PlayerScreen(
                                         .weight(1f)
                                         .clip(RoundedCornerShape(10.dp))
                                         .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
-                                        .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f), RoundedCornerShape(10.dp))
                                         .padding(8.dp),
                                     contentAlignment = Alignment.Center
                                 ) {
@@ -4402,7 +4419,6 @@ fun PlayerScreen(
                                         .weight(1f)
                                         .clip(RoundedCornerShape(10.dp))
                                         .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
-                                        .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f), RoundedCornerShape(10.dp))
                                         .padding(8.dp),
                                     contentAlignment = Alignment.Center
                                 ) {
@@ -4477,7 +4493,6 @@ fun PlayerScreen(
                                         modifier = Modifier
                                             .clip(RoundedCornerShape(12.dp))
                                             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-                                            .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f), RoundedCornerShape(12.dp))
                                             .size(40.dp)
                                     ) {
                                         Icon(Icons.Default.Close, contentDescription = "Reset Loop", tint = Color.Red, modifier = Modifier.size(18.dp))
@@ -4499,8 +4514,9 @@ fun PlayerScreen(
                     )
 
                     Card(
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                        border = null,
                         shape = RoundedCornerShape(16.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
@@ -4555,8 +4571,9 @@ fun PlayerScreen(
                 )
 
                 Card(
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                    border = null,
                     shape = RoundedCornerShape(16.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
@@ -4590,7 +4607,6 @@ fun PlayerScreen(
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(6.dp))
                                     .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f))
-                                    .border(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f), RoundedCornerShape(6.dp))
                                     .padding(horizontal = 8.dp, vertical = 3.dp)
                             ) {
                                 Text(
@@ -4632,11 +4648,6 @@ fun PlayerScreen(
                                         .background(
                                             if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
                                         )
-                                        .border(
-                                            width = 1.dp,
-                                            color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
-                                            shape = RoundedCornerShape(8.dp)
-                                        )
                                         .clickable {
                                             hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
                                             localSpeed = preset
@@ -4670,8 +4681,9 @@ fun PlayerScreen(
                 )
 
                 Card(
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                    border = null,
                     shape = RoundedCornerShape(16.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
@@ -4791,13 +4803,8 @@ fun PlayerScreen(
                                 .weight(1f)
                                 .clip(RoundedCornerShape(16.dp))
                                 .background(
-                                    if (playAsAudioOnly) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
-                                    else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)
-                                )
-                                .border(
-                                    width = 1.2.dp,
-                                    color = if (playAsAudioOnly) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
-                                    shape = RoundedCornerShape(16.dp)
+                                    if (playAsAudioOnly) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
+                                    else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
                                 )
                                 .clickable {
                                     hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
@@ -4843,13 +4850,8 @@ fun PlayerScreen(
                                 .weight(1f)
                                 .clip(RoundedCornerShape(16.dp))
                                 .background(
-                                    if (isPipActive) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
-                                    else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)
-                                )
-                                .border(
-                                    width = 1.2.dp,
-                                    color = if (isPipActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
-                                    shape = RoundedCornerShape(16.dp)
+                                    if (isPipActive) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
+                                    else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
                                 )
                                 .clickable {
                                     hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
@@ -4904,8 +4906,9 @@ fun PlayerScreen(
                 )
 
                 Card(
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                    border = null,
                     shape = RoundedCornerShape(16.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
@@ -4967,7 +4970,6 @@ fun PlayerScreen(
                                         .weight(1f)
                                         .clip(RoundedCornerShape(8.dp))
                                         .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-                                        .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
                                         .clickable {
                                             hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
                                             val targetSeek = (currentPosition + seconds * 1000L).coerceIn(0L, duration)
@@ -5001,8 +5003,9 @@ fun PlayerScreen(
                 )
 
                 Card(
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                    border = null,
                     shape = RoundedCornerShape(16.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
@@ -5053,7 +5056,6 @@ fun PlayerScreen(
                                     .weight(1f)
                                     .clip(RoundedCornerShape(10.dp))
                                     .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
-                                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f), RoundedCornerShape(10.dp))
                                     .padding(8.dp),
                                 contentAlignment = Alignment.Center
                             ) {
@@ -5075,7 +5077,6 @@ fun PlayerScreen(
                                     .weight(1f)
                                     .clip(RoundedCornerShape(10.dp))
                                     .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
-                                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f), RoundedCornerShape(10.dp))
                                     .padding(8.dp),
                                 contentAlignment = Alignment.Center
                             ) {
@@ -5151,7 +5152,6 @@ fun PlayerScreen(
                                     modifier = Modifier
                                         .clip(RoundedCornerShape(12.dp))
                                         .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-                                        .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f), RoundedCornerShape(12.dp))
                                         .size(40.dp)
                                 ) {
                                     Icon(Icons.Default.Close, contentDescription = "Reset Loop", tint = Color.Red, modifier = Modifier.size(18.dp))
@@ -5192,8 +5192,9 @@ fun PlayerScreen(
                     }
 
                     Card(
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                        border = null,
                         shape = RoundedCornerShape(16.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
@@ -5264,8 +5265,9 @@ fun PlayerScreen(
                     }
 
                     Card(
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                        border = null,
                         shape = RoundedCornerShape(16.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
@@ -5289,7 +5291,6 @@ fun PlayerScreen(
                                             modifier = Modifier
                                                 .clip(RoundedCornerShape(8.dp))
                                                 .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-                                                .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
                                                 .clickable {
                                                     hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
                                                     performSeek(bmk)
@@ -5337,8 +5338,9 @@ fun PlayerScreen(
                 )
 
                 Card(
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                    border = null,
                     shape = RoundedCornerShape(16.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
@@ -5395,11 +5397,11 @@ fun PlayerScreen(
                     )
 
                     Card(
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
                         shape = RoundedCornerShape(16.dp),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f), RoundedCornerShape(16.dp))
                     ) {
                         Column(
                             modifier = Modifier
@@ -5590,8 +5592,7 @@ fun PlayerScreen(
                         .fillMaxWidth()
                         .height(110.dp)
                         .clip(RoundedCornerShape(12.dp))
-                        .background(Color(0xFF1A1C22))
-                        .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f), RoundedCornerShape(12.dp)),
+                        .background(Color(0xFF1A1C22)),
                     contentAlignment = Alignment.BottomCenter
                 ) {
                     // Background simulated gradient
@@ -5611,22 +5612,23 @@ fun PlayerScreen(
                         fontWeight = FontWeight.Bold,
                         modifier = Modifier.align(Alignment.TopCenter).padding(top = 8.dp)
                     )
-                    Box(
-                        modifier = Modifier
-                            .padding(bottom = (prefs.subtitleVerticalOffset * 100).dp.coerceIn(4.dp, 36.dp), start = 12.dp, end = 12.dp)
-                            .background(previewBgColor, shape = RoundedCornerShape(4.dp))
-                            .padding(horizontal = 8.dp, vertical = 2.dp)
-                    ) {
-                        Text(
-                            text = "Sample Subtitle Text Preview (123)",
-                            color = previewTextColor,
-                            fontSize = (prefs.subtitleSize * 0.9f).sp,
-                            fontWeight = previewFontWeight,
-                            fontStyle = previewFontStyle,
-                            fontFamily = previewFontFamily,
-                            textAlign = TextAlign.Center
+
+                    val previewCues = remember {
+                        listOf(
+                            com.example.player.subtitle.SubtitleCue(
+                                startMs = 0L,
+                                endMs = 999999L,
+                                text = "Sample Subtitle Text Preview (123)",
+                                plainText = "Sample Subtitle Text Preview (123)"
+                            )
                         )
                     }
+                    UnifiedSubtitleOverlay(
+                        cues = previewCues,
+                        prefs = prefs,
+                        isVisible = true,
+                        modifier = Modifier.fillMaxSize()
+                    )
                 }
 
                 Spacer(modifier = Modifier.height(16.dp))
@@ -5740,7 +5742,7 @@ fun PlayerScreen(
                             },
                             shape = RoundedCornerShape(8.dp),
                             color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                            border = if (isSelected) BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary) else null
+                            border = null
                         ) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
@@ -5751,7 +5753,6 @@ fun PlayerScreen(
                                         .size(14.dp)
                                         .clip(CircleShape)
                                         .background(chipColor)
-                                        .border(1.dp, Color.Gray, CircleShape)
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
@@ -6801,6 +6802,7 @@ fun PlayerScreen(
                                  shape = RoundedCornerShape(8.dp),
                                  modifier = Modifier.fillMaxWidth().clickable {
                                      vlcPlayer.setSubtitleTrack(-1)
+                                     viewModel.subtitleEngine.setEnabled(false)
                                      viewModel.updatePerVideoVlcSubtitle(activeMediaItem.uriString, -1)
                                      tracksUpdateTrigger++
                                  }
@@ -6824,6 +6826,7 @@ fun PlayerScreen(
                                      shape = RoundedCornerShape(8.dp),
                                      modifier = Modifier.fillMaxWidth().clickable {
                                          vlcPlayer.setSubtitleTrack(track.id)
+                                         viewModel.subtitleEngine.setEnabled(true)
                                          viewModel.updatePerVideoVlcSubtitle(activeMediaItem.uriString, track.id, track.name)
                                          tracksUpdateTrigger++
                                      }
@@ -6862,6 +6865,7 @@ fun PlayerScreen(
                                              .buildUpon()
                                              .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
                                              .build()
+                                         viewModel.subtitleEngine.setEnabled(false)
                                           viewModel.updatePerVideoSubtitle(
                                               uriString = activeMediaItem.uriString,
                                               subtitleGroupIndex = -1,
@@ -6897,6 +6901,7 @@ fun PlayerScreen(
                                                  .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
                                                  .setOverrideForType(TrackSelectionOverride(trackGroup, tIndex))
                                                  .build()
+                                             viewModel.subtitleEngine.setEnabled(true)
                                               viewModel.updatePerVideoSubtitle(
                                                   uriString = activeMediaItem.uriString,
                                                   subtitleGroupIndex = gIndex,
@@ -7183,6 +7188,14 @@ fun PlayerScreen(
                     try {
                         val fileUri = android.net.Uri.fromFile(selectedFile)
                         val subtitleUri = fileUri.toString()
+                        viewModel.subtitleEngine.loadExternalSubtitle(
+                            context = context,
+                            uriString = subtitleUri,
+                            encoding = prefs.subtitleEncoding,
+                            trackName = selectedFile.name
+                        )
+                        viewModel.subtitleEngine.setEnabled(true)
+                        viewModel.subtitleEngine.setBitmapSubtitleActive(false)
                         viewModel.updatePerVideoSubtitle(
                             uriString = activeMediaItem.uriString,
                             subtitleGroupIndex = -1,
@@ -7397,6 +7410,14 @@ Subtitle for ${activeMediaItem.title} ($selectedLanguage)
 
                                     val subFileUri = android.net.Uri.fromFile(subFile)
                                     val downloadedSubUri = subFileUri.toString()
+                                    viewModel.subtitleEngine.loadExternalSubtitle(
+                                        context = context,
+                                        uriString = downloadedSubUri,
+                                        encoding = prefs.subtitleEncoding,
+                                        trackName = "Downloaded ($selectedLanguage)"
+                                    )
+                                    viewModel.subtitleEngine.setEnabled(true)
+                                    viewModel.subtitleEngine.setBitmapSubtitleActive(false)
                                     viewModel.updatePerVideoSubtitle(
                                         uriString = activeMediaItem.uriString,
                                         subtitleGroupIndex = -1,
@@ -7412,12 +7433,14 @@ Subtitle for ${activeMediaItem.title} ($selectedLanguage)
                                         // Refresh player with newly downloaded subtitles
                                         val currentPos = exoPlayer.currentPosition
                                         val isPlayerPlaying = exoPlayer.isPlaying
-                                        val newMediaItem = buildMediaItemWithSubtitles(
-                                            uriString = activeMediaItem.uriString,
-                                            context = context,
-                                            path = activeMediaItem.path,
-                                            externalSubtitleUri = downloadedSubUri
-                                        )
+                                        val newMediaItem = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                            buildMediaItemWithSubtitles(
+                                                uriString = activeMediaItem.uriString,
+                                                context = context,
+                                                path = activeMediaItem.path,
+                                                externalSubtitleUri = downloadedSubUri
+                                            )
+                                        }
                                         
                                         exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
                                             .buildUpon()
@@ -7601,10 +7624,11 @@ Subtitle for ${activeMediaItem.title} ($selectedLanguage)
                                 },
                                 modifier = Modifier.fillMaxWidth(),
                                 colors = CardDefaults.cardColors(
-                                    containerColor = if (isCurrent) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.85f)
-                                    else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                                    containerColor = if (isCurrent) MaterialTheme.colorScheme.primaryContainer
+                                    else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
                                 ),
-                                border = if (isCurrent) BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary) else null
+                                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                                border = null
                             ) {
                                 Row(
                                     modifier = Modifier.padding(10.dp),
@@ -7733,7 +7757,7 @@ Subtitle for ${activeMediaItem.title} ($selectedLanguage)
                                 Surface(
                                     shape = RoundedCornerShape(12.dp),
                                     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                                    border = null,
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
                                     Column(modifier = Modifier.fillMaxWidth()) {
@@ -7818,10 +7842,11 @@ Subtitle for ${activeMediaItem.title} ($selectedLanguage)
                                                         },
                                                         modifier = Modifier.fillMaxWidth(),
                                                         colors = CardDefaults.cardColors(
-                                                            containerColor = if (isCurrent) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.85f)
-                                                            else MaterialTheme.colorScheme.surface.copy(alpha = 0.6f)
+                                                            containerColor = if (isCurrent) MaterialTheme.colorScheme.primaryContainer
+                                                            else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
                                                         ),
-                                                        border = if (isCurrent) BorderStroke(1.dp, MaterialTheme.colorScheme.primary) else null
+                                                        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                                                        border = null
                                                     ) {
                                                         Row(
                                                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
@@ -8253,13 +8278,13 @@ fun CustomAudioPlayerScreen(
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(bottom = 8.dp)
-                    .shadow(24.dp, shape = RoundedCornerShape(32.dp), clip = false),
+                    .padding(bottom = 8.dp),
                 shape = RoundedCornerShape(32.dp),
+                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
                 colors = CardDefaults.cardColors(
                     containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.90f)
                 ),
-                border = BorderStroke(1.2.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+                border = null
             ) {
                 Column(
                     modifier = Modifier
@@ -8285,32 +8310,15 @@ fun CustomAudioPlayerScreen(
                                     .basicMarquee()
                             )
                             Spacer(modifier = Modifier.height(2.dp))
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
+                            if (mediaItem.displayArtist.isNotBlank()) {
                                 Text(
                                     text = mediaItem.displayArtist,
                                     color = MaterialTheme.colorScheme.secondary,
                                     fontSize = 13.sp,
                                     fontWeight = FontWeight.SemiBold,
                                     maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.weight(1f, fill = false)
+                                    overflow = TextOverflow.Ellipsis
                                 )
-                                val audioQualityTag = getMediaQualityLabel(mediaItem)
-                                Surface(
-                                    shape = RoundedCornerShape(4.dp),
-                                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f)
-                                ) {
-                                    Text(
-                                        text = audioQualityTag,
-                                        fontSize = 10.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                    )
-                                }
                             }
                         }
 
@@ -8356,10 +8364,9 @@ fun CustomAudioPlayerScreen(
                         Surface(
                             color = MaterialTheme.colorScheme.primaryContainer,
                             shape = RoundedCornerShape(12.dp),
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)),
+                            border = null,
                             modifier = Modifier
                                 .padding(bottom = 12.dp)
-                                .shadow(4.dp, RoundedCornerShape(12.dp))
                         ) {
                             Row(
                                 modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
@@ -8677,8 +8684,7 @@ fun SwipeToUnlock(
             .width(280.dp)
             .height(64.dp)
             .clip(CircleShape)
-            .background(MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.65f))
-            .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.40f), CircleShape)
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.75f))
             .pointerInput(Unit) {
                 detectHorizontalDragGestures(
                     onDragEnd = {
@@ -8789,85 +8795,22 @@ fun applySubtitleStyleToPlayerView(
     prefs: com.example.data.database.PreferenceEntity,
     overrideSubtitleSize: Float? = null,
     overrideSubtitleOpacity: Float? = null,
-    overrideVerticalOffset: Float? = null
+    overrideVerticalOffset: Float? = null,
+    isBitmapActive: Boolean = false
 ) {
     try {
-        val opacityToUse = overrideSubtitleOpacity ?: prefs.subtitleOpacity
-        val sizeToUse = overrideSubtitleSize ?: prefs.subtitleSize
-        val verticalOffsetToUse = (overrideVerticalOffset ?: prefs.subtitleVerticalOffset).coerceIn(0.01f, 0.50f)
-
-        val textColorInt = try {
-            val baseColor = android.graphics.Color.parseColor(prefs.subtitleTextColor)
-            val alpha = (opacityToUse * 255).toInt().coerceIn(0, 255)
-            (baseColor and 0x00FFFFFF) or (alpha shl 24)
-        } catch (e: Exception) {
-            android.graphics.Color.WHITE
-        }
-
-        val bgColorInt = try {
-            if (prefs.subtitleBackground == "#00000000" || prefs.subtitleBackground.isEmpty()) {
-                android.graphics.Color.TRANSPARENT
-            } else {
-                android.graphics.Color.parseColor(prefs.subtitleBackground)
-            }
-        } catch (e: Exception) {
-            android.graphics.Color.TRANSPARENT
-        }
-
-        val fontTypeface = when (prefs.subtitleFontStyle) {
-            "Bold" -> android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
-            "Italic" -> android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.ITALIC)
-            "Bold Italic" -> android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD_ITALIC)
-            "Monospace" -> android.graphics.Typeface.MONOSPACE
-            "Serif" -> android.graphics.Typeface.SERIF
-            "Sans-Serif" -> android.graphics.Typeface.SANS_SERIF
-            else -> android.graphics.Typeface.DEFAULT
-        }
-
-        val hasOutline = prefs.subtitleOutlineColor != "#00000000" && prefs.subtitleOutlineColor.isNotEmpty()
-        val hasShadow = prefs.subtitleShadowColor != "#00000000" && prefs.subtitleShadowColor.isNotEmpty()
-
-        val edgeType = if (hasOutline) {
-            androidx.media3.ui.CaptionStyleCompat.EDGE_TYPE_OUTLINE
-        } else if (hasShadow) {
-            androidx.media3.ui.CaptionStyleCompat.EDGE_TYPE_DROP_SHADOW
-        } else {
-            androidx.media3.ui.CaptionStyleCompat.EDGE_TYPE_NONE
-        }
-
-        val edgeColorInt = try {
-            if (hasOutline) {
-                val baseEdgeColor = android.graphics.Color.parseColor(prefs.subtitleOutlineColor)
-                val edgeAlpha = (prefs.subtitleOutlineOpacity * 255).toInt().coerceIn(0, 255)
-                (baseEdgeColor and 0x00FFFFFF) or (edgeAlpha shl 24)
-            } else if (hasShadow) {
-                val baseEdgeColor = android.graphics.Color.parseColor(prefs.subtitleShadowColor)
-                val edgeAlpha = (prefs.subtitleShadowOpacity * 255).toInt().coerceIn(0, 255)
-                (baseEdgeColor and 0x00FFFFFF) or (edgeAlpha shl 24)
-            } else {
-                android.graphics.Color.BLACK
-            }
-        } catch (e: Exception) {
-            android.graphics.Color.BLACK
-        }
-
-        val captionStyle = androidx.media3.ui.CaptionStyleCompat(
-            textColorInt,
-            bgColorInt,
-            android.graphics.Color.TRANSPARENT,
-            edgeType,
-            edgeColorInt,
-            fontTypeface
-        )
-
         view.subtitleView?.let { subView ->
-            subView.setApplyEmbeddedStyles(false)
-            subView.setApplyEmbeddedFontSizes(false)
-            subView.setStyle(captionStyle)
-            subView.setFixedTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, sizeToUse)
-            subView.setBottomPaddingFraction(verticalOffsetToUse)
-            subView.requestLayout()
-            subView.invalidate()
+            if (isBitmapActive) {
+                // If native bitmap subtitle (PGS/VobSub) is active, show SubtitleView
+                subView.visibility = android.view.View.VISIBLE
+                subView.setApplyEmbeddedStyles(true)
+                subView.setApplyEmbeddedFontSizes(true)
+            } else {
+                // Hide built-in SubtitleView so UnifiedSubtitleOverlay renders dynamic styling cleanly
+                // without Media3 ASS/SSA script header styles or container-level styles leaking through
+                subView.visibility = android.view.View.GONE
+                subView.setCues(null)
+            }
         }
     } catch (e: Exception) {
         e.printStackTrace()
@@ -9336,5 +9279,39 @@ fun PlayingEqualizerIndicator(
     val anim3 by infiniteTransition.animateFloat(
         initialValue = 0.35f,
         targetValue = 0.95f,
-        animationSpecxœ¼RMoÔ0½ï¯°zòJÁÚÊ¡HlUÄ(EÜ'É8ÕkGŽ·ÛmÕÿŽí¯¢Þ9Œ=ã÷2ÏoÌ®iIšfØ 8Èò›| é ŽŒf×Ì5/6ö¤µ¾¼½Z%¡%]ùìi{Óe2û—=ö¦DË†Ddø€¶Å;¡)ÈQyôEv{ËË@Em)ËÏÃ%~ZÐ-q¢Ó_”7Þ( Ô/PÇ a%>È±—[¡Ï6—“ÃÁ‡»öO|K?þßÒÞ·¸dæ4*=˜’$¡õÈ~+ZzB~¢ÒÕ¾º¾e“°©ª]Èßû|Ò§6–žŒv >[o~…Ô7ÉDÛ@åîÌ7s®ï¨ðLE•îyý^ìŒsæÐ)gÏ#ÉÏÝßék\$É8µ?œƒqÌ[ë¾Kì_'q
-›nÙvKºd¨Zìq+‘Ê¤{>^Æ¸•Ë¡ÝØJHã§SÔì™IEí»O³9íÌãü¼²xÿgû&|âûðõ¤ûì\úw³‡ÇNï5¼.5<3G]byc¬F{WCƒ|Fð'‡â¾²Ã£ŒÃÆìeÑÅ—Åo   ÿÿ œÅ,Ü
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 600, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "bar3"
+    )
+
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(3.dp),
+        verticalAlignment = Alignment.Bottom
+    ) {
+        val h1 = if (isPlaying) anim1 else 0.3f
+        val h2 = if (isPlaying) anim2 else 0.5f
+        val h3 = if (isPlaying) anim3 else 0.25f
+
+        Box(
+            modifier = Modifier
+                .width(3.dp)
+                .height(18.dp * h1)
+                .background(color, shape = RoundedCornerShape(2.dp))
+        )
+        Box(
+            modifier = Modifier
+                .width(3.dp)
+                .height(18.dp * h2)
+                .background(color, shape = RoundedCornerShape(2.dp))
+        )
+        Box(
+            modifier = Modifier
+                .width(3.dp)
+                .height(18.dp * h3)
+                .background(color, shape = RoundedCornerShape(2.dp))
+        )
+    }
+}

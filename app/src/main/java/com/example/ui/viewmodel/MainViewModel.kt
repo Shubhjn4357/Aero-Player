@@ -61,6 +61,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val historyRepository = HistoryRepository(database.historyDao())
     val preferenceRepository = PreferenceRepository(database.preferenceDao())
 
+    val subtitleEngine = com.example.player.subtitle.UnifiedSubtitleEngine(viewModelScope)
+
     val preferencesState: StateFlow<PreferenceEntity> = preferenceRepository.getPreferencesFlow()
         .stateIn(viewModelScope, SharingStarted.Eagerly, PreferenceEntity())
 
@@ -143,21 +145,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         .build()
                     val loadControl = androidx.media3.exoplayer.DefaultLoadControl.Builder()
                         .setBufferDurationsMs(
-                            1500,  // minBufferMs for instant start
-                            15000, // maxBufferMs
-                            500,   // bufferForPlaybackMs
-                            1000   // bufferForPlaybackAfterRebufferMs
+                            500,   // minBufferMs for rapid local startup
+                            5000,  // maxBufferMs
+                            100,   // bufferForPlaybackMs (instant play in 100ms)
+                            200    // bufferForPlaybackAfterRebufferMs
                         )
+                        .setBackBuffer(3000, true)
                         .setPrioritizeTimeOverSizeThresholds(true)
                         .build()
-                    _exoPlayerInstance = ExoPlayer.Builder(getApplication())
+                    val appContext: android.content.Context = getApplication()
+                    val renderersFactory = androidx.media3.exoplayer.DefaultRenderersFactory(appContext)
+                        .setEnableDecoderFallback(true)
+                    val extractorsFactory = androidx.media3.extractor.DefaultExtractorsFactory()
+                        .setConstantBitrateSeekingEnabled(true)
+                    val mediaSourceFactory = androidx.media3.exoplayer.source.DefaultMediaSourceFactory(
+                        appContext,
+                        extractorsFactory
+                    )
+                    _exoPlayerInstance = ExoPlayer.Builder(appContext, renderersFactory, mediaSourceFactory)
                         .setAudioAttributes(audioAttributes, true)
                         .setHandleAudioBecomingNoisy(true)
                         .setLoadControl(loadControl)
                         .build()
                 } catch (e: Throwable) {
                     android.util.Log.e("MainViewModel", "Failed to build ExoPlayer with custom attributes: ${e.message}", e)
-                    _exoPlayerInstance = ExoPlayer.Builder(getApplication()).build()
+                    val fallbackContext: android.content.Context = getApplication()
+                    _exoPlayerInstance = ExoPlayer.Builder(fallbackContext).build()
                 }
                 PlayerControlBridge.exoPlayerRef = WeakReference(_exoPlayerInstance)
             }
@@ -244,6 +257,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 scanLocalMedia()
+            } catch (e: Throwable) {
+                e.printStackTrace()
+            }
+        }
+
+        // Pre-warm player engines in background so first play is instantaneous
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                vlcPlayer.ensureInitialized()
+            } catch (e: Throwable) {
+                e.printStackTrace()
+            }
+        }
+        viewModelScope.launch(Dispatchers.Main) {
+            try {
+                exoPlayer
             } catch (e: Throwable) {
                 e.printStackTrace()
             }

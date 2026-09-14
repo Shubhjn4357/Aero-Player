@@ -2144,13 +2144,15 @@ fun MainScreen(
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis
                         )
-                        Text(
-                            text = media.artist ?: "Local File",
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
+                        if (!media.artist.isNullOrBlank() && !media.artist.contains("Local", ignoreCase = true) && !media.artist.equals("unknown", true)) {
+                            Text(
+                                text = media.artist,
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
                         val sizeString = Formatter.formatShortFileSize(context, media.size)
                         Text(
                             text = sizeString,
@@ -3315,7 +3317,7 @@ fun LibraryStatusCard(
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "$itemCount Local ${if (tabName == "Video") "Videos" else "Tracks"}",
+                        text = "$itemCount ${if (tabName == "Video") "Videos" else "Tracks"}",
                         fontSize = 22.sp,
                         fontWeight = FontWeight.Black,
                         color = MaterialTheme.colorScheme.primary,
@@ -3562,8 +3564,8 @@ fun MediaGridCard(
             )
             .testTag("media_grid_card_${item.title.replace(" ", "_")}"),
         colors = CardDefaults.cardColors(
-            containerColor = if (isSelected || isActive) MaterialTheme.colorScheme.primary.copy(alpha = 0.2f) 
-                             else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+            containerColor = if (isSelected || isActive) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f) 
+                             else Color.Transparent
         ),
         border = if (isSelected) androidx.compose.foundation.BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
                  else if (isActive) androidx.compose.foundation.BorderStroke(1.5.dp, MaterialTheme.colorScheme.secondary)
@@ -3576,7 +3578,7 @@ fun MediaGridCard(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
-                    .clip(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
+                    .clip(RoundedCornerShape(12.dp))
             ) {
                 MediaThumbnail(item = item, modifier = Modifier.fillMaxSize())
                 
@@ -3630,24 +3632,6 @@ fun MediaGridCard(
                     }
                 }
 
-                // Quality badge overlay in bottom-left corner
-                val quality = getMediaQualityLabel(item)
-                Surface(
-                    shape = RoundedCornerShape(4.dp),
-                    color = Color.Black.copy(alpha = 0.75f),
-                    modifier = Modifier
-                        .align(Alignment.BottomStart)
-                        .padding(6.dp)
-                ) {
-                    Text(
-                        text = quality,
-                        color = Color.White,
-                        fontSize = 9.sp,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
-                    )
-                }
-
                 // Play overlay circle (only in normal mode)
                 if (!isSelectModeActive && !isActive) {
                     Box(
@@ -3688,22 +3672,28 @@ fun MediaGridCard(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     if (progress != null && progress > 0f && progress <= 1f) {
                         Text(
-                            text = "${(progress * 100).toInt()}% watched • ",
+                            text = "${(progress * 100).toInt()}% • ",
                             fontSize = 10.sp,
                             fontWeight = FontWeight.ExtraBold,
                             color = MaterialTheme.colorScheme.primary
                         )
                     }
                     val lengthAndSize = formatMediaLengthAndSize(item.duration, item.size)
-                    val qualityTag = getMediaQualityLabel(item)
-                    val subText = if (lengthAndSize.isNotEmpty()) "${item.artist ?: "Local Library"} • $qualityTag • $lengthAndSize" else "${item.artist ?: "Local Library"} • $qualityTag"
-                    Text(
-                        text = subText,
-                        fontSize = 10.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    val artistInfo = if (item.displayArtist.isNotBlank() &&
+                        !item.displayArtist.contains("Local", ignoreCase = true) &&
+                        !item.displayArtist.contains("Online", ignoreCase = true)) {
+                        "${item.displayArtist} • "
+                    } else ""
+                    val subText = if (lengthAndSize.isNotEmpty()) "$artistInfo$lengthAndSize" else artistInfo.trimEnd(' ', '•')
+                    if (subText.isNotEmpty()) {
+                        Text(
+                            text = subText,
+                            fontSize = 10.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 }
             }
 
@@ -3748,8 +3738,8 @@ fun MediaListRow(
                 onLongClick = onLongClick
             ),
         colors = CardDefaults.cardColors(
-            containerColor = if (isSelected || isActive) MaterialTheme.colorScheme.primary.copy(alpha = 0.2f) 
-                             else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)
+            containerColor = if (isSelected || isActive) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f) 
+                             else Color.Transparent
         ),
         border = if (isSelected) androidx.compose.foundation.BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
                  else if (isActive) androidx.compose.foundation.BorderStroke(1.5.dp, MaterialTheme.colorScheme.secondary)
@@ -3782,22 +3772,6 @@ fun MediaListRow(
                             EqualizerAnimation(modifier = Modifier.size(24.dp), color = Color(0xFFFF7A00))
                         }
                     }
-
-                    // Quality badge overlay on bottom-right of thumbnail
-                    val quality = getMediaQualityLabel(item)
-                    Surface(
-                        shape = RoundedCornerShape(2.dp),
-                        color = Color.Black.copy(alpha = 0.8f),
-                        modifier = Modifier.align(Alignment.BottomEnd)
-                    ) {
-                        Text(
-                            text = quality,
-                            color = Color.White,
-                            fontSize = 8.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            modifier = Modifier.padding(horizontal = 3.dp, vertical = 1.dp)
-                        )
-                    }
                 }
 
                 Column(modifier = Modifier.weight(1f)) {
@@ -3813,22 +3787,28 @@ fun MediaListRow(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         if (progress != null && progress > 0f && progress <= 1f) {
                             Text(
-                                text = "${(progress * 100).toInt()}% watched • ",
+                                text = "${(progress * 100).toInt()}% • ",
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.primary
                             )
                         }
                         val lengthAndSize = formatMediaLengthAndSize(item.duration, item.size)
-                        val qualityTag = getMediaQualityLabel(item)
-                        val subText = if (lengthAndSize.isNotEmpty()) "${item.displayArtist} • $qualityTag • $lengthAndSize" else "${item.displayArtist} • $qualityTag"
-                        Text(
-                            text = subText,
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
+                        val artistInfo = if (item.displayArtist.isNotBlank() &&
+                            !item.displayArtist.contains("Local", ignoreCase = true) &&
+                            !item.displayArtist.contains("Online", ignoreCase = true)) {
+                            "${item.displayArtist} • "
+                        } else ""
+                        val subText = if (lengthAndSize.isNotEmpty()) "$artistInfo$lengthAndSize" else artistInfo.trimEnd(' ', '•')
+                        if (subText.isNotEmpty()) {
+                            Text(
+                                text = subText,
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
                     }
                 }
 

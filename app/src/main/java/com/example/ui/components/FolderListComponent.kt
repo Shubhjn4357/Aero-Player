@@ -204,12 +204,9 @@ fun FolderListComponent(
                                         .testTag("folder_card_$folderName"),
                                     shape = RoundedCornerShape(14.dp),
                                     colors = CardDefaults.cardColors(
-                                        containerColor = if (isFolderSelected) accentColor.copy(alpha = 0.22f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                                        containerColor = if (isFolderSelected) accentColor.copy(alpha = 0.18f) else Color.Transparent
                                     ),
-                                    border = BorderStroke(
-                                        width = if (isFolderSelected) 2.dp else 1.dp,
-                                        color = if (isFolderSelected) accentColor else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-                                    )
+                                    border = if (isFolderSelected) BorderStroke(1.5.dp, accentColor) else null
                                 ) {
                                     Box(modifier = Modifier.fillMaxSize().padding(8.dp)) {
                                         Column(
@@ -311,12 +308,9 @@ fun FolderListComponent(
                                         .testTag("folder_row_$folderName"),
                                     shape = RoundedCornerShape(12.dp),
                                     colors = CardDefaults.cardColors(
-                                        containerColor = if (isFolderSelected) accentColor.copy(alpha = 0.22f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)
+                                        containerColor = if (isFolderSelected) accentColor.copy(alpha = 0.18f) else Color.Transparent
                                     ),
-                                    border = BorderStroke(
-                                        width = if (isFolderSelected) 2.dp else 1.dp,
-                                        color = if (isFolderSelected) accentColor else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
-                                    )
+                                    border = if (isFolderSelected) BorderStroke(1.5.dp, accentColor) else null
                                 ) {
                                     Row(
                                         modifier = Modifier
@@ -394,7 +388,7 @@ fun FolderListComponent(
                 Column(modifier = Modifier.fillMaxSize()) {
                     // Header / Breadcrumbs Bar
                     Surface(
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                        color = Color.Transparent,
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
                             .fillMaxWidth()

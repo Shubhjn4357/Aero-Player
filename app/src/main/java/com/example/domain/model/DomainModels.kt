@@ -21,8 +21,10 @@ data class MediaItemDomain(
         get() = if (artist.isNullOrBlank() ||
             artist.equals("unknown", ignoreCase = true) ||
             artist.equals("<unknown>", ignoreCase = true) ||
-            artist.equals("Unknown Artist", ignoreCase = true)) {
-            "Local Media"
+            artist.equals("Unknown Artist", ignoreCase = true) ||
+            artist.contains("Local", ignoreCase = true) ||
+            artist.contains("Online", ignoreCase = true)) {
+            ""
         } else {
             artist
         }

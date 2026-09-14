@@ -178,12 +178,12 @@ private fun getThumbnailFallback(context: android.content.Context, uri: Uri, pat
         }
         // Fallback: extract a frame at 1s if video
         return retriever.getFrameAtTime(1000000, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-    } catch (e: Exception) {
+    } catch (e: Throwable) {
         return null
     } finally {
         try {
             retriever.release()
-        } catch (e: Exception) {}
+        } catch (e: Throwable) {}
     }
 }
 

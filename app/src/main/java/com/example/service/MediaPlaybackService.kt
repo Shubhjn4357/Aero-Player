@@ -148,9 +148,11 @@ class MediaPlaybackService : Service() {
             })
             isActive = true
         }
+        activeSession = mediaSession
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        isServiceRunning = true
         // Delegate media button intents from Bluetooth/earbuds to MediaSessionCompat
         MediaButtonReceiver.handleIntent(mediaSession, intent)
 
@@ -234,7 +236,9 @@ class MediaPlaybackService : Service() {
         mediaSession?.isActive = false
         mediaSession?.release()
         mediaSession = null
+        activeSession = null
         activeNotification = null
+        isServiceRunning = false
     }
 
     companion object {
@@ -243,8 +247,10 @@ class MediaPlaybackService : Service() {
         const val ACTION_STOP_SERVICE = "com.example.service.STOP_MEDIA_SERVICE"
 
         var activeNotification: Notification? = null
+        var activeSession: MediaSessionCompat? = null
         var currentMediaItem: MediaEntity? = null
         var isPlaybackActive: Boolean = false
+        var isServiceRunning: Boolean = false
         var showSeekButtons: Boolean = true
         var cachedArtwork: Bitmap? = null
         private var lastArtworkUri: String? = null
@@ -288,22 +294,33 @@ class MediaPlaybackService : Service() {
                 cachedArtwork = extractArtworkBitmap(context, item)
             }
 
-            val intent = Intent(context, MediaPlaybackService::class.java)
-            try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    context.startForegroundService(intent)
-                } else {
-                    context.startService(intent)
+            if (!isServiceRunning) {
+                val intent = Intent(context, MediaPlaybackService::class.java)
+                try {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        context.startForegroundService(intent)
+                    } else {
+                        context.startService(intent)
+                    }
+                } catch (e: Exception) {
+                    // If direct start fails, post directly via notification manager
+                    val notification = buildLiveNotification(context, item, isPlaying, seekButtonsEnabled, activeSession)
+                    val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                    nm.notify(NOTIFICATION_ID, notification)
                 }
-            } catch (e: Exception) {
-                // If direct start fails, post directly via notification manager
-                val notification = buildLiveNotification(context, item, isPlaying, seekButtonsEnabled, null)
-                val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-                nm.notify(NOTIFICATION_ID, notification)
+            } else {
+                try {
+                    val notification = buildLiveNotification(context, item, isPlaying, seekButtonsEnabled, activeSession)
+                    val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                    nm.notify(NOTIFICATION_ID, notification)
+                } catch (e: Exception) {
+                    // Ignore transient notification update errors
+                }
             }
         }
 
         fun stopPlaybackService(context: Context) {
+            isServiceRunning = false
             try {
                 val intent = Intent(context, MediaPlaybackService::class.java).apply {
                     action = ACTION_STOP_SERVICE
@@ -432,42 +449,7 @@ class MediaPlaybackService : Service() {
         }
 
         private fun extractArtworkBitmap(context: Context, item: MediaEntity): Bitmap? {
-            return try {
-                if (item.isVideo) {
-                    val retriever = MediaMetadataRetriever()
-                    val path = item.path ?: item.uriString
-                    if (path.startsWith("http") || path.startsWith("content://")) {
-                        retriever.setDataSource(context, Uri.parse(item.uriString))
-                    } else {
-                        retriever.setDataSource(path)
-                    }
-                    val frame = retriever.getFrameAtTime(1000000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-                    retriever.release()
-                    frame
-                } else {
-                    val retriever = MediaMetadataRetriever()
-                    try {
-                        val path = item.path ?: item.uriString
-                        if (path.startsWith("http") || path.startsWith("content://")) {
-                            retriever.setDataSource(context, Uri.parse(item.uriString))
-                        } else {
-                            retriever.setDataSource(path)
-                        }
-                        val art = retriever.embeddedPicture
-                        retriever.release()
-                        if (art != null) {
-                            BitmapFactory.decodeByteArray(art, 0, art.size)
-                        } else {
-                            null
-                        }
-                    } catch (e: Exception) {
-                        retriever.release()
-                        null
-                    }
-                }
-            } catch (e: Exception) {
-                null
-            }
+            return null
         }
 
         fun createFallbackNotification(context: Context): Notification {

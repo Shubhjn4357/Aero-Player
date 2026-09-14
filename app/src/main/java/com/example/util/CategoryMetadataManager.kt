@@ -581,31 +581,6 @@ object CategoryMetadataManager {
             resolvedMime = if (isVideo) "video/mp4" else "audio/mpeg"
         }
 
-        // 3. Extract duration & metadata using MediaMetadataRetriever
-        try {
-            val retriever = MediaMetadataRetriever()
-            try {
-                retriever.setDataSource(context, uri)
-                val durStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
-                durationMs = durStr?.toLongOrNull() ?: 0L
-
-                val artStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST)
-                if (!artStr.isNullOrBlank()) artist = artStr
-
-                val albStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUM)
-                if (!albStr.isNullOrBlank()) album = albStr
-
-                val hasVideoStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_VIDEO)
-                if (hasVideoStr == "yes") {
-                    isVideo = true
-                }
-            } catch (e: Exception) {
-                // Ignore retriever failure for external/stream URIs
-            } finally {
-                try { retriever.release() } catch (e: Exception) {}
-            }
-        } catch (e: Exception) {}
-
         // Clean up displayName from URL encoding or paths
         try {
             if (displayName.contains("%20") || displayName.contains("%2F")) {

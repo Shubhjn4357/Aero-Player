@@ -39,6 +39,10 @@ import androidx.compose.animation.core.tween
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.result.IntentSenderRequest
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.border
@@ -192,15 +196,19 @@ class MainActivity : ComponentActivity() {
         }
 
         if (uri != null && uri != android.net.Uri.EMPTY) {
-            try {
-                val mediaEntity = com.example.util.CategoryMetadataManager.createMediaEntityFromIntent(
-                    context = applicationContext,
-                    uri = uri,
-                    intentMimeType = intent.type
-                )
-                mainViewModel.setPlayingItem(mediaEntity)
-            } catch (e: Exception) {
-                android.util.Log.e("MainActivity", "Failed to load direct intent file: ${e.message}", e)
+            lifecycleScope.launch(Dispatchers.IO) {
+                try {
+                    val mediaEntity = com.example.util.CategoryMetadataManager.createMediaEntityFromIntent(
+                        context = applicationContext,
+                        uri = uri,
+                        intentMimeType = intent.type
+                    )
+                    withContext(Dispatchers.Main) {
+                        mainViewModel.setPlayingItem(mediaEntity)
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.e("MainActivity", "Failed to load direct intent file: ${e.message}", e)
+                }
             }
         }
     }
@@ -497,13 +505,8 @@ fun PermissionAndNavigationContainer(viewModel: MainViewModel) {
         AnimatedContent(
             targetState = currentScreen,
             transitionSpec = {
-                if (targetState == "Player" || (initialState == "Main" && targetState == "Settings")) {
-                    (slideInHorizontally { width -> width } + fadeIn(animationSpec = tween(300)))
-                        .togetherWith(slideOutHorizontally { width -> -width } + fadeOut(animationSpec = tween(300)))
-                } else {
-                    (slideInHorizontally { width -> -width } + fadeIn(animationSpec = tween(300)))
-                        .togetherWith(slideOutHorizontally { width -> width } + fadeOut(animationSpec = tween(300)))
-                }
+                fadeIn(animationSpec = androidx.compose.animation.core.tween(120))
+                    .togetherWith(fadeOut(animationSpec = androidx.compose.animation.core.tween(90)))
             },
             label = "screen_transition",
             modifier = Modifier.fillMaxSize()

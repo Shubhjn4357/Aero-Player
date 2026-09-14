@@ -17,6 +17,13 @@ import org.videolan.libvlc.MediaPlayer
 import org.videolan.libvlc.interfaces.IMedia
 import org.videolan.libvlc.util.VLCVideoLayout
 import java.io.File
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicBoolean
 
 data class VlcTrackInfo(
     val id: Int,
@@ -91,7 +98,14 @@ class VlcPlayerWrapper(private val context: Context) {
 
     private var currentSubtitleSizeSp: Float = 18f
     private var currentSubtitleTextColor: String = "#FFFFFFFF"
+    private var currentSubtitleBgColor: String = "#00000000"
+    private var currentSubtitleOutlineColor: String = "#00000000"
+    private var currentSubtitleShadowColor: String = "#00000000"
     private var currentSubtitleEncoding: String = "UTF-8"
+    private var currentSubtitleVerticalOffset: Float = 0.08f
+    private var currentSubtitleOpacity: Float = 1.0f
+    private var currentSubtitleBgOpacity: Float = 0.8f
+    private var currentSubtitleFontStyle: String = "Normal"
 
     // Audio Focus & Earbuds Audio Becoming Noisy Management
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
@@ -225,32 +239,130 @@ class VlcPlayerWrapper(private val context: Context) {
 
     private var attachedLayout: VLCVideoLayout? = null
 
+    private val playerScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val isInitialized = AtomicBoolean(false)
+
     init {
-        initLibVlc()
+        // Pre-warm LibVLC natively on a background IO thread
+        playerScope.launch {
+            initLibVlcSync()
+        }
     }
 
-    fun ensureInitialized() {
-        if (libVLC == null || mediaPlayer == null) {
-            initLibVlc()
-            attachedLayout?.let { layout ->
-                attachLayout(layout)
+    suspend fun ensureInitialized(): Unit = withContext(Dispatchers.IO) {
+        if (!isInitialized.get() || libVLC == null || mediaPlayer == null) {
+            initLibVlcSync()
+        }
+    }
+
+    fun ensureInitializedAsync(onInitialized: (() -> Unit)? = null) {
+        if (isInitialized.get() && libVLC != null && mediaPlayer != null) {
+            onInitialized?.invoke()
+            return
+        }
+        playerScope.launch {
+            initLibVlcSync()
+            if (onInitialized != null) {
+                withContext(Dispatchers.Main) {
+                    onInitialized()
+                }
             }
         }
     }
 
-    private fun initLibVlc() {
-        try {
-            val options = ArrayList<String>().apply {
-                add("--audio-time-stretch")
-                add("--subsdec-encoding=UTF-8")
-                add("--freetype-fontsize=18")
-                add("--freetype-rel-fontsize=18")
-                add("-vv")
+    private fun parseRgbColor(colorStr: String, defaultColor: Int): Int {
+        return try {
+            val clean = colorStr.trim().removePrefix("#")
+            when (clean.length) {
+                6 -> clean.toInt(16)
+                8 -> clean.substring(2).toInt(16)
+                else -> defaultColor
             }
-            libVLC = LibVLC(context, options)
-            val player = MediaPlayer(libVLC)
-            mediaPlayer = player
+        } catch (e: Exception) {
+            defaultColor
+        }
+    }
 
+    private var lastTrackNotifyTime: Long = 0L
+
+    private fun buildLibVlcOptions(): ArrayList<String> {
+        val options = ArrayList<String>()
+        options.add("--audio-time-stretch")
+        options.add("--file-caching=300")
+        options.add("--network-caching=1000")
+        options.add("--drop-late-frames")
+        options.add("--skip-frames")
+        options.add("--video-fast-seek")
+
+        val encoding = if (currentSubtitleEncoding.isBlank()) "UTF-8" else currentSubtitleEncoding
+        options.add("--subsdec-encoding=$encoding")
+
+        val sizeInt = currentSubtitleSizeSp.toInt().coerceIn(10, 60)
+        options.add("--freetype-fontsize=$sizeInt")
+        options.add("--freetype-rel-fontsize=$sizeInt")
+
+        val colorInt = parseRgbColor(currentSubtitleTextColor, 0xFFFFFF)
+        options.add("--freetype-color=$colorInt")
+
+        val opacityInt = (currentSubtitleOpacity * 255).toInt().coerceIn(0, 255)
+        options.add("--freetype-opacity=$opacityInt")
+
+        if (currentSubtitleBgColor.isNotBlank() && currentSubtitleBgColor != "#00000000" && currentSubtitleBgOpacity > 0.01f) {
+            val bgColorInt = parseRgbColor(currentSubtitleBgColor, 0x000000)
+            val bgOpacityInt = (currentSubtitleBgOpacity * 255).toInt().coerceIn(0, 255)
+            options.add("--freetype-background-color=$bgColorInt")
+            options.add("--freetype-background-opacity=$bgOpacityInt")
+        } else {
+            options.add("--freetype-background-opacity=0")
+        }
+
+        if (currentSubtitleOutlineColor.isNotBlank() && currentSubtitleOutlineColor != "#00000000") {
+            val outlineColorInt = parseRgbColor(currentSubtitleOutlineColor, 0x000000)
+            options.add("--freetype-outline-color=$outlineColorInt")
+            options.add("--freetype-outline-thickness=2")
+        } else {
+            options.add("--freetype-outline-thickness=0")
+        }
+
+        if (currentSubtitleShadowColor.isNotBlank() && currentSubtitleShadowColor != "#00000000") {
+            val shadowColorInt = parseRgbColor(currentSubtitleShadowColor, 0x000000)
+            options.add("--freetype-shadow-color=$shadowColorInt")
+            options.add("--freetype-shadow-angle=45")
+            options.add("--freetype-shadow-distance=0.06")
+        }
+
+        if (currentSubtitleFontStyle == "Bold" || currentSubtitleFontStyle == "Bold Italic") {
+            options.add("--freetype-bold")
+        }
+
+        val marginPx = (currentSubtitleVerticalOffset * 200).toInt().coerceIn(0, 400)
+        options.add("--sub-margin=$marginPx")
+
+        return options
+    }
+
+    private fun initLibVlc() {
+        initLibVlcSync()
+    }
+
+    @Synchronized
+    private fun initLibVlcSync() {
+        if (isInitialized.get() && libVLC != null && mediaPlayer != null) return
+        try {
+            val options = buildLibVlcOptions()
+            val vlc = LibVLC(context, options)
+            val player = MediaPlayer(vlc)
+            setupMediaPlayerListeners(player)
+            libVLC = vlc
+            mediaPlayer = player
+            isInitialized.set(true)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to initialize LibVLC engine", e)
+        }
+    }
+
+    private fun setupMediaPlayerListeners(player: MediaPlayer) {
+        try {
             player.setEventListener { event ->
                 when (event.type) {
                     MediaPlayer.Event.Playing -> {
@@ -348,13 +460,17 @@ class VlcPlayerWrapper(private val context: Context) {
                                 player.spuTrack = targetSubtitleTrackId
                             }
                         } catch (e: Exception) {}
-                        onTracksUpdated?.invoke()
-                        onTracksChanged?.invoke()
+                        val now = System.currentTimeMillis()
+                        if (now - lastTrackNotifyTime > 300L) {
+                            lastTrackNotifyTime = now
+                            onTracksUpdated?.invoke()
+                            onTracksChanged?.invoke()
+                        }
                     }
                 }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to initialize LibVLC engine", e)
+            Log.e(TAG, "Failed to setup LibVLC event listener", e)
         }
     }
 
@@ -402,17 +518,17 @@ class VlcPlayerWrapper(private val context: Context) {
 
     fun refreshVideoSurface() {
         val layout = attachedLayout ?: return
-        try {
-            val player = mediaPlayer ?: return
-            if (!player.vlcVout.areViewsAttached()) {
-                player.attachViews(layout, null, true, false)
-            }
-            layout.post {
+        val player = mediaPlayer ?: return
+        playerScope.launch(Dispatchers.Main) {
+            try {
+                if (!player.vlcVout.areViewsAttached()) {
+                    player.attachViews(layout, null, true, false)
+                }
                 layout.requestLayout()
                 layout.invalidate()
+            } catch (e: Exception) {
+                Log.e(TAG, "Error refreshing video surface", e)
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error refreshing video surface", e)
         }
     }
 
@@ -420,20 +536,41 @@ class VlcPlayerWrapper(private val context: Context) {
         return currentPlayingUri == uri.toString() && mediaPlayer != null && (isPlaying || currentPositionMs > 0)
     }
 
-    fun loadMedia(
+    suspend fun loadMedia(
         uriString: String,
         path: String? = null,
         initialSeekMs: Long = 0L,
         initialAudioTrackId: Int = -1,
-        initialSubtitleTrackId: Int = -2
-    ) {
+        initialSubtitleTrackId: Int = -2,
+        subtitleSizeSp: Float = currentSubtitleSizeSp,
+        subtitleTextColorHex: String = currentSubtitleTextColor,
+        subtitleBgColorHex: String = currentSubtitleBgColor,
+        subtitleOutlineColorHex: String = currentSubtitleOutlineColor,
+        subtitleShadowColorHex: String = currentSubtitleShadowColor,
+        subtitleEncoding: String = currentSubtitleEncoding,
+        subtitleVerticalOffset: Float = currentSubtitleVerticalOffset,
+        subtitleOpacity: Float = currentSubtitleOpacity,
+        subtitleBgOpacity: Float = currentSubtitleBgOpacity,
+        subtitleFontStyle: String = currentSubtitleFontStyle
+    ) = withContext(Dispatchers.IO) {
+        ensureInitialized()
         if (initialAudioTrackId >= 0) targetAudioTrackId = initialAudioTrackId
         if (initialSubtitleTrackId >= -1) targetSubtitleTrackId = initialSubtitleTrackId
-        playMediaUri(
+        playMediaUriInternal(
             uriString = uriString,
             path = path,
             hardwareAccelerated = true,
             initialSeekMs = initialSeekMs,
+            subtitleSizeSp = subtitleSizeSp,
+            subtitleTextColorHex = subtitleTextColorHex,
+            subtitleBgColorHex = subtitleBgColorHex,
+            subtitleOutlineColorHex = subtitleOutlineColorHex,
+            subtitleShadowColorHex = subtitleShadowColorHex,
+            subtitleEncoding = subtitleEncoding,
+            subtitleVerticalOffset = subtitleVerticalOffset,
+            subtitleOpacity = subtitleOpacity,
+            subtitleBgOpacity = subtitleBgOpacity,
+            subtitleFontStyle = subtitleFontStyle,
             initialAudioTrackId = initialAudioTrackId,
             initialSubtitleTrackId = initialSubtitleTrackId
         )
@@ -445,11 +582,14 @@ class VlcPlayerWrapper(private val context: Context) {
         initialSeekMs: Long = 0L,
         subtitleSizeSp: Float = currentSubtitleSizeSp,
         subtitleTextColorHex: String = currentSubtitleTextColor,
-        subtitleBgColorHex: String = "#CC000000",
-        subtitleOutlineColorHex: String = "#FF000000",
-        subtitleShadowColorHex: String = "#80000000",
-        subtitleEncoding: String = "UTF-8",
-        subtitleVerticalOffset: Float = 0.08f,
+        subtitleBgColorHex: String = currentSubtitleBgColor,
+        subtitleOutlineColorHex: String = currentSubtitleOutlineColor,
+        subtitleShadowColorHex: String = currentSubtitleShadowColor,
+        subtitleEncoding: String = currentSubtitleEncoding,
+        subtitleVerticalOffset: Float = currentSubtitleVerticalOffset,
+        subtitleOpacity: Float = currentSubtitleOpacity,
+        subtitleBgOpacity: Float = currentSubtitleBgOpacity,
+        subtitleFontStyle: String = currentSubtitleFontStyle,
         initialAudioTrackId: Int = -1,
         initialSubtitleTrackId: Int = -2
     ) {
@@ -460,7 +600,14 @@ class VlcPlayerWrapper(private val context: Context) {
             initialSeekMs = initialSeekMs,
             subtitleSizeSp = subtitleSizeSp,
             subtitleTextColorHex = subtitleTextColorHex,
+            subtitleBgColorHex = subtitleBgColorHex,
+            subtitleOutlineColorHex = subtitleOutlineColorHex,
+            subtitleShadowColorHex = subtitleShadowColorHex,
             subtitleEncoding = subtitleEncoding,
+            subtitleVerticalOffset = subtitleVerticalOffset,
+            subtitleOpacity = subtitleOpacity,
+            subtitleBgOpacity = subtitleBgOpacity,
+            subtitleFontStyle = subtitleFontStyle,
             initialAudioTrackId = initialAudioTrackId,
             initialSubtitleTrackId = initialSubtitleTrackId
         )
@@ -473,11 +620,55 @@ class VlcPlayerWrapper(private val context: Context) {
         initialSeekMs: Long = 0L,
         subtitleSizeSp: Float = currentSubtitleSizeSp,
         subtitleTextColorHex: String = currentSubtitleTextColor,
-        subtitleBgColorHex: String = "#CC000000",
-        subtitleOutlineColorHex: String = "#FF000000",
-        subtitleShadowColorHex: String = "#80000000",
-        subtitleEncoding: String = "UTF-8",
-        subtitleVerticalOffset: Float = 0.08f,
+        subtitleBgColorHex: String = currentSubtitleBgColor,
+        subtitleOutlineColorHex: String = currentSubtitleOutlineColor,
+        subtitleShadowColorHex: String = currentSubtitleShadowColor,
+        subtitleEncoding: String = currentSubtitleEncoding,
+        subtitleVerticalOffset: Float = currentSubtitleVerticalOffset,
+        subtitleOpacity: Float = currentSubtitleOpacity,
+        subtitleBgOpacity: Float = currentSubtitleBgOpacity,
+        subtitleFontStyle: String = currentSubtitleFontStyle,
+        initialAudioTrackId: Int = -1,
+        initialSubtitleTrackId: Int = -2
+    ) {
+        playerScope.launch(Dispatchers.IO) {
+            ensureInitialized()
+            playMediaUriInternal(
+                uriString = uriString,
+                path = path,
+                hardwareAccelerated = hardwareAccelerated,
+                initialSeekMs = initialSeekMs,
+                subtitleSizeSp = subtitleSizeSp,
+                subtitleTextColorHex = subtitleTextColorHex,
+                subtitleBgColorHex = subtitleBgColorHex,
+                subtitleOutlineColorHex = subtitleOutlineColorHex,
+                subtitleShadowColorHex = subtitleShadowColorHex,
+                subtitleEncoding = subtitleEncoding,
+                subtitleVerticalOffset = subtitleVerticalOffset,
+                subtitleOpacity = subtitleOpacity,
+                subtitleBgOpacity = subtitleBgOpacity,
+                subtitleFontStyle = subtitleFontStyle,
+                initialAudioTrackId = initialAudioTrackId,
+                initialSubtitleTrackId = initialSubtitleTrackId
+            )
+        }
+    }
+
+    private suspend fun playMediaUriInternal(
+        uriString: String,
+        path: String? = null,
+        hardwareAccelerated: Boolean = true,
+        initialSeekMs: Long = 0L,
+        subtitleSizeSp: Float = currentSubtitleSizeSp,
+        subtitleTextColorHex: String = currentSubtitleTextColor,
+        subtitleBgColorHex: String = currentSubtitleBgColor,
+        subtitleOutlineColorHex: String = currentSubtitleOutlineColor,
+        subtitleShadowColorHex: String = currentSubtitleShadowColor,
+        subtitleEncoding: String = currentSubtitleEncoding,
+        subtitleVerticalOffset: Float = currentSubtitleVerticalOffset,
+        subtitleOpacity: Float = currentSubtitleOpacity,
+        subtitleBgOpacity: Float = currentSubtitleBgOpacity,
+        subtitleFontStyle: String = currentSubtitleFontStyle,
         initialAudioTrackId: Int = -1,
         initialSubtitleTrackId: Int = -2
     ) {
@@ -495,6 +686,17 @@ class VlcPlayerWrapper(private val context: Context) {
             pendingInitialSeekMs = initialSeekMs
             if (initialAudioTrackId >= 0) targetAudioTrackId = initialAudioTrackId
             if (initialSubtitleTrackId >= -1) targetSubtitleTrackId = initialSubtitleTrackId
+
+            currentSubtitleSizeSp = subtitleSizeSp
+            currentSubtitleTextColor = subtitleTextColorHex
+            currentSubtitleBgColor = subtitleBgColorHex
+            currentSubtitleOutlineColor = subtitleOutlineColorHex
+            currentSubtitleShadowColor = subtitleShadowColorHex
+            currentSubtitleEncoding = subtitleEncoding
+            currentSubtitleVerticalOffset = subtitleVerticalOffset
+            currentSubtitleOpacity = subtitleOpacity
+            currentSubtitleBgOpacity = subtitleBgOpacity
+            currentSubtitleFontStyle = subtitleFontStyle
 
             try {
                 player.stop()
@@ -551,14 +753,50 @@ class VlcPlayerWrapper(private val context: Context) {
                 media.setHWDecoderEnabled(false, false)
             }
 
-            media.addOption(":file-caching=1500")
-            media.addOption(":subsdec-encoding=$subtitleEncoding")
-            media.addOption(":freetype-fontsize=${subtitleSizeSp.toInt()}")
-            media.addOption(":freetype-rel-fontsize=${subtitleSizeSp.toInt()}")
+            val sizeInt = subtitleSizeSp.toInt().coerceIn(10, 60)
+            val colorInt = parseRgbColor(subtitleTextColorHex, 0xFFFFFF)
+            val opacityInt = (subtitleOpacity * 255).toInt().coerceIn(0, 255)
 
-            val hexColor = subtitleTextColorHex.removePrefix("#").takeLast(6)
-            val intColor = hexColor.toIntOrNull(16) ?: 0xFFFFFF
-            media.addOption(":freetype-color=$intColor")
+            media.addOption(":file-caching=300")
+            media.addOption(":drop-late-frames")
+            media.addOption(":skip-frames")
+            media.addOption(":video-fast-seek")
+            media.addOption(":subsdec-encoding=${if (subtitleEncoding.isBlank()) "UTF-8" else subtitleEncoding}")
+            media.addOption(":freetype-fontsize=$sizeInt")
+            media.addOption(":freetype-rel-fontsize=$sizeInt")
+            media.addOption(":freetype-color=$colorInt")
+            media.addOption(":freetype-opacity=$opacityInt")
+
+            if (subtitleBgColorHex.isNotBlank() && subtitleBgColorHex != "#00000000" && subtitleBgOpacity > 0.01f) {
+                val bgColorInt = parseRgbColor(subtitleBgColorHex, 0x000000)
+                val bgOpacityInt = (subtitleBgOpacity * 255).toInt().coerceIn(0, 255)
+                media.addOption(":freetype-background-color=$bgColorInt")
+                media.addOption(":freetype-background-opacity=$bgOpacityInt")
+            } else {
+                media.addOption(":freetype-background-opacity=0")
+            }
+
+            if (subtitleOutlineColorHex.isNotBlank() && subtitleOutlineColorHex != "#00000000") {
+                val outlineColorInt = parseRgbColor(subtitleOutlineColorHex, 0x000000)
+                media.addOption(":freetype-outline-color=$outlineColorInt")
+                media.addOption(":freetype-outline-thickness=2")
+            } else {
+                media.addOption(":freetype-outline-thickness=0")
+            }
+
+            if (subtitleShadowColorHex.isNotBlank() && subtitleShadowColorHex != "#00000000") {
+                val shadowColorInt = parseRgbColor(subtitleShadowColorHex, 0x000000)
+                media.addOption(":freetype-shadow-color=$shadowColorInt")
+                media.addOption(":freetype-shadow-angle=45")
+                media.addOption(":freetype-shadow-distance=0.06")
+            }
+
+            if (subtitleFontStyle == "Bold" || subtitleFontStyle == "Bold Italic") {
+                media.addOption(":freetype-bold")
+            }
+
+            val marginPx = (subtitleVerticalOffset * 200).toInt().coerceIn(0, 400)
+            media.addOption(":sub-margin=$marginPx")
 
             if (initialSeekMs > 0L) {
                 val startSec = initialSeekMs / 1000.0
@@ -568,10 +806,17 @@ class VlcPlayerWrapper(private val context: Context) {
             player.media = media
             media.release()
 
-            // Ensure views attached if layout is present
-            attachedLayout?.let { layout ->
-                if (!player.vlcVout.areViewsAttached()) {
-                    player.attachViews(layout, null, true, false)
+            // Ensure views attached on Main thread BEFORE player.play() to prevent native lock contention and ANR
+            val layout = attachedLayout
+            if (layout != null) {
+                withContext(Dispatchers.Main) {
+                    try {
+                        if (!player.vlcVout.areViewsAttached()) {
+                            player.attachViews(layout, null, true, false)
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed attaching views on Main thread", e)
+                    }
                 }
             }
 
@@ -807,8 +1052,11 @@ class VlcPlayerWrapper(private val context: Context) {
         val player = mediaPlayer ?: return false
         return try {
             val uri = Uri.parse(subtitleUri)
-            player.addSlave(IMedia.Slave.Type.Subtitle, uri, select)
-            true
+            val res = player.addSlave(IMedia.Slave.Type.Subtitle, uri, select)
+            if (select) {
+                targetSubtitleTrackId = -2
+            }
+            res
         } catch (e: Exception) {
             Log.e(TAG, "Error adding subtitle track in LibVLC", e)
             false
@@ -819,12 +1067,43 @@ class VlcPlayerWrapper(private val context: Context) {
         return addSubtitleTrack(subtitleUri, select = true)
     }
 
+    fun disableInternalSpu() {
+        try {
+            targetSubtitleTrackId = -1
+            mediaPlayer?.spuTrack = -1
+        } catch (e: Exception) {}
+    }
+
     fun setSubtitleSizeSp(sizeSp: Float) {
         currentSubtitleSizeSp = sizeSp
     }
 
     fun setSubtitleTextColor(colorHex: String) {
         currentSubtitleTextColor = colorHex
+    }
+
+    fun applySubtitlePreferences(
+        subtitleSizeSp: Float,
+        subtitleTextColorHex: String,
+        subtitleBgColorHex: String = currentSubtitleBgColor,
+        subtitleOutlineColorHex: String = currentSubtitleOutlineColor,
+        subtitleShadowColorHex: String = currentSubtitleShadowColor,
+        subtitleEncoding: String = currentSubtitleEncoding,
+        subtitleVerticalOffset: Float = currentSubtitleVerticalOffset,
+        subtitleOpacity: Float = currentSubtitleOpacity,
+        subtitleBgOpacity: Float = currentSubtitleBgOpacity,
+        subtitleFontStyle: String = currentSubtitleFontStyle
+    ) {
+        currentSubtitleSizeSp = subtitleSizeSp
+        currentSubtitleTextColor = subtitleTextColorHex
+        currentSubtitleBgColor = subtitleBgColorHex
+        currentSubtitleOutlineColor = subtitleOutlineColorHex
+        currentSubtitleShadowColor = subtitleShadowColorHex
+        currentSubtitleEncoding = subtitleEncoding
+        currentSubtitleVerticalOffset = subtitleVerticalOffset
+        currentSubtitleOpacity = subtitleOpacity
+        currentSubtitleBgOpacity = subtitleBgOpacity
+        currentSubtitleFontStyle = subtitleFontStyle
     }
 
     fun updateSubtitleOptions(
@@ -836,13 +1115,20 @@ class VlcPlayerWrapper(private val context: Context) {
         subtitleEncoding: String,
         subtitleVerticalOffset: Float
     ) {
-        currentSubtitleSizeSp = subtitleSizeSp
-        currentSubtitleTextColor = subtitleTextColorHex
-        currentSubtitleEncoding = subtitleEncoding
+        applySubtitlePreferences(
+            subtitleSizeSp = subtitleSizeSp,
+            subtitleTextColorHex = subtitleTextColorHex,
+            subtitleBgColorHex = subtitleBgColorHex,
+            subtitleOutlineColorHex = subtitleOutlineColorHex,
+            subtitleShadowColorHex = subtitleShadowColorHex,
+            subtitleEncoding = subtitleEncoding,
+            subtitleVerticalOffset = subtitleVerticalOffset
+        )
     }
 
     fun release() {
         try {
+            playerScope.cancel()
             abandonAudioFocus()
             unregisterNoisyReceiver()
             detachLayout()

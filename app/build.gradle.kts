@@ -1,4 +1,3 @@
-import com.google.gms.googleservices.GoogleServicesPlugin.MissingGoogleServicesStrategy
 import java.io.File
 import java.util.zip.ZipFile
 
@@ -23,9 +22,9 @@ android {
     versionName = "1.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-
     ndk {
-      abiFilters.addAll(listOf("arm64-v8a", "x86_64", "armeabi-v7a", "x86"))
+      abiFilters.clear()
+      abiFilters.add("arm64-v8a")
     }
   }
 
@@ -55,9 +54,17 @@ android {
       isShrinkResources = false
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
       signingConfig = signingConfigs.getByName("release")
+      ndk {
+        abiFilters.clear()
+        abiFilters.add("arm64-v8a")
+      }
     }
     debug {
       signingConfig = signingConfigs.getByName("debugConfig")
+      ndk {
+        abiFilters.clear()
+        abiFilters.add("arm64-v8a")
+      }
     }
   }
   compileOptions {

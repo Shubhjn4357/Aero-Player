@@ -65,41 +65,47 @@ fun FolderTabContent(
         currentPathSegments = currentPathSegments.dropLast(1)
     }
 
-    val directoryContents = remember(mediaList, currentPathSegments, prefs.sortBy, prefs.sortAscending) {
-        val nonStream = mediaList.filter { it.genre != "Live Stream" }
-        
-        val subDirs = mutableSetOf<String>()
-        val directFiles = mutableListOf<MediaEntity>()
-        
-        nonStream.forEach { item ->
+    val parsedMediaItems = remember(mediaList) {
+        mediaList.mapNotNull { item ->
+            if (item.genre == "Live Stream") return@mapNotNull null
             val path = item.path
             val cleanPath = when {
                 path.startsWith("/storage/emulated/0/") -> path.substringAfter("/storage/emulated/0/")
                 path.startsWith("storage/emulated/0/") -> path.substringAfter("storage/emulated/0/")
                 else -> path.trimStart('/')
             }
-            
             val segments = cleanPath.split('/').filter { it.isNotEmpty() }
-            
-            val match = currentPathSegments.size <= segments.size - 1 &&
+            item to segments
+        }
+    }
+
+    val directoryContentsData = remember(parsedMediaItems, currentPathSegments, prefs.sortBy, prefs.sortAscending) {
+        val currentDepth = currentPathSegments.size
+        val subDirs = mutableSetOf<String>()
+        val directFiles = mutableListOf<MediaEntity>()
+        val subDirFiles = mutableMapOf<String, MutableList<MediaEntity>>()
+        val folderMetrics = mutableMapOf<String, Triple<Long, Long, Long>>()
+        val allFolderFiles = mutableListOf<MediaEntity>()
+
+        parsedMediaItems.forEach { (item, segments) ->
+            val match = currentDepth <= segments.size - 1 &&
                 currentPathSegments.indices.all { i -> segments[i] == currentPathSegments[i] }
-                
             if (match) {
-                if (segments.size - 1 == currentPathSegments.size) {
+                allFolderFiles.add(item)
+                if (segments.size - 1 == currentDepth) {
                     directFiles.add(item)
-                } else if (segments.size - 1 > currentPathSegments.size) {
-                    subDirs.add(segments[currentPathSegments.size])
+                } else if (segments.size - 1 > currentDepth) {
+                    val subDirName = segments[currentDepth]
+                    subDirs.add(subDirName)
+                    subDirFiles.getOrPut(subDirName) { mutableListOf() }.add(item)
+
+                    val existing = folderMetrics[subDirName] ?: Triple(0L, 0L, 0L)
+                    val newMaxDate = if (item.dateAdded > existing.first) item.dateAdded else existing.first
+                    val newSumSize = existing.second + item.size
+                    val newSumDuration = existing.third + item.duration
+                    folderMetrics[subDirName] = Triple(newMaxDate, newSumSize, newSumDuration)
                 }
             }
-        }
-        
-        fun getCleanSegments(path: String): List<String> {
-            val clean = when {
-                path.startsWith("/storage/emulated/0/") -> path.substringAfter("/storage/emulated/0/")
-                path.startsWith("storage/emulated/0/") -> path.substringAfter("storage/emulated/0/")
-                else -> path.trimStart('/')
-            }
-            return clean.split('/').filter { it.isNotEmpty() }
         }
 
         val sortedFiles = when (prefs.sortBy) {
@@ -110,24 +116,9 @@ fun FolderTabContent(
             else -> if (prefs.sortAscending) directFiles.sortedBy { it.title.lowercase() } else directFiles.sortedByDescending { it.title.lowercase() }
         }
 
-        val folderMetricsMap = subDirs.associateWith { dir ->
-            var maxDate = 0L
-            var sumSize = 0L
-            var sumDuration = 0L
-            nonStream.forEach { item ->
-                val segs = getCleanSegments(item.path)
-                if (segs.getOrNull(currentPathSegments.size) == dir) {
-                    if (item.dateAdded > maxDate) maxDate = item.dateAdded
-                    sumSize += item.size
-                    sumDuration += item.duration
-                }
-            }
-            Triple(maxDate, sumSize, sumDuration)
-        }
-
         val sortedSubDirs = subDirs.sortedWith(Comparator { dir1, dir2 ->
-            val m1 = folderMetricsMap[dir1] ?: Triple(0L, 0L, 0L)
-            val m2 = folderMetricsMap[dir2] ?: Triple(0L, 0L, 0L)
+            val m1 = folderMetrics[dir1] ?: Triple(0L, 0L, 0L)
+            val m2 = folderMetrics[dir2] ?: Triple(0L, 0L, 0L)
             val res = when (prefs.sortBy) {
                 "date" -> m1.first.compareTo(m2.first)
                 "size" -> m1.second.compareTo(m2.second)
@@ -137,43 +128,21 @@ fun FolderTabContent(
             if (prefs.sortAscending) res else -res
         })
 
-        Pair(sortedSubDirs, sortedFiles)
-    }
-    
-    val (subDirectories, files) = directoryContents
+        val sortedAllFolderFiles = allFolderFiles.sortedBy { it.title }
+        val getFilesLambda = { dirName: String -> (subDirFiles[dirName] ?: emptyList<MediaEntity>()) as List<MediaEntity> }
 
-    val allFilesInFolderAndSubfolders = remember(mediaList, currentPathSegments) {
-        val nonStream = mediaList.filter { it.genre != "Live Stream" }
-        nonStream.filter { item ->
-            val path = item.path
-            val cleanPath = when {
-                path.startsWith("/storage/emulated/0/") -> path.substringAfter("/storage/emulated/0/")
-                path.startsWith("storage/emulated/0/") -> path.substringAfter("storage/emulated/0/")
-                else -> path.trimStart('/')
-            }
-            val segments = cleanPath.split('/').filter { it.isNotEmpty() }
-            currentPathSegments.size <= segments.size - 1 &&
-                currentPathSegments.indices.all { i -> segments[i] == currentPathSegments[i] }
-        }.sortedBy { it.title }
-    }
-
-    val getDirectoryFiles = remember(mediaList, currentPathSegments) {
-        { dirName: String ->
-            val nonStream = mediaList.filter { it.genre != "Live Stream" }
-            val dirSegments = currentPathSegments + dirName
-            nonStream.filter { item ->
-                val path = item.path
-                val cleanPath = when {
-                    path.startsWith("/storage/emulated/0/") -> path.substringAfter("/storage/emulated/0/")
-                    path.startsWith("storage/emulated/0/") -> path.substringAfter("storage/emulated/0/")
-                    else -> path.trimStart('/')
-                }
-                val segments = cleanPath.split('/').filter { it.isNotEmpty() }
-                dirSegments.size <= segments.size - 1 &&
-                    dirSegments.indices.all { i -> segments[i] == dirSegments[i] }
-            }
+        object {
+            val subDirectories = sortedSubDirs
+            val files = sortedFiles
+            val allFilesInFolderAndSubfolders = sortedAllFolderFiles
+            val getDirectoryFiles = getFilesLambda
         }
     }
+
+    val subDirectories = directoryContentsData.subDirectories
+    val files = directoryContentsData.files
+    val allFilesInFolderAndSubfolders = directoryContentsData.allFilesInFolderAndSubfolders
+    val getDirectoryFiles = directoryContentsData.getDirectoryFiles
 
     val formatDuration = { durationMs: Long ->
         val seconds = (durationMs / 1000) % 60
@@ -423,11 +392,10 @@ fun FolderTabContent(
                         }
                     },
                     enabled = subDirectories.isNotEmpty(),
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        containerColor = if (isAllFoldersSelected) accentOrange.copy(alpha = 0.2f) else Color.Transparent,
-                        contentColor = accentOrange
+                    colors = ButtonDefaults.filledTonalButtonColors(
+                        containerColor = if (isAllFoldersSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                        contentColor = MaterialTheme.colorScheme.primary
                     ),
-                    border = BorderStroke(1.dp, accentOrange),
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
                     shape = RoundedCornerShape(8.dp),
                     modifier = Modifier.height(32.dp)
@@ -446,7 +414,7 @@ fun FolderTabContent(
                 }
 
                 // Select All Items (Folders + Files) Button
-                OutlinedButton(
+                FilledTonalButton(
                     onClick = {
                         if (isAllFolderItemsSelected) {
                             viewModel.clearSelection()
@@ -455,11 +423,10 @@ fun FolderTabContent(
                         }
                     },
                     enabled = subDirectories.isNotEmpty() || files.isNotEmpty(),
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        containerColor = if (isAllFolderItemsSelected) accentOrange.copy(alpha = 0.2f) else Color.Transparent,
-                        contentColor = accentOrange
+                    colors = ButtonDefaults.filledTonalButtonColors(
+                        containerColor = if (isAllFolderItemsSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                        contentColor = MaterialTheme.colorScheme.primary
                     ),
-                    border = BorderStroke(1.dp, accentOrange),
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
                     shape = RoundedCornerShape(8.dp),
                     modifier = Modifier.height(32.dp)
@@ -478,7 +445,7 @@ fun FolderTabContent(
                     onClick = { viewModel.playAll(allFilesInFolderAndSubfolders) },
                     enabled = allFilesInFolderAndSubfolders.isNotEmpty(),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = accentOrange,
+                        containerColor = MaterialTheme.colorScheme.primary,
                         contentColor = MaterialTheme.colorScheme.onPrimary
                     ),
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
@@ -491,15 +458,17 @@ fun FolderTabContent(
                 }
 
                 // Queue All Button
-                OutlinedButton(
+                FilledTonalButton(
                     onClick = {
                         val count = allFilesInFolderAndSubfolders.size
                         viewModel.addToQueue(allFilesInFolderAndSubfolders)
                         android.widget.Toast.makeText(context, "Queued $count files", android.widget.Toast.LENGTH_SHORT).show()
                     },
                     enabled = allFilesInFolderAndSubfolders.isNotEmpty(),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = accentOrange),
-                    border = BorderStroke(1.dp, accentOrange),
+                    colors = ButtonDefaults.filledTonalButtonColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                        contentColor = MaterialTheme.colorScheme.primary
+                    ),
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
                     shape = RoundedCornerShape(8.dp),
                     modifier = Modifier.height(32.dp)
@@ -564,11 +533,12 @@ fun FolderTabContent(
                                         viewModel.toggleFolderSelection(dir)
                                     }
                                 ),
-                            shape = RoundedCornerShape(18.dp),
+                            shape = RoundedCornerShape(16.dp),
                             colors = CardDefaults.cardColors(
-                                containerColor = if (isSelected) accentOrange.copy(alpha = 0.25f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                                containerColor = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f) else Color.Transparent
                             ),
-                            border = if (isSelected) BorderStroke(1.5.dp, accentOrange) else null
+                            elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                            border = null
                         ) {
                             Box(modifier = Modifier.fillMaxSize()) {
                                 Column(
@@ -655,11 +625,12 @@ fun FolderTabContent(
                                         viewModel.toggleFolderSelection(dir)
                                     }
                                 ),
-                            shape = RoundedCornerShape(16.dp),
+                            shape = RoundedCornerShape(14.dp),
                             colors = CardDefaults.cardColors(
-                                containerColor = if (isSelected) accentOrange.copy(alpha = 0.25f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                                containerColor = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f) else Color.Transparent
                             ),
-                            border = if (isSelected) BorderStroke(1.5.dp, accentOrange) else null
+                            elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                            border = null
                         ) {
                             Row(
                                 modifier = Modifier
@@ -732,11 +703,12 @@ fun FolderTabContent(
                                         viewModel.toggleFolderSelection(dir)
                                     }
                                 ),
-                            shape = RoundedCornerShape(16.dp),
+                            shape = RoundedCornerShape(14.dp),
                             colors = CardDefaults.cardColors(
-                                containerColor = if (isSelected) accentOrange.copy(alpha = 0.25f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                                containerColor = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f) else Color.Transparent
                             ),
-                            border = if (isSelected) BorderStroke(1.5.dp, accentOrange) else null
+                            elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                            border = null
                         ) {
                             Row(
                                 modifier = Modifier
@@ -778,7 +750,6 @@ fun FolderTabContent(
                     // Files inside this folder as list rows
                     items(files, key = { "file_list_${it.uriString}" }) { file ->
                         val isSelected = selectionState.selectedVideoIds.contains(file.uriString)
-                        val badgeLabel = getMediaQualityLabel(file)
                         Card(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -797,11 +768,12 @@ fun FolderTabContent(
                                         viewModel.toggleVideoSelection(file.uriString)
                                     }
                                 ),
-                            shape = RoundedCornerShape(16.dp),
+                            shape = RoundedCornerShape(14.dp),
                             colors = CardDefaults.cardColors(
-                                containerColor = if (isSelected) accentOrange.copy(alpha = 0.25f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                                containerColor = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f) else Color.Transparent
                             ),
-                            border = if (isSelected) BorderStroke(1.5.dp, accentOrange) else null
+                            elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                            border = null
                         ) {
                             Row(
                                 modifier = Modifier
@@ -814,7 +786,7 @@ fun FolderTabContent(
                                     modifier = Modifier
                                         .width(75.dp)
                                         .height(50.dp)
-                                        .clip(RoundedCornerShape(2.dp))
+                                        .clip(RoundedCornerShape(8.dp))
                                 ) {
                                     VideoThumbnailItem(file)
                                     val progress = historyProgressMap[file.uriString]
@@ -845,28 +817,11 @@ fun FolderTabContent(
                                         overflow = TextOverflow.Ellipsis
                                     )
                                     Spacer(modifier = Modifier.height(4.dp))
-                                    Row(
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Text(
-                                            text = formatMediaLengthAndSize(file.duration, file.size),
-                                            fontSize = 11.sp,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                                        )
-                                        Box(
-                                            modifier = Modifier
-                                                .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f), RoundedCornerShape(4.dp))
-                                                .padding(horizontal = 6.dp, vertical = 2.dp)
-                                        ) {
-                                            Text(
-                                                text = badgeLabel,
-                                                fontSize = 9.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                color = MaterialTheme.colorScheme.primary
-                                            )
-                                        }
-                                    }
+                                    Text(
+                                        text = formatMediaLengthAndSize(file.duration, file.size),
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                                    )
                                 }
                                 
                                 if (selectionState.isInSelectionMode) {
@@ -937,12 +892,10 @@ fun FolderTabContent(
                                         ),
                                     shape = RoundedCornerShape(12.dp),
                                     colors = CardDefaults.cardColors(
-                                        containerColor = if (isSelected) accentOrange.copy(alpha = 0.25f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                                        containerColor = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f) else Color.Transparent
                                     ),
-                                    border = BorderStroke(
-                                        1.dp,
-                                        if (isSelected) accentOrange else Color.Transparent
-                                    )
+                                    elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                                    border = null
                                 ) {
                                     Box(modifier = Modifier.fillMaxSize()) {
                                         Column(
@@ -1016,14 +969,12 @@ fun FolderTabContent(
                                                 viewModel.toggleFolderSelection(dir)
                                             }
                                         ),
-                                    shape = RoundedCornerShape(8.dp),
+                                    shape = RoundedCornerShape(10.dp),
                                     colors = CardDefaults.cardColors(
-                                        containerColor = if (isSelected) accentOrange.copy(alpha = 0.25f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.2f)
+                                        containerColor = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f) else Color.Transparent
                                     ),
-                                    border = BorderStroke(
-                                        1.dp,
-                                        if (isSelected) accentOrange else Color.Transparent
-                                    )
+                                    elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                                    border = null
                                 ) {
                                     Row(
                                         modifier = Modifier
@@ -1083,7 +1034,6 @@ fun FolderTabContent(
                         if (isFileGrid) {
                             items(files, key = { "file_grid_${it.uriString}" }) { file ->
                                 val isSelected = selectionState.selectedVideoIds.contains(file.uriString)
-                                val badgeLabel = getMediaQualityLabel(file)
                                 Card(
                                     modifier = Modifier
                                         .fillMaxWidth()
@@ -1103,12 +1053,10 @@ fun FolderTabContent(
                                         ),
                                     shape = RoundedCornerShape(12.dp),
                                     colors = CardDefaults.cardColors(
-                                        containerColor = if (isSelected) accentOrange.copy(alpha = 0.2f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.15f)
+                                        containerColor = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f) else Color.Transparent
                                     ),
-                                    border = BorderStroke(
-                                        1.dp,
-                                        if (isSelected) accentOrange else Color.Transparent
-                                    )
+                                    elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                                    border = null
                                 ) {
                                     Column(
                                         modifier = Modifier.fillMaxSize().padding(6.dp),
@@ -1148,24 +1096,11 @@ fun FolderTabContent(
                                             maxLines = 2,
                                             overflow = TextOverflow.Ellipsis
                                         )
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Text(
-                                                text = formatMediaLengthAndSize(file.duration, file.size),
-                                                fontSize = 9.sp,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                                            )
-                                            Box(
-                                                modifier = Modifier
-                                                    .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f), RoundedCornerShape(3.dp))
-                                                    .padding(horizontal = 4.dp, vertical = 1.dp)
-                                            ) {
-                                                Text(badgeLabel, fontSize = 8.sp, color = MaterialTheme.colorScheme.primary)
-                                            }
-                                        }
+                                        Text(
+                                            text = formatMediaLengthAndSize(file.duration, file.size),
+                                            fontSize = 9.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                                        )
                                     }
                                 }
                             }
@@ -1173,7 +1108,6 @@ fun FolderTabContent(
                             // File is List, so span full width!
                             items(files, key = { "file_grid_span_${it.uriString}" }, span = { GridItemSpan(maxLineSpan) }) { file ->
                                 val isSelected = selectionState.selectedVideoIds.contains(file.uriString)
-                                val badgeLabel = getMediaQualityLabel(file)
                                 Card(
                                     modifier = Modifier
                                         .fillMaxWidth()
@@ -1192,12 +1126,10 @@ fun FolderTabContent(
                                         ),
                                     shape = RoundedCornerShape(12.dp),
                                     colors = CardDefaults.cardColors(
-                                        containerColor = if (isSelected) accentOrange.copy(alpha = 0.2f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.15f)
+                                        containerColor = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f) else Color.Transparent
                                     ),
-                                    border = BorderStroke(
-                                        1.dp,
-                                        if (isSelected) accentOrange else Color.Transparent
-                                    )
+                                    elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                                    border = null
                                 ) {
                                     Row(
                                         modifier = Modifier
@@ -1210,7 +1142,7 @@ fun FolderTabContent(
                                             modifier = Modifier
                                                 .width(75.dp)
                                                 .height(50.dp)
-                                                .clip(RoundedCornerShape(2.dp))
+                                                .clip(RoundedCornerShape(8.dp))
                                         ) {
                                             VideoThumbnailItem(file)
                                              val progress = historyProgressMap[file.uriString]
@@ -1241,28 +1173,11 @@ fun FolderTabContent(
                                                 overflow = TextOverflow.Ellipsis
                                             )
                                             Spacer(modifier = Modifier.height(4.dp))
-                                            Row(
-                                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                                verticalAlignment = Alignment.CenterVertically
-                                            ) {
-                                                Text(
-                                                    text = formatMediaLengthAndSize(file.duration, file.size),
-                                                    fontSize = 11.sp,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                                                )
-                                                Box(
-                                                    modifier = Modifier
-                                                        .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f), RoundedCornerShape(4.dp))
-                                                        .padding(horizontal = 6.dp, vertical = 2.dp)
-                                                ) {
-                                                    Text(
-                                                        text = badgeLabel,
-                                                        fontSize = 9.sp,
-                                                        fontWeight = FontWeight.Bold,
-                                                        color = MaterialTheme.colorScheme.primary
-                                                    )
-                                                }
-                                            }
+                                            Text(
+                                                text = formatMediaLengthAndSize(file.duration, file.size),
+                                                fontSize = 11.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                                            )
                                         }
                                         
                                         if (selectionState.isInSelectionMode) {
@@ -1334,47 +1249,17 @@ fun FolderThumbnail(
     modifier: Modifier = Modifier
 ) {
     val accentColor = MaterialTheme.colorScheme.primary
-    val containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
     
     Box(
-        modifier = modifier
-            .clip(RoundedCornerShape(14.dp))
-            .background(
-                brush = androidx.compose.ui.graphics.Brush.verticalGradient(
-                    colors = listOf(
-                        accentColor.copy(alpha = 0.15f),
-                        containerColor
-                    )
-                )
-            )
-            .border(
-                1.dp,
-                androidx.compose.ui.graphics.Brush.verticalGradient(
-                    colors = listOf(
-                        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.15f),
-                        accentColor.copy(alpha = 0.05f)
-                    )
-                ),
-                RoundedCornerShape(14.dp)
-            ),
+        modifier = modifier,
         contentAlignment = Alignment.Center
     ) {
-        // Glowing halo effect behind the icon
-        Box(
-            modifier = Modifier
-                .size(32.dp)
-                .background(accentColor.copy(alpha = 0.18f), CircleShape)
-                .align(Alignment.Center)
-        )
-        
         Icon(
-            imageVector = Icons.Default.FolderCopy,
+            imageVector = Icons.Default.Folder,
             contentDescription = null,
             tint = accentColor,
-            modifier = Modifier.size(28.dp)
+            modifier = Modifier.fillMaxSize(0.68f)
         )
-        
-        // Count Badge removed
     }
 }
 
