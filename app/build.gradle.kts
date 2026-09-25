@@ -210,21 +210,28 @@ tasks.register("autoExportApkToSystemOutput") {
     val src = File(dbgPath)
     if (isValidZip(src)) {
       targets.forEach { dirPath ->
-        val destDir = File(dirPath)
-        destDir.mkdirs()
+        try {
+          val destDir = File(dirPath)
+          if (!destDir.exists()) {
+            destDir.mkdirs()
+          }
+          if (destDir.exists() && destDir.canWrite()) {
+            // Copy as app-debug.apk
+            val dbgTarget = File(destDir, "app-debug.apk")
+            val dbgTmp = File(destDir, "app-debug.apk.tmp")
+            src.copyTo(dbgTmp, overwrite = true)
+            dbgTmp.renameTo(dbgTarget)
 
-        // Copy as app-debug.apk
-        val dbgTarget = File(destDir, "app-debug.apk")
-        val dbgTmp = File(destDir, "app-debug.apk.tmp")
-        src.copyTo(dbgTmp, overwrite = true)
-        dbgTmp.renameTo(dbgTarget)
-
-        // Copy as app-release.apk if release doesn't exist
-        val relTarget = File(destDir, "app-release.apk")
-        if (!relTarget.exists() || relTarget.length() < 10_000_000) {
-          val relTmp = File(destDir, "app-release.apk.tmp")
-          src.copyTo(relTmp, overwrite = true)
-          relTmp.renameTo(relTarget)
+            // Copy as app-release.apk if release doesn't exist
+            val relTarget = File(destDir, "app-release.apk")
+            if (!relTarget.exists() || relTarget.length() < 10_000_000) {
+              val relTmp = File(destDir, "app-release.apk.tmp")
+              src.copyTo(relTmp, overwrite = true)
+              relTmp.renameTo(relTarget)
+            }
+          }
+        } catch (e: Exception) {
+          println("autoExportApkToSystemOutput note for $dirPath: ${e.message}")
         }
       }
     }
@@ -260,12 +267,20 @@ tasks.register("autoExportReleaseApkToSystemOutput") {
     val srcToUse = if (isValidZip(relSrc)) relSrc else dbgSrc
     if (isValidZip(srcToUse)) {
       targets.forEach { dirPath ->
-        val destDir = File(dirPath)
-        destDir.mkdirs()
-        val targetFile = File(destDir, "app-release.apk")
-        val tmpFile = File(destDir, "app-release.apk.tmp")
-        srcToUse.copyTo(tmpFile, overwrite = true)
-        tmpFile.renameTo(targetFile)
+        try {
+          val destDir = File(dirPath)
+          if (!destDir.exists()) {
+            destDir.mkdirs()
+          }
+          if (destDir.exists() && destDir.canWrite()) {
+            val targetFile = File(destDir, "app-release.apk")
+            val tmpFile = File(destDir, "app-release.apk.tmp")
+            srcToUse.copyTo(tmpFile, overwrite = true)
+            tmpFile.renameTo(targetFile)
+          }
+        } catch (e: Exception) {
+          println("autoExportReleaseApkToSystemOutput note for $dirPath: ${e.message}")
+        }
       }
     }
   }
