@@ -25,7 +25,15 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: '17'
-          cache: 'gradle'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Ensure Gradlew Executable
+        run: |
+          if [ -f "./gradlew" ]; then
+            chmod +x ./gradlew
+          fi
 
       - name: Automatically Extract Version from App
         id: version_extractor
@@ -48,41 +56,31 @@ jobs:
       - name: Prepare Signing Credentials
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           echo "Configuring release signing credentials..."
-          mkdir -p keystore
           if [ -n "$KEYSTORE_BASE64" ]; then
-            echo "$KEYSTORE_BASE64" | base64 -d > keystore/release.keystore
-            echo "RELEASE_STORE_FILE=$GITHUB_WORKSPACE/keystore/release.keystore" >> $GITHUB_ENV
-            echo "RELEASE_STORE_PASSWORD=$KEYSTORE_PASSWORD" >> $GITHUB_ENV
-            echo "RELEASE_KEY_ALIAS=$KEY_ALIAS" >> $GITHUB_ENV
-            echo "RELEASE_KEY_PASSWORD=$KEY_PASSWORD" >> $GITHUB_ENV
+            echo "Restoring keystore from KEYSTORE_BASE64 secret..."
+            echo "$KEYSTORE_BASE64" | base64 -d > debug.keystore
           elif [ -f "debug.keystore.base64" ]; then
-            echo "Using repository base64 keystore credentials..."
-            base64 -d debug.keystore.base64 > keystore/release.keystore
-            echo "RELEASE_STORE_FILE=$GITHUB_WORKSPACE/keystore/release.keystore" >> $GITHUB_ENV
-            echo "RELEASE_STORE_PASSWORD=android" >> $GITHUB_ENV
-            echo "RELEASE_KEY_ALIAS=androiddebugkey" >> $GITHUB_ENV
-            echo "RELEASE_KEY_PASSWORD=android" >> $GITHUB_ENV
+            echo "Decoding repository debug.keystore.base64..."
+            base64 -d debug.keystore.base64 > debug.keystore
           else
-            echo "Generating fallback release keystore..."
-            keytool -genkey -v -keystore keystore/release.keystore -alias aerokey \
+            echo "Generating standard debug.keystore..."
+            keytool -genkey -v -keystore debug.keystore -alias androiddebugkey \
               -keyalg RSA -keysize 2048 -validity 10000 \
-              -storepass aeroplayer -keypass aeroplayer \
-              -dname "CN=AeroPlayer, OU=AeroTech, O=AeroTech, L=Global, S=Global, C=US"
-            echo "RELEASE_STORE_FILE=$GITHUB_WORKSPACE/keystore/release.keystore" >> $GITHUB_ENV
-            echo "RELEASE_STORE_PASSWORD=aeroplayer" >> $GITHUB_ENV
-            echo "RELEASE_KEY_ALIAS=aerokey" >> $GITHUB_ENV
-            echo "RELEASE_KEY_PASSWORD=aeroplayer" >> $GITHUB_ENV
+              -storepass android -keypass android \
+              -dname "CN=Android Debug, O=Android, C=US"
           fi
+          # Ensure keystore is present across root, app/ module, and keystore/ subfolder
+          mkdir -p keystore app
+          cp debug.keystore keystore/release.keystore
+          cp debug.keystore app/debug.keystore
+          echo "Keystore verified at root:"
+          ls -lh debug.keystore app/debug.keystore keystore/release.keystore
 
       - name: Build Release APK
         run: |
           if [ -f "./gradlew" ]; then
-            chmod +x ./gradlew
             ./gradlew assembleRelease --stacktrace
           else
             gradle assembleRelease --stacktrace
@@ -98,6 +96,10 @@ jobs:
           if [ -z "$APK_SRC" ]; then
             APK_SRC=$(find output/ -name "*.apk" | head -n 1)
           fi
+          if [ -z "$APK_SRC" ]; then
+            echo "Error: No release APK found!"
+            exit 1
+          fi
           echo "Found APK: $APK_SRC"
           cp "$APK_SRC" "dist/AeroPlayer-${{ env.RELEASE_TAG }}.apk"
           cd dist
@@ -112,14 +114,15 @@ jobs:
           path: dist/*
           retention-days: 14
 
-      - name: Create GitHub Release
+      - name: Create or Update GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           name: "Aero Player ${{ env.RELEASE_TAG }}"
           draft: false
           prerelease: false
-          generate_release_notes: true
+          make_latest: true
+          generate_release_notes: false
           body: |
             ## 🍁 Aero Player ${{ env.RELEASE_TAG }}
 
