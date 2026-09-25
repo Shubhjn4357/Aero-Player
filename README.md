@@ -13,7 +13,7 @@
 
   <br/>
 
-  > ### 🍁 **Made with 🍁 By Shubh jain**
+  > ### **Made with 🍁 By Shubh jain**
 
   <p align="center">
     <b>Aero Player</b> is an ultra-modern, high-performance media player for Android engineered with a <b>standalone dual playback engine architecture</b> (Google Media3 ExoPlayer + Native LibVLC). Featuring fluid glassmorphic UI, custom subtitle rendering, 5-band parametric equalizer, smart folder management, and spring-animated floating pill controls.
@@ -25,25 +25,29 @@
 
 ## 📸 Showcase & Visual Tour
 
-<table align="center" style="border: none; text-align: center;">
+<table align="center" style="border: none; text-align: center; width: 100%;">
   <tr>
     <td width="50%" align="center">
-      <b>📁 1. Media Library & Smart Folders</b><br/><br/>
-      <img src="assets/screenshot1.png" width="100%" alt="Media Library & Smart Folder Management" style="border-radius: 16px; border: 1px solid #7E22CE;" />
+      <b>📁 1. Smart Folder Management & Media Organization</b><br/><br/>
+      <img src="assets/Screenshot_20260925-190307.png" width="100%" alt="Smart Folder Management & Media Directory Browser" style="border-radius: 16px; border: 1px solid #382A23;" />
     </td>
     <td width="50%" align="center">
-      <b>🚀 2. Standalone Dual-Engine Player</b><br/><br/>
-      <img src="assets/screenshot2.png" width="100%" alt="Standalone Dual Engine Player UI" style="border-radius: 16px; border: 1px solid #7E22CE;" />
+      <b>🎛️ 2. Quick Tools, Sound Equalizer & Streams</b><br/><br/>
+      <img src="assets/Screenshot_20260925-190325.png" width="100%" alt="Quick Tools, Equalizer & Network Streams" style="border-radius: 16px; border: 1px solid #382A23;" />
     </td>
   </tr>
   <tr>
-    <td width="50%" align="center">
-      <b>💬 3. Unified Subtitle & Typography Engine</b><br/><br/>
-      <img src="assets/screenshot3.png" width="100%" alt="Unified Subtitle Engine & Font Styler" style="border-radius: 16px; border: 1px solid #7E22CE;" />
+    <td colspan="2" align="center">
+      <br/>
+      <b>🎬 3. Immersive Landscape Player with Smooth Collapsible Control Pills</b><br/><br/>
+      <img src="assets/Screenshot_20260925-190211.png" width="100%" alt="Landscape Video Player with Collapsible Pills" style="border-radius: 16px; border: 1px solid #382A23;" />
     </td>
-    <td width="50%" align="center">
-      <b>🎚️ 4. Parametric Audio Suite & Gesture HUD</b><br/><br/>
-      <img src="assets/screenshot4.png" width="100%" alt="Parametric Audio Suite & Gesture Controls" style="border-radius: 16px; border: 1px solid #7E22CE;" />
+  </tr>
+  <tr>
+    <td colspan="2" align="center">
+      <br/>
+      <b>🚀 4. Aero Deck Pro Dashboard & Standalone Dual-Engine Switcher</b><br/><br/>
+      <img src="assets/Screenshot_20260925-190221.png" width="100%" alt="Aero Deck Pro Dashboard - ExoPlayer vs VLC Engine Toggle" style="border-radius: 16px; border: 1px solid #382A23;" />
     </td>
   </tr>
 </table>
@@ -52,7 +56,7 @@
 
 ## ⚡ Standalone Dual-Engine Architecture
 
-Aero Player integrates two completely independent industry-leading playback cores. You can seamlessly switch between engines mid-stream with sub-second resumption and zero frame buffer stutter:
+Aero Player integrates two completely independent playback engines. Switch between them on-the-fly via the **Aero Deck Pro Dashboard** with zero frame-buffer stutter and millisecond-accurate timestamp persistence:
 
 ```
                   ┌────────────────────────────────────────┐
@@ -75,14 +79,14 @@ Aero Player integrates two completely independent industry-leading playback core
 ```
 
 ### 1. ExoPlayer Core (Google Media3)
-- **Ultra-Efficient Pipeline**: Hardware-accelerated decoding with direct surface rendering.
-- **Dolby Audio Decoders**: Integrated Jellyfin FFmpeg extension for native Dolby Digital (AC3), Dolby Digital Plus (E-AC3), and DTS playback.
-- **HDR & Color Primaries**: Automatic tone-mapping and HDR10/Dolby Vision passthrough.
+- **Direct Surface Hardware Rendering**: Ultra-low battery consumption and zero frame drops on high-bitrate 4K UHD video streams.
+- **Dolby Audio Pipeline**: Native decoding for Dolby Digital (`AC3`), Dolby Digital Plus (`E-AC3`), and TrueHD audio tracks.
+- **Color Gamut**: Automatic tone-mapping for HDR10, HDR10+, and Dolby Vision content.
 
 ### 2. VLC Core (LibVLC 3.6 ARM64 Native)
-- **Universal Software Decoders**: Play any file format, container, or exotic codec (FLV, WMV, VOB, TS, RMVB, OGV, 3GP) without re-encoding.
-- **Network Streaming Protocols**: Full support for real-time live streams: RTSP, RTMP, HTTP Live Streaming (HLS), DASH, MMS, and UDP multicast.
-- **Embedded Audio & Subtitle Demuxing**: High-precision demuxing of complex multi-track Matroska (.mkv) files.
+- **Universal Codec Support**: Play any media container or legacy format without conversion: `.mkv`, `.flv`, `.wmv`, `.vob`, `.ts`, `.avi`, `.3gp`.
+- **Live Stream Protocols**: Real-time network stream playback over RTSP, RTMP, HTTP Live Streaming (HLS), MPEG-DASH, MMS, and UDP multicast.
+- **Direct Demuxing**: High-precision multi-track audio and subtitle extraction directly from container headers.
 
 ---
 
@@ -90,9 +94,8 @@ Aero Player integrates two completely independent industry-leading playback core
 
 ### 🎛️ Dynamic Floating Pill Controls
 - **Spring-Physics Motion**: Left and right floating pill containers powered by Compose Spring physics (`Spring.DampingRatioLowBouncy`).
-- **Smooth Collapsible Animations**: Fluid horizontal expand/shrink in landscape, vertical expand/shrink in portrait.
-- **Synchronized 180° Chevron Rotation**: Smooth vector rotation when expanding or collapsing secondary toolbars.
-- **Left Control Pill**: Playback speed (0.25x – 4.0x with pitch-preservation), A-B loop repetition, aspect ratio scaling (Fit, Crop, 16:9, 4:3, Fill), and Equalizer shortcut.
+- **Smooth Collapsible Animations**: Fluid horizontal expand/shrink in landscape, vertical expand/shrink in portrait with 180° chevron rotation.
+- **Left Control Pill**: Playback speed (0.25x – 4.0x with pitch preservation), A-B loop repetition, aspect ratio scaling (Fit, Crop, 16:9, 4:3, Fill), and Equalizer shortcut.
 - **Right Track Pill**: Audio track selector, Subtitle track selector, Screen orientation lock, and Picture-in-Picture trigger.
 
 ### 💬 Unified Subtitle Engine
@@ -102,22 +105,22 @@ Aero Player integrates two completely independent industry-leading playback core
 - **Encoding Detection**: Automatic charset negotiation with manual override (UTF-8, UTF-16, ISO-8859-1, Windows-1252, GBK, Big5).
 
 ### 🎚️ Parametric Audio Suite
-- **5-Band Equalizer**: 60Hz, 230Hz, 910Hz, 3.6kHz, and 14kHz adjustable bands.
-- **Bass Boost & Virtualizer**: Punchy low-end enhancement up to +15dB and 3D audio space virtualization.
-- **Audio Routing**: Multi-channel speaker mapping, headphone safety normalization, and seamless Bluetooth/wired headset transitions (`AUDIO_BECOMING_NOISY` handling).
+- **5-Band Equalizer**: 60Hz, 230Hz, 910Hz, 3.6kHz, and 14kHz adjustable bands with presets (Flat, Bass Boost, Cinema Surround, Vocal).
+- **Bass Boost & Virtualizer**: Low-end enhancement up to +15dB and 3D spatial virtualization.
+- **Audio Routing**: Headphone safety normalization and automatic pause/resume on headset disconnect (`AUDIO_BECOMING_NOISY`).
 
 ### 👆 Intuitive Gesture HUD
 - **Left Edge Swipe**: Screen brightness adjustments (0% – 100%) with haptic feedback.
-- **Right Edge Swipe**: Media volume control (0% – 100%) independent of ringer volume.
-- **Horizontal Scrubbing**: Rapid seek with thumbnail preview and elapsed/remaining timestamps.
+- **Right Edge Swipe**: Media volume control (0% – 100%) independent of system ringer volume.
+- **Horizontal Scrubbing**: Rapid seek with timeline preview and elapsed/remaining timestamps.
 - **Double-Tap Seeking**: Fast forward (+10s) and rewind (-10s).
 - **Pinch-to-Zoom**: Smooth zoom-in up to 300% on any video frame.
 
 ### 📂 Smart Media Library & Folder Organization
-- **Smart Folder Mode**: Group and view local videos organized by filesystem directories with badges and total durations.
+- **Smart Folder Mode**: Group and view local videos organized by filesystem directories with item count badges and total storage size.
 - **Instant Search & Multi-Criteria Sort**: Filter videos by name, date added, file size, or resolution.
 - **Comprehensive History & Bookmarks**: Resume video playback from the exact millisecond where you left off.
-- **Home Screen App Widgets**: 4x1 and 2x2 Android home screen interactive widgets.
+- **Home Screen App Widgets**: Interactive 4x1 and 2x2 Android home screen widgets.
 
 ### 🤖 CLI Automation Broadcast Receiver
 Automate testing, benchmarking, or headless playback control via ADB:
@@ -134,9 +137,9 @@ adb shell am broadcast -a com.aerotech.aeroplayer.player.VLC_CLI --es action "en
 
 ---
 
-## 🏷️ Package Migration to `com.aerotech.aeroplayer`
+## 🏷️ Package Architecture
 
-The codebase is structured under the official package namespace:
+The codebase is organized under `com.aerotech.aeroplayer`:
 ```
 com.aerotech.aeroplayer
  ├── cast               # Google Cast & Remote Media Routing
@@ -149,54 +152,30 @@ com.aerotech.aeroplayer
  └── util               # Content Resolvers, Format Detectors & Helpers
 ```
 
-### 🛠️ Single-Run Package Renaming Script
-To automate package and folder refactoring in a single command, run `./rename_package.sh`:
-```bash
-chmod +x ./rename_package.sh
-./rename_package.sh com.example com.aerotech.aeroplayer
-```
-The script updates all source files, manifests, Gradle configurations, and directory trees idempotently.
-
----
-
 ## 🚀 CI/CD Release Workflow
 
-Aero Player includes an enterprise-grade GitHub Actions workflow (`.github/workflows/release.yml`) for automated signed APK generation and release publishing.
+Aero Player includes an automated GitHub Actions workflow (`.github/workflows/release.yml`) that **automatically triggers on every push to `main`**:
+1. **Auto Version Extraction**: Directly extracts `versionName` (e.g. `1.4.6`) and `versionCode` from `app/build.gradle.kts`.
+2. **Build & Signing**: Compiles the release APK using JDK 17 and Gradle, decoding signing credentials securely from GitHub Secrets.
+3. **Artifact Generation**: Generates `AeroPlayer-v1.4.6.apk` along with SHA256 checksums.
+4. **GitHub Releases**: Publishes a tagged GitHub Release with downloadable APKs and changelog notes.
 
-### 🔑 Configuring GitHub Secrets
-Add the following secrets to your GitHub repository (`Settings -> Secrets and variables -> Actions`):
+### 🔑 GitHub Secrets Configuration
+Add the following optional secrets in GitHub (`Settings -> Secrets and variables -> Actions`):
 
 | Secret Name | Description | Example / Format |
 |---|---|---|
-| `KEYSTORE_BASE64` | Base64-encoded release `.keystore` or `.jks` file | `cat release.keystore \| base64 -w 0` |
+| `KEYSTORE_BASE64` | Base64-encoded release `.keystore` / `.jks` | `cat release.keystore \| base64 -w 0` |
 | `KEYSTORE_PASSWORD` | Password for the release keystore | `your_keystore_password` |
-| `KEY_ALIAS` | Key alias name inside the keystore | `aerokey` or `release_alias` |
+| `KEY_ALIAS` | Key alias name inside the keystore | `aerokey` |
 | `KEY_PASSWORD` | Password for the key alias | `your_key_password` |
 
 *(Note: If no secret is configured, the workflow uses the repository's fallback keystore for zero-setup builds).*
 
-### 🏷️ Triggering a Release
-Push a git version tag:
-```bash
-git tag -a v1.4.6 -m "Release v1.4.6: Standalone Dual-Engine Player"
-git push origin v1.4.6
-```
-The GitHub Action will:
-1. Compile the app with JDK 17 and Gradle.
-2. Sign and align `AeroPlayer-v1.4.6.apk`.
-3. Compute SHA256 checksums.
-4. Publish a GitHub Release with full release notes and downloadable APK artifacts.
-
 ---
 
-## 🛠️ Building & Development
+## 🛠️ Building Locally
 
-### Prerequisites
-- Android Studio Ladybug / Meerkat or Android SDK 36
-- Java Development Kit (JDK) 17+
-- Gradle 8.10+ / 9.x
-
-### Build Commands
 ```bash
 # Compile debug build
 gradle assembleDebug

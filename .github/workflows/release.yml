@@ -2,14 +2,9 @@ name: Release Build APK
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches:
+      - main
   workflow_dispatch:
-    inputs:
-      version_tag:
-        description: 'Release Tag Version (e.g. v1.4.6)'
-        required: true
-        default: 'v1.4.6'
 
 permissions:
   contents: write
@@ -32,8 +27,23 @@ jobs:
           java-version: '17'
           cache: 'gradle'
 
-      - name: Grant Execute Permission to Gradle Wrapper
-        run: chmod +x ./gradlew 2>/dev/null || chmod +x ./copy-apk.sh || true
+      - name: Automatically Extract Version from App
+        id: version_extractor
+        run: |
+          echo "Fetching version directly from app/build.gradle.kts..."
+          VERSION_NAME=$(grep -o 'versionName = "[^"]*"' app/build.gradle.kts | head -n 1 | cut -d '"' -f 2)
+          VERSION_CODE=$(grep -o 'versionCode = [0-9]*' app/build.gradle.kts | head -n 1 | awk '{print $3}')
+          if [ -z "$VERSION_NAME" ]; then
+            VERSION_NAME="1.4.6"
+          fi
+          RELEASE_TAG="v${VERSION_NAME}"
+          echo "Detected Version Name: ${VERSION_NAME}"
+          echo "Detected Version Code: ${VERSION_CODE}"
+          echo "Release Tag: ${RELEASE_TAG}"
+          echo "APP_VERSION=${VERSION_NAME}" >> $GITHUB_ENV
+          echo "RELEASE_TAG=${RELEASE_TAG}" >> $GITHUB_ENV
+          echo "version=${VERSION_NAME}" >> $GITHUB_OUTPUT
+          echo "tag=${RELEASE_TAG}" >> $GITHUB_OUTPUT
 
       - name: Prepare Signing Credentials
         env:
@@ -69,20 +79,10 @@ jobs:
             echo "RELEASE_KEY_PASSWORD=aeroplayer" >> $GITHUB_ENV
           fi
 
-      - name: Determine Version Tag
-        id: get_version
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TAG="${{ github.event.inputs.version_tag }}"
-          else
-            TAG="${GITHUB_REF#refs/tags/}"
-          fi
-          echo "RELEASE_VERSION=${TAG}" >> $GITHUB_ENV
-          echo "version=${TAG}" >> $GITHUB_OUTPUT
-
       - name: Build Release APK
         run: |
           if [ -f "./gradlew" ]; then
+            chmod +x ./gradlew
             ./gradlew assembleRelease --stacktrace
           else
             gradle assembleRelease --stacktrace
@@ -99,47 +99,47 @@ jobs:
             APK_SRC=$(find output/ -name "*.apk" | head -n 1)
           fi
           echo "Found APK: $APK_SRC"
-          cp "$APK_SRC" "dist/AeroPlayer-${{ env.RELEASE_VERSION }}.apk"
+          cp "$APK_SRC" "dist/AeroPlayer-${{ env.RELEASE_TAG }}.apk"
           cd dist
-          sha256sum "AeroPlayer-${{ env.RELEASE_VERSION }}.apk" > "AeroPlayer-${{ env.RELEASE_VERSION }}.apk.sha256"
+          sha256sum "AeroPlayer-${{ env.RELEASE_TAG }}.apk" > "AeroPlayer-${{ env.RELEASE_TAG }}.apk.sha256"
           echo "Artifacts prepared:"
           ls -la
 
       - name: Upload Artifact to Workflow
         uses: actions/upload-artifact@v4
         with:
-          name: AeroPlayer-APK
+          name: AeroPlayer-${{ env.RELEASE_TAG }}
           path: dist/*
           retention-days: 14
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         with:
-          tag_name: ${{ env.RELEASE_VERSION }}
-          name: "Aero Player ${{ env.RELEASE_VERSION }}"
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: "Aero Player ${{ env.RELEASE_TAG }}"
           draft: false
           prerelease: false
           generate_release_notes: true
           body: |
-            ## 🍁 Aero Player ${{ env.RELEASE_VERSION }}
+            ## 🍁 Aero Player ${{ env.RELEASE_TAG }}
 
             > **Made with 🍁 By Shubh jain**
 
             ### 🚀 Standalone Dual-Engine Video Player
-            - **Google Media3 ExoPlayer Engine**: Hardware-accelerated decoding, jellyfin Dolby Atmos/E-AC3 audio, and HDR10+ support.
-            - **Native LibVLC 3.6 Engine**: Built-in universal software decoders for FLV, MKV, AVI, TS, VOB, WMV, ISO, and network streams (RTSP, RTMP, MMS, UDP).
-            - **Instant Dynamic Engine Switching**: Swap engines instantly on-the-fly without dropping frame buffers.
+            - **Google Media3 ExoPlayer Engine**: Low-latency hardware rendering, Dolby AC3/E-AC3 audio decoding, and HDR10+ support.
+            - **Native LibVLC 3.6 Engine**: Built-in universal software codecs for MKV, FLV, WMV, VOB, TS, and live network streams (RTSP, RTMP, MMS, UDP).
+            - **Dynamic Engine Switcher**: Toggle engines on-the-fly via the Aero Deck Pro Dashboard.
 
-            ### ✨ Highlights & New Features in ${{ env.RELEASE_VERSION }}
+            ### ✨ Key Features
+            - **Folder Management**: Real-time folder scanning, file counts, and storage badges.
             - **Fluid Pill Animations**: Spring-based collapsible left and right controls in portrait and landscape with smooth 180° chevron rotation.
-            - **Unified Subtitle Engine**: Custom typography (Inter, Roboto, Monospace), outline, background opacity, and millisecond sync offset (-5000ms to +5000ms).
-            - **Parametric Audio Suite**: 5-Band Equalizer, Bass Boost (+15dB), and 3D Virtualizer.
+            - **Unified Subtitle Engine**: Custom typography (Inter, Roboto, Monospace), outline, background opacity, and millisecond sync offset.
+            - **Parametric Audio Suite**: 5-Band Equalizer, Bass Boost, and 3D Virtualizer.
             - **Intuitive Touch HUD**: Swipe left edge for Brightness, swipe right edge for Volume, horizontal scrub for Seek.
-            - **Clean Package Architecture**: Official package migration to `com.aerotech.aeroplayer`.
+            - **Official Package**: `com.aerotech.aeroplayer`.
 
             ### 📦 Verification & Checksums
             Verify the integrity of downloaded artifacts with the attached `.sha256` checksum file.
           files: |
-            dist/AeroPlayer-${{ env.RELEASE_VERSION }}.apk
-            dist/AeroPlayer-${{ env.RELEASE_VERSION }}.apk.sha256
+            dist/AeroPlayer-${{ env.RELEASE_TAG }}.apk
+            dist/AeroPlayer-${{ env.RELEASE_TAG }}.apk.sha256
