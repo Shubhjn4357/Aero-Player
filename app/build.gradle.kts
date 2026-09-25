@@ -11,15 +11,15 @@ plugins {
 }
 
 android {
-  namespace = "com.example"
+  namespace = "com.aerotech.aeroplayer"
   compileSdk = 36
 
   defaultConfig {
-    applicationId = "com.aistudio.vlcaiplayer.pwtqy"
+    applicationId = "com.aerotech.aeroplayer"
     minSdk = 24
     targetSdk = 36
-    versionCode = 1
-    versionName = "1.0"
+    versionCode = 10406
+    versionName = "1.4.6"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     ndk {

@@ -1,0 +1,145 @@
+name: Release Build APK
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version_tag:
+        description: 'Release Tag Version (e.g. v1.4.6)'
+        required: true
+        default: 'v1.4.6'
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    name: Build & Release Signed APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Grant Execute Permission to Gradle Wrapper
+        run: chmod +x ./gradlew 2>/dev/null || chmod +x ./copy-apk.sh || true
+
+      - name: Prepare Signing Credentials
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          echo "Configuring release signing credentials..."
+          mkdir -p keystore
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > keystore/release.keystore
+            echo "RELEASE_STORE_FILE=$GITHUB_WORKSPACE/keystore/release.keystore" >> $GITHUB_ENV
+            echo "RELEASE_STORE_PASSWORD=$KEYSTORE_PASSWORD" >> $GITHUB_ENV
+            echo "RELEASE_KEY_ALIAS=$KEY_ALIAS" >> $GITHUB_ENV
+            echo "RELEASE_KEY_PASSWORD=$KEY_PASSWORD" >> $GITHUB_ENV
+          elif [ -f "debug.keystore.base64" ]; then
+            echo "Using repository base64 keystore credentials..."
+            base64 -d debug.keystore.base64 > keystore/release.keystore
+            echo "RELEASE_STORE_FILE=$GITHUB_WORKSPACE/keystore/release.keystore" >> $GITHUB_ENV
+            echo "RELEASE_STORE_PASSWORD=android" >> $GITHUB_ENV
+            echo "RELEASE_KEY_ALIAS=androiddebugkey" >> $GITHUB_ENV
+            echo "RELEASE_KEY_PASSWORD=android" >> $GITHUB_ENV
+          else
+            echo "Generating fallback release keystore..."
+            keytool -genkey -v -keystore keystore/release.keystore -alias aerokey \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass aeroplayer -keypass aeroplayer \
+              -dname "CN=AeroPlayer, OU=AeroTech, O=AeroTech, L=Global, S=Global, C=US"
+            echo "RELEASE_STORE_FILE=$GITHUB_WORKSPACE/keystore/release.keystore" >> $GITHUB_ENV
+            echo "RELEASE_STORE_PASSWORD=aeroplayer" >> $GITHUB_ENV
+            echo "RELEASE_KEY_ALIAS=aerokey" >> $GITHUB_ENV
+            echo "RELEASE_KEY_PASSWORD=aeroplayer" >> $GITHUB_ENV
+          fi
+
+      - name: Determine Version Tag
+        id: get_version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ github.event.inputs.version_tag }}"
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
+          echo "RELEASE_VERSION=${TAG}" >> $GITHUB_ENV
+          echo "version=${TAG}" >> $GITHUB_OUTPUT
+
+      - name: Build Release APK
+        run: |
+          if [ -f "./gradlew" ]; then
+            ./gradlew assembleRelease --stacktrace
+          else
+            gradle assembleRelease --stacktrace
+          fi
+
+      - name: Locate and Package Release APK
+        run: |
+          mkdir -p dist
+          APK_SRC=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
+          if [ -z "$APK_SRC" ]; then
+            APK_SRC=$(find . -name "*release*.apk" | head -n 1)
+          fi
+          if [ -z "$APK_SRC" ]; then
+            APK_SRC=$(find output/ -name "*.apk" | head -n 1)
+          fi
+          echo "Found APK: $APK_SRC"
+          cp "$APK_SRC" "dist/AeroPlayer-${{ env.RELEASE_VERSION }}.apk"
+          cd dist
+          sha256sum "AeroPlayer-${{ env.RELEASE_VERSION }}.apk" > "AeroPlayer-${{ env.RELEASE_VERSION }}.apk.sha256"
+          echo "Artifacts prepared:"
+          ls -la
+
+      - name: Upload Artifact to Workflow
+        uses: actions/upload-artifact@v4
+        with:
+          name: AeroPlayer-APK
+          path: dist/*
+          retention-days: 14
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        with:
+          tag_name: ${{ env.RELEASE_VERSION }}
+          name: "Aero Player ${{ env.RELEASE_VERSION }}"
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          body: |
+            ## 🍁 Aero Player ${{ env.RELEASE_VERSION }}
+
+            > **Made with 🍁 By Shubh jain**
+
+            ### 🚀 Standalone Dual-Engine Video Player
+            - **Google Media3 ExoPlayer Engine**: Hardware-accelerated decoding, jellyfin Dolby Atmos/E-AC3 audio, and HDR10+ support.
+            - **Native LibVLC 3.6 Engine**: Built-in universal software decoders for FLV, MKV, AVI, TS, VOB, WMV, ISO, and network streams (RTSP, RTMP, MMS, UDP).
+            - **Instant Dynamic Engine Switching**: Swap engines instantly on-the-fly without dropping frame buffers.
+
+            ### ✨ Highlights & New Features in ${{ env.RELEASE_VERSION }}
+            - **Fluid Pill Animations**: Spring-based collapsible left and right controls in portrait and landscape with smooth 180° chevron rotation.
+            - **Unified Subtitle Engine**: Custom typography (Inter, Roboto, Monospace), outline, background opacity, and millisecond sync offset (-5000ms to +5000ms).
+            - **Parametric Audio Suite**: 5-Band Equalizer, Bass Boost (+15dB), and 3D Virtualizer.
+            - **Intuitive Touch HUD**: Swipe left edge for Brightness, swipe right edge for Volume, horizontal scrub for Seek.
+            - **Clean Package Architecture**: Official package migration to `com.aerotech.aeroplayer`.
+
+            ### 📦 Verification & Checksums
+            Verify the integrity of downloaded artifacts with the attached `.sha256` checksum file.
+          files: |
+            dist/AeroPlayer-${{ env.RELEASE_VERSION }}.apk
+            dist/AeroPlayer-${{ env.RELEASE_VERSION }}.apk.sha256

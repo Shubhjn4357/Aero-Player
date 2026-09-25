@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#180828"/>
+      <stop offset="100%" stop-color="#080214"/>
+    </linearGradient>
+    <linearGradient id="playGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#C084FC"/>
+      <stop offset="50%" stop-color="#9333EA"/>
+      <stop offset="100%" stop-color="#6B21A8"/>
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="16" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bg)" stroke="#9333EA" stroke-width="6" stroke-opacity="0.3"/>
+  <!-- Aerodynamic Play Symbol -->
+  <path d="M180,130 C180,118 194,110 204,118 L380,240 C390,248 390,264 380,272 L204,394 C194,402 180,394 180,382 L230,256 Z" fill="url(#playGrad)" filter="url(#glow)"/>
+  <path d="M204,118 L380,240 C385,244 387,250 386,256 L230,256 L180,130 C180,118 194,110 204,118 Z" fill="#E9D5FF" fill-opacity="0.45"/>
+  <!-- Aero Wing Accent -->
+  <path d="M140,165 L170,195 L170,317 L140,347" stroke="#A855F7" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" stroke-opacity="0.7"/>
+</svg>

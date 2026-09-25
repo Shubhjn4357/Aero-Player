@@ -173,14 +173,14 @@
             android:exported="true">
             <intent-filter>
                 <action android:name="android.media.AUDIO_BECOMING_NOISY" />
-                <action android:name="com.example.ACTION_PLAY_PAUSE" />
-                <action android:name="com.example.ACTION_PLAY" />
-                <action android:name="com.example.ACTION_PAUSE" />
-                <action android:name="com.example.ACTION_PREV" />
-                <action android:name="com.example.ACTION_NEXT" />
-                <action android:name="com.example.ACTION_SEEK_FORWARD" />
-                <action android:name="com.example.ACTION_SEEK_BACKWARD" />
-                <action android:name="com.example.ACTION_STOP" />
+                <action android:name="com.aerotech.aeroplayer.ACTION_PLAY_PAUSE" />
+                <action android:name="com.aerotech.aeroplayer.ACTION_PLAY" />
+                <action android:name="com.aerotech.aeroplayer.ACTION_PAUSE" />
+                <action android:name="com.aerotech.aeroplayer.ACTION_PREV" />
+                <action android:name="com.aerotech.aeroplayer.ACTION_NEXT" />
+                <action android:name="com.aerotech.aeroplayer.ACTION_SEEK_FORWARD" />
+                <action android:name="com.aerotech.aeroplayer.ACTION_SEEK_BACKWARD" />
+                <action android:name="com.aerotech.aeroplayer.ACTION_STOP" />
             </intent-filter>
         </receiver>
 
@@ -210,11 +210,11 @@
 
         <!-- CLI Broadcast Receiver for ADB and Terminal Automation -->
         <receiver
-            android:name="com.example.player.VlcCliReceiver"
+            android:name="com.aerotech.aeroplayer.player.VlcCliReceiver"
             android:exported="true">
             <intent-filter>
-                <action android:name="com.example.player.VLC_CLI" />
-                <action android:name="com.example.player.MEDIA_CLI" />
+                <action android:name="com.aerotech.aeroplayer.player.VLC_CLI" />
+                <action android:name="com.aerotech.aeroplayer.player.MEDIA_CLI" />
             </intent-filter>
         </receiver>
     </application>
