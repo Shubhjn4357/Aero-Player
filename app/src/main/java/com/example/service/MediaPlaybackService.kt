@@ -101,45 +101,64 @@ class MediaPlaybackService : Service() {
                         mediaButtonIntent.getParcelableExtra(Intent.EXTRA_KEY_EVENT) as? KeyEvent
                     }
 
-                    if (keyEvent != null && keyEvent.action == KeyEvent.ACTION_DOWN) {
-                        when (keyEvent.keyCode) {
-                            KeyEvent.KEYCODE_HEADSETHOOK -> {
-                                PlayerControlBridge.onHeadsetHookClick()
-                                return true
+                    if (keyEvent != null) {
+                        if (keyEvent.action == KeyEvent.ACTION_DOWN) {
+                            when (keyEvent.keyCode) {
+                                KeyEvent.KEYCODE_HEADSETHOOK -> {
+                                    PlayerControlBridge.onHeadsetHookClick()
+                                    return true
+                                }
+                                KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
+                                    PlayerControlBridge.playPause()
+                                    return true
+                                }
+                                KeyEvent.KEYCODE_MEDIA_PLAY -> {
+                                    PlayerControlBridge.play()
+                                    return true
+                                }
+                                KeyEvent.KEYCODE_MEDIA_PAUSE -> {
+                                    PlayerControlBridge.pause()
+                                    return true
+                                }
+                                KeyEvent.KEYCODE_MEDIA_NEXT,
+                                KeyEvent.KEYCODE_MEDIA_SKIP_FORWARD -> {
+                                    PlayerControlBridge.next()
+                                    return true
+                                }
+                                KeyEvent.KEYCODE_MEDIA_PREVIOUS,
+                                KeyEvent.KEYCODE_MEDIA_SKIP_BACKWARD -> {
+                                    PlayerControlBridge.prev()
+                                    return true
+                                }
+                                KeyEvent.KEYCODE_MEDIA_STOP -> {
+                                    PlayerControlBridge.pause()
+                                    return true
+                                }
+                                KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> {
+                                    PlayerControlBridge.seekBy(10000L)
+                                    return true
+                                }
+                                KeyEvent.KEYCODE_MEDIA_REWIND -> {
+                                    PlayerControlBridge.seekBy(-10000L)
+                                    return true
+                                }
                             }
-                            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
-                                PlayerControlBridge.playPause()
-                                return true
-                            }
-                            KeyEvent.KEYCODE_MEDIA_PLAY -> {
-                                PlayerControlBridge.play()
-                                return true
-                            }
-                            KeyEvent.KEYCODE_MEDIA_PAUSE -> {
-                                PlayerControlBridge.pause()
-                                return true
-                            }
-                            KeyEvent.KEYCODE_MEDIA_NEXT,
-                            KeyEvent.KEYCODE_MEDIA_SKIP_FORWARD -> {
-                                PlayerControlBridge.next()
-                                return true
-                            }
-                            KeyEvent.KEYCODE_MEDIA_PREVIOUS,
-                            KeyEvent.KEYCODE_MEDIA_SKIP_BACKWARD -> {
-                                PlayerControlBridge.prev()
-                                return true
-                            }
-                            KeyEvent.KEYCODE_MEDIA_STOP -> {
-                                PlayerControlBridge.pause()
-                                return true
-                            }
-                            KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> {
-                                PlayerControlBridge.seekBy(10000L)
-                                return true
-                            }
-                            KeyEvent.KEYCODE_MEDIA_REWIND -> {
-                                PlayerControlBridge.seekBy(-10000L)
-                                return true
+                        } else if (keyEvent.action == KeyEvent.ACTION_UP) {
+                            // Consume ACTION_UP for media keys to prevent super from triggering reverse actions
+                            when (keyEvent.keyCode) {
+                                KeyEvent.KEYCODE_HEADSETHOOK,
+                                KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+                                KeyEvent.KEYCODE_MEDIA_PLAY,
+                                KeyEvent.KEYCODE_MEDIA_PAUSE,
+                                KeyEvent.KEYCODE_MEDIA_NEXT,
+                                KeyEvent.KEYCODE_MEDIA_SKIP_FORWARD,
+                                KeyEvent.KEYCODE_MEDIA_PREVIOUS,
+                                KeyEvent.KEYCODE_MEDIA_SKIP_BACKWARD,
+                                KeyEvent.KEYCODE_MEDIA_STOP,
+                                KeyEvent.KEYCODE_MEDIA_FAST_FORWARD,
+                                KeyEvent.KEYCODE_MEDIA_REWIND -> {
+                                    return true
+                                }
                             }
                         }
                     }
@@ -280,6 +299,28 @@ class MediaPlaybackService : Service() {
             currentMediaItem = item
             isPlaybackActive = isPlaying
             showSeekButtons = seekButtonsEnabled
+
+            // Synchronize active MediaSession playback state with current playing/paused status
+            activeSession?.let { session ->
+                val state = if (isPlaying) PlaybackStateCompat.STATE_PLAYING else PlaybackStateCompat.STATE_PAUSED
+                val actions = PlaybackStateCompat.ACTION_PLAY or
+                        PlaybackStateCompat.ACTION_PAUSE or
+                        PlaybackStateCompat.ACTION_PLAY_PAUSE or
+                        PlaybackStateCompat.ACTION_SKIP_TO_NEXT or
+                        PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS or
+                        PlaybackStateCompat.ACTION_SEEK_TO or
+                        PlaybackStateCompat.ACTION_FAST_FORWARD or
+                        PlaybackStateCompat.ACTION_REWIND or
+                        PlaybackStateCompat.ACTION_STOP
+
+                session.setPlaybackState(
+                    PlaybackStateCompat.Builder()
+                        .setActions(actions)
+                        .setState(state, PlaybackStateCompat.PLAYBACK_POSITION_UNKNOWN, 1.0f)
+                        .build()
+                )
+                session.isActive = true
+            }
 
             if (item == null) {
                 stopPlaybackService(context)

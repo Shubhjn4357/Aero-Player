@@ -16,6 +16,8 @@ import org.videolan.libvlc.Media
 import org.videolan.libvlc.MediaPlayer
 import org.videolan.libvlc.interfaces.IMedia
 import org.videolan.libvlc.util.VLCVideoLayout
+import android.view.SurfaceHolder
+import android.view.SurfaceView
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -45,6 +47,7 @@ class VlcPlayerWrapper(private val context: Context) {
         private set
 
     private var currentPfd: ParcelFileDescriptor? = null
+    private var currentAfd: android.content.res.AssetFileDescriptor? = null
 
     var currentPlayingUri: String? = null
         private set
@@ -53,6 +56,9 @@ class VlcPlayerWrapper(private val context: Context) {
         private set
 
     var isBuffering: Boolean = false
+        private set
+
+    var isEnded: Boolean = false
         private set
 
     var currentPositionMs: Long = 0L
@@ -238,6 +244,8 @@ class VlcPlayerWrapper(private val context: Context) {
     var onTracksChanged: (() -> Unit)? = null
 
     private var attachedLayout: VLCVideoLayout? = null
+    private var attachedSurfaceView: SurfaceView? = null
+    private var attachedSurfaceHolder: SurfaceHolder? = null
 
     private val playerScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val isInitialized = AtomicBoolean(false)
@@ -284,59 +292,20 @@ class VlcPlayerWrapper(private val context: Context) {
     }
 
     private var lastTrackNotifyTime: Long = 0L
+    private var hasRetriedWithSoftwareDecoder: Boolean = false
 
     private fun buildLibVlcOptions(): ArrayList<String> {
         val options = ArrayList<String>()
+        options.add("--no-drop-late-frames")
+        options.add("--no-skip-frames")
         options.add("--audio-time-stretch")
-        options.add("--file-caching=300")
-        options.add("--network-caching=1000")
-        options.add("--drop-late-frames")
-        options.add("--skip-frames")
-        options.add("--video-fast-seek")
+        options.add("--http-reconnect")
+        options.add("--network-caching=2000")
+        options.add("--file-caching=2000")
+        options.add("--clock-jitter=0")
 
         val encoding = if (currentSubtitleEncoding.isBlank()) "UTF-8" else currentSubtitleEncoding
         options.add("--subsdec-encoding=$encoding")
-
-        val sizeInt = currentSubtitleSizeSp.toInt().coerceIn(10, 60)
-        options.add("--freetype-fontsize=$sizeInt")
-        options.add("--freetype-rel-fontsize=$sizeInt")
-
-        val colorInt = parseRgbColor(currentSubtitleTextColor, 0xFFFFFF)
-        options.add("--freetype-color=$colorInt")
-
-        val opacityInt = (currentSubtitleOpacity * 255).toInt().coerceIn(0, 255)
-        options.add("--freetype-opacity=$opacityInt")
-
-        if (currentSubtitleBgColor.isNotBlank() && currentSubtitleBgColor != "#00000000" && currentSubtitleBgOpacity > 0.01f) {
-            val bgColorInt = parseRgbColor(currentSubtitleBgColor, 0x000000)
-            val bgOpacityInt = (currentSubtitleBgOpacity * 255).toInt().coerceIn(0, 255)
-            options.add("--freetype-background-color=$bgColorInt")
-            options.add("--freetype-background-opacity=$bgOpacityInt")
-        } else {
-            options.add("--freetype-background-opacity=0")
-        }
-
-        if (currentSubtitleOutlineColor.isNotBlank() && currentSubtitleOutlineColor != "#00000000") {
-            val outlineColorInt = parseRgbColor(currentSubtitleOutlineColor, 0x000000)
-            options.add("--freetype-outline-color=$outlineColorInt")
-            options.add("--freetype-outline-thickness=2")
-        } else {
-            options.add("--freetype-outline-thickness=0")
-        }
-
-        if (currentSubtitleShadowColor.isNotBlank() && currentSubtitleShadowColor != "#00000000") {
-            val shadowColorInt = parseRgbColor(currentSubtitleShadowColor, 0x000000)
-            options.add("--freetype-shadow-color=$shadowColorInt")
-            options.add("--freetype-shadow-angle=45")
-            options.add("--freetype-shadow-distance=0.06")
-        }
-
-        if (currentSubtitleFontStyle == "Bold" || currentSubtitleFontStyle == "Bold Italic") {
-            options.add("--freetype-bold")
-        }
-
-        val marginPx = (currentSubtitleVerticalOffset * 200).toInt().coerceIn(0, 400)
-        options.add("--sub-margin=$marginPx")
 
         return options
     }
@@ -348,16 +317,47 @@ class VlcPlayerWrapper(private val context: Context) {
     @Synchronized
     private fun initLibVlcSync() {
         if (isInitialized.get() && libVLC != null && mediaPlayer != null) return
+
+        var vlc: LibVLC? = null
         try {
             val options = buildLibVlcOptions()
-            val vlc = LibVLC(context, options)
-            val player = MediaPlayer(vlc)
-            setupMediaPlayerListeners(player)
-            libVLC = vlc
-            mediaPlayer = player
-            isInitialized.set(true)
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to initialize LibVLC engine", e)
+            vlc = LibVLC(context, options)
+        } catch (e: Throwable) {
+            Log.w(TAG, "LibVLC failed with configured options, falling back to standard safe options", e)
+            try {
+                val fallbackOptions = arrayListOf(
+                    "--no-drop-late-frames",
+                    "--no-skip-frames",
+                    "--audio-time-stretch",
+                    "--http-reconnect"
+                )
+                vlc = LibVLC(context, fallbackOptions)
+            } catch (e2: Throwable) {
+                Log.w(TAG, "LibVLC failed with fallback options, falling back to default constructor", e2)
+                try {
+                    vlc = LibVLC(context)
+                } catch (e3: Throwable) {
+                    Log.e(TAG, "LibVLC failed to instantiate completely", e3)
+                }
+            }
+        }
+
+        if (vlc != null) {
+            try {
+                val player = MediaPlayer(vlc)
+                setupMediaPlayerListeners(player)
+                libVLC = vlc
+                mediaPlayer = player
+                isInitialized.set(true)
+                Log.i(TAG, "LibVLC engine initialized successfully")
+            } catch (e: Throwable) {
+                Log.e(TAG, "Failed to create MediaPlayer from LibVLC instance", e)
+                try {
+                    vlc.release()
+                } catch (relEx: Exception) {
+                    Log.w(TAG, "Error releasing unused LibVLC instance", relEx)
+                }
+            }
         }
     }
 
@@ -366,8 +366,16 @@ class VlcPlayerWrapper(private val context: Context) {
             player.setEventListener { event ->
                 when (event.type) {
                     MediaPlayer.Event.Playing -> {
+                        android.util.Log.d("VLC_LOG", "LibVLC successfully started playing tracks")
                         isPlaying = true
                         isBuffering = false
+                        isEnded = false
+                        val dur = player.length
+                        if (dur > 0L) {
+                            durationMs = dur
+                            onDurationChanged?.invoke(dur)
+                            onPositionUpdated?.invoke(currentPositionMs, dur)
+                        }
                         try {
                             if (targetPlaybackSpeed != 1.0f) {
                                 player.rate = targetPlaybackSpeed
@@ -387,10 +395,17 @@ class VlcPlayerWrapper(private val context: Context) {
                                 pendingInitialSeekMs = 0L
                                 player.time = seekTarget
                             }
+                            player.updateVideoSurfaces()
                         } catch (e: Exception) {}
                         onIsPlayingChanged?.invoke(true)
                         onBufferingChanged?.invoke(false)
                         onPlaybackStateChanged?.invoke(true, false)
+                        try {
+                            val chapters = getMediaChapters()
+                            if (chapters.isNotEmpty()) {
+                                onChaptersDiscovered?.invoke(chapters)
+                            }
+                        } catch (e: Exception) {}
                     }
                     MediaPlayer.Event.Paused -> {
                         isPlaying = false
@@ -408,6 +423,7 @@ class VlcPlayerWrapper(private val context: Context) {
                     }
                     MediaPlayer.Event.Buffering -> {
                         val bufferPercent = event.buffering
+                        android.util.Log.d("VLC_LOG", "Buffering: $bufferPercent%")
                         isBuffering = bufferPercent < 100f
                         onBufferingChanged?.invoke(isBuffering)
                         onPlaybackStateChanged?.invoke(isPlaying, isBuffering)
@@ -415,7 +431,7 @@ class VlcPlayerWrapper(private val context: Context) {
                     MediaPlayer.Event.TimeChanged -> {
                         currentPositionMs = event.timeChanged
                         val dur = player.length
-                        if (dur > 0) {
+                        if (dur > 0L && (durationMs <= 0L || durationMs != dur)) {
                             durationMs = dur
                             onDurationChanged?.invoke(dur)
                         }
@@ -424,7 +440,7 @@ class VlcPlayerWrapper(private val context: Context) {
                     }
                     MediaPlayer.Event.PositionChanged -> {
                         val dur = player.length
-                        if (dur > 0) {
+                        if (dur > 0L) {
                             durationMs = dur
                             currentPositionMs = (event.positionChanged * dur).toLong()
                             onDurationChanged?.invoke(dur)
@@ -432,9 +448,23 @@ class VlcPlayerWrapper(private val context: Context) {
                             onPositionUpdated?.invoke(currentPositionMs, durationMs)
                         }
                     }
+                    MediaPlayer.Event.LengthChanged -> {
+                        val len = event.lengthChanged
+                        if (len > 0L) {
+                            durationMs = len
+                            onDurationChanged?.invoke(len)
+                            onPositionUpdated?.invoke(currentPositionMs, len)
+                        }
+                    }
+                    MediaPlayer.Event.Vout -> {
+                        try {
+                            player.updateVideoSurfaces()
+                        } catch (e: Exception) {}
+                    }
                     MediaPlayer.Event.EndReached -> {
                         isPlaying = false
                         isBuffering = false
+                        isEnded = true
                         onIsPlayingChanged?.invoke(false)
                         onBufferingChanged?.invoke(false)
                         onPlaybackEnded?.invoke()
@@ -442,10 +472,37 @@ class VlcPlayerWrapper(private val context: Context) {
                         onPlaybackStateChanged?.invoke(false, false)
                     }
                     MediaPlayer.Event.EncounteredError -> {
+                        android.util.Log.e("VLC_ERROR", "LibVLC encountered a critical playback error for uri: $currentPlayingUri")
                         isPlaying = false
                         isBuffering = false
                         onIsPlayingChanged?.invoke(false)
                         onBufferingChanged?.invoke(false)
+                        val currentUri = currentPlayingUri
+                        if (!hasRetriedWithSoftwareDecoder && currentUri != null) {
+                            hasRetriedWithSoftwareDecoder = true
+                            Log.w(TAG, "LibVLC encountered an error with hardware acceleration, falling back to software decoding")
+                            playerScope.launch(Dispatchers.IO) {
+                                playMediaUriInternal(
+                                    uriString = currentUri,
+                                    path = null,
+                                    hardwareAccelerated = false,
+                                    initialSeekMs = currentPositionMs.coerceAtLeast(pendingInitialSeekMs),
+                                    subtitleSizeSp = currentSubtitleSizeSp,
+                                    subtitleTextColorHex = currentSubtitleTextColor,
+                                    subtitleBgColorHex = currentSubtitleBgColor,
+                                    subtitleOutlineColorHex = currentSubtitleOutlineColor,
+                                    subtitleShadowColorHex = currentSubtitleShadowColor,
+                                    subtitleEncoding = currentSubtitleEncoding,
+                                    subtitleVerticalOffset = currentSubtitleVerticalOffset,
+                                    subtitleOpacity = currentSubtitleOpacity,
+                                    subtitleBgOpacity = currentSubtitleBgOpacity,
+                                    subtitleFontStyle = currentSubtitleFontStyle,
+                                    initialAudioTrackId = targetAudioTrackId,
+                                    initialSubtitleTrackId = targetSubtitleTrackId
+                                )
+                            }
+                            return@setEventListener
+                        }
                         val msg = "VLC encountered an error during media playback"
                         onError?.invoke(msg)
                         onErrorOccurred?.invoke(msg)
@@ -474,21 +531,75 @@ class VlcPlayerWrapper(private val context: Context) {
         }
     }
 
-    fun attachLayout(layout: VLCVideoLayout) {
+    fun attachSurface(surfaceView: SurfaceView, holder: SurfaceHolder) {
+        try {
+            attachedSurfaceView = surfaceView
+            attachedSurfaceHolder = holder
+            val player = mediaPlayer ?: run {
+                initLibVlcSync()
+                mediaPlayer
+            } ?: return
+
+            val vlcVout = player.vlcVout
+            if (vlcVout.areViewsAttached()) {
+                vlcVout.detachViews()
+            }
+            vlcVout.setVideoView(surfaceView)
+            vlcVout.attachViews()
+            if (surfaceView.width > 0 && surfaceView.height > 0) {
+                vlcVout.setWindowSize(surfaceView.width, surfaceView.height)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error attaching SurfaceView to LibVLC", e)
+        }
+    }
+
+    fun onSurfaceSizeChanged(width: Int, height: Int) {
         try {
             val player = mediaPlayer ?: return
-            if (attachedLayout === layout && player.vlcVout.areViewsAttached()) {
+            if (width > 0 && height > 0) {
+                player.vlcVout.setWindowSize(width, height)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error updating window size on LibVLC vlcVout", e)
+        }
+    }
+
+    fun detachSurface(surfaceView: SurfaceView? = null) {
+        try {
+            if (surfaceView != null && attachedSurfaceView !== surfaceView) {
                 return
             }
+            val player = mediaPlayer
+            if (player != null && player.vlcVout.areViewsAttached()) {
+                player.vlcVout.detachViews()
+            }
+            attachedSurfaceView = null
+            attachedSurfaceHolder = null
+        } catch (e: Exception) {
+            Log.e(TAG, "Error detaching SurfaceView from LibVLC", e)
+        }
+    }
+
+    fun attachLayout(layout: VLCVideoLayout) {
+        try {
             val previousLayout = attachedLayout
             attachedLayout = layout
+            val player = mediaPlayer ?: run {
+                initLibVlcSync()
+                mediaPlayer
+            } ?: return
+
+            if (previousLayout === layout && player.vlcVout.areViewsAttached()) {
+                return
+            }
             if (player.vlcVout.areViewsAttached()) {
                 if (previousLayout !== layout) {
                     player.detachViews()
-                    player.attachViews(layout, null, true, false)
+                    player.attachViews(layout, null, true, true)
                 }
             } else {
-                player.attachViews(layout, null, true, false)
+                player.attachViews(layout, null, true, true)
             }
             layout.post {
                 layout.requestLayout()
@@ -517,15 +628,27 @@ class VlcPlayerWrapper(private val context: Context) {
     }
 
     fun refreshVideoSurface() {
-        val layout = attachedLayout ?: return
+        val surface = attachedSurfaceView
+        val layout = attachedLayout
         val player = mediaPlayer ?: return
         playerScope.launch(Dispatchers.Main) {
             try {
-                if (!player.vlcVout.areViewsAttached()) {
-                    player.attachViews(layout, null, true, false)
+                if (surface != null) {
+                    val vlcVout = player.vlcVout
+                    if (!vlcVout.areViewsAttached()) {
+                        vlcVout.setVideoView(surface)
+                        vlcVout.attachViews()
+                        if (surface.width > 0 && surface.height > 0) {
+                            vlcVout.setWindowSize(surface.width, surface.height)
+                        }
+                    }
+                } else if (layout != null) {
+                    if (!player.vlcVout.areViewsAttached()) {
+                        player.attachViews(layout, null, true, false)
+                    }
+                    layout.requestLayout()
+                    layout.invalidate()
                 }
-                layout.requestLayout()
-                layout.invalidate()
             } catch (e: Exception) {
                 Log.e(TAG, "Error refreshing video surface", e)
             }
@@ -553,6 +676,7 @@ class VlcPlayerWrapper(private val context: Context) {
         subtitleBgOpacity: Float = currentSubtitleBgOpacity,
         subtitleFontStyle: String = currentSubtitleFontStyle
     ) = withContext(Dispatchers.IO) {
+        hasRetriedWithSoftwareDecoder = false
         ensureInitialized()
         if (initialAudioTrackId >= 0) targetAudioTrackId = initialAudioTrackId
         if (initialSubtitleTrackId >= -1) targetSubtitleTrackId = initialSubtitleTrackId
@@ -702,47 +826,131 @@ class VlcPlayerWrapper(private val context: Context) {
                 player.stop()
             } catch (e: Exception) {}
 
-            // Clean up previous ParcelFileDescriptor if any
+            // Clean up previous ParcelFileDescriptor or AssetFileDescriptor if any
             try {
                 currentPfd?.close()
             } catch (e: Exception) {}
             currentPfd = null
+            try {
+                currentAfd?.close()
+            } catch (e: Exception) {}
+            currentAfd = null
+
+            // Clean up previous file descriptors safely
+            try {
+                currentPfd?.close()
+            } catch (e: Exception) {}
+            currentPfd = null
+            try {
+                currentAfd?.close()
+            } catch (e: Exception) {}
+            currentAfd = null
 
             val parsedUri = try { Uri.parse(uriString) } catch (e: Exception) { Uri.EMPTY }
+            val isRemote = uriString.startsWith("http://") || uriString.startsWith("https://") ||
+                uriString.startsWith("rtsp://") || uriString.startsWith("rtmp://") || uriString.startsWith("mms://")
             val media: Media
 
             // Check if direct file path exists and is readable
             val directPath = path ?: (if (parsedUri.scheme == "file" || parsedUri.scheme == null) parsedUri.path else null)
             val directFile = if (!directPath.isNullOrBlank()) File(directPath) else null
 
-            if (directFile != null && directFile.exists() && directFile.canRead()) {
+            if (isRemote) {
+                media = Media(vlc, Uri.parse(uriString))
+            } else if (directFile != null && directFile.exists() && directFile.canRead()) {
                 media = Media(vlc, directFile.absolutePath)
             } else if (parsedUri.scheme == "content") {
-                var openedPfd: ParcelFileDescriptor? = null
+                // Priority 1: Resolve filesystem path via ContentResolver / MediaStore query
+                var createdMedia: Media? = null
+                var resolvedFilePath: String? = null
                 try {
-                    openedPfd = context.contentResolver.openFileDescriptor(parsedUri, "r")
+                    val projection = arrayOf(android.provider.MediaStore.MediaColumns.DATA)
+                    context.contentResolver.query(parsedUri, projection, null, null, null)?.use { cursor ->
+                        if (cursor.moveToFirst()) {
+                            val dataIdx = cursor.getColumnIndex(android.provider.MediaStore.MediaColumns.DATA)
+                            if (dataIdx >= 0) {
+                                val d = cursor.getString(dataIdx)
+                                if (!d.isNullOrBlank() && File(d).let { it.exists() && it.canRead() }) {
+                                    resolvedFilePath = d
+                                }
+                            }
+                        }
+                    }
                 } catch (e: Exception) {
-                    Log.w(TAG, "Could not open ParcelFileDescriptor for content URI: $uriString", e)
+                    Log.d(TAG, "ContentResolver DATA query skipped: ${e.message}")
                 }
 
-                if (openedPfd != null) {
-                    currentPfd = openedPfd
-                    media = Media(vlc, openedPfd.fileDescriptor)
-                } else {
-                    media = Media(vlc, parsedUri)
+                if (!resolvedFilePath.isNullOrBlank()) {
+                    try {
+                        createdMedia = Media(vlc, resolvedFilePath)
+                        Log.i(TAG, "VLC attached content URI via direct resolved path: $resolvedFilePath")
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed loading via resolvedFilePath: $resolvedFilePath", e)
+                    }
                 }
-            } else if (parsedUri.scheme == "http" || parsedUri.scheme == "https" ||
-                parsedUri.scheme == "rtsp" || parsedUri.scheme == "rtmp" || parsedUri.scheme == "mms") {
-                media = Media(vlc, parsedUri)
-                media.addOption(":network-caching=3000")
-                media.addOption(":http-reconnect=true")
+
+                // Priority 2: Open ParcelFileDescriptor and use procfs fd link or native file descriptor
+                if (createdMedia == null) {
+                    try {
+                        val pfd = context.contentResolver.openFileDescriptor(parsedUri, "r")
+                        if (pfd != null) {
+                            currentPfd = pfd
+                            val fdPath = "/proc/self/fd/${pfd.fd}"
+                            val procFile = File(fdPath)
+                            if (procFile.exists()) {
+                                try {
+                                    createdMedia = Media(vlc, fdPath)
+                                    Log.i(TAG, "VLC attached content URI via procfs fd link: $fdPath")
+                                } catch (e: Exception) {
+                                    Log.w(TAG, "Failed creating Media from procfs fd link", e)
+                                }
+                            }
+                            if (createdMedia == null) {
+                                createdMedia = Media(vlc, pfd.fileDescriptor)
+                                Log.i(TAG, "VLC attached content URI via ParcelFileDescriptor")
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed creating Media from ParcelFileDescriptor for $parsedUri", e)
+                    }
+                }
+
+                // Priority 3: Try AssetFileDescriptor only if declared length is known (> 0)
+                if (createdMedia == null) {
+                    try {
+                        val afd = context.contentResolver.openAssetFileDescriptor(parsedUri, "r")
+                        if (afd != null) {
+                            currentAfd = afd
+                            if (afd.declaredLength > 0) {
+                                createdMedia = Media(vlc, afd)
+                            } else {
+                                createdMedia = Media(vlc, afd.fileDescriptor)
+                            }
+                            Log.i(TAG, "VLC attached content URI via AssetFileDescriptor")
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed creating Media from AssetFileDescriptor for $parsedUri", e)
+                    }
+                }
+
+                media = createdMedia ?: Media(vlc, parsedUri)
             } else {
                 val filePath = parsedUri.path ?: uriString
                 val f = File(filePath)
                 if (f.exists() && f.canRead()) {
                     media = Media(vlc, f.absolutePath)
                 } else {
-                    media = Media(vlc, parsedUri)
+                    var fallbackMedia: Media? = null
+                    if (parsedUri.scheme == "content") {
+                        try {
+                            val afd = context.contentResolver.openAssetFileDescriptor(parsedUri, "r")
+                            if (afd != null) {
+                                currentAfd = afd
+                                fallbackMedia = Media(vlc, afd)
+                            }
+                        } catch (ex: Exception) {}
+                    }
+                    media = fallbackMedia ?: Media(vlc, parsedUri)
                 }
             }
 
@@ -757,9 +965,10 @@ class VlcPlayerWrapper(private val context: Context) {
             val colorInt = parseRgbColor(subtitleTextColorHex, 0xFFFFFF)
             val opacityInt = (subtitleOpacity * 255).toInt().coerceIn(0, 255)
 
-            media.addOption(":file-caching=300")
-            media.addOption(":drop-late-frames")
-            media.addOption(":skip-frames")
+            media.addOption(":file-caching=3000")
+            media.addOption(":network-caching=3000")
+            media.addOption(":clock-jitter=0")
+            media.addOption(":http-reconnect=true")
             media.addOption(":video-fast-seek")
             media.addOption(":subsdec-encoding=${if (subtitleEncoding.isBlank()) "UTF-8" else subtitleEncoding}")
             media.addOption(":freetype-fontsize=$sizeInt")
@@ -788,7 +997,7 @@ class VlcPlayerWrapper(private val context: Context) {
                 val shadowColorInt = parseRgbColor(subtitleShadowColorHex, 0x000000)
                 media.addOption(":freetype-shadow-color=$shadowColorInt")
                 media.addOption(":freetype-shadow-angle=45")
-                media.addOption(":freetype-shadow-distance=0.06")
+                media.addOption(":freetype-shadow-distance=2")
             }
 
             if (subtitleFontStyle == "Bold" || subtitleFontStyle == "Bold Italic") {
@@ -804,15 +1013,39 @@ class VlcPlayerWrapper(private val context: Context) {
             }
 
             player.media = media
+            try {
+                if (isRemote) {
+                    media.parse(org.videolan.libvlc.interfaces.IMedia.Parse.ParseNetwork)
+                } else {
+                    media.parse(org.videolan.libvlc.interfaces.IMedia.Parse.ParseLocal)
+                }
+            } catch (e: Exception) {
+                try {
+                    media.parseAsync(if (isRemote) org.videolan.libvlc.interfaces.IMedia.Parse.ParseNetwork else org.videolan.libvlc.interfaces.IMedia.Parse.ParseLocal)
+                } catch (ex: Exception) {}
+            }
             media.release()
 
-            // Ensure views attached on Main thread BEFORE player.play() to prevent native lock contention and ANR
+            // Ensure views attached on Main thread if SurfaceView or layout already available
+            val surface = attachedSurfaceView
             val layout = attachedLayout
-            if (layout != null) {
+            if (surface != null || layout != null) {
                 withContext(Dispatchers.Main) {
                     try {
-                        if (!player.vlcVout.areViewsAttached()) {
-                            player.attachViews(layout, null, true, false)
+                        if (surface != null) {
+                            val vlcVout = player.vlcVout
+                            if (!vlcVout.areViewsAttached()) {
+                                vlcVout.setVideoView(surface)
+                                vlcVout.attachViews()
+                                if (surface.width > 0 && surface.height > 0) {
+                                    vlcVout.setWindowSize(surface.width, surface.height)
+                                }
+                            }
+                        } else if (layout != null) {
+                            if (!player.vlcVout.areViewsAttached()) {
+                                player.attachViews(layout, null, true, true)
+                            }
+                            player.updateVideoSurfaces()
                         }
                     } catch (e: Exception) {
                         Log.w(TAG, "Failed attaching views on Main thread", e)
@@ -820,9 +1053,14 @@ class VlcPlayerWrapper(private val context: Context) {
                 }
             }
 
+            requestAudioFocus()
+            registerNoisyReceiver()
             player.play()
+            isPlaying = true
+            onIsPlayingChanged?.invoke(true)
+            onPlaybackStateChanged?.invoke(true, false)
             if (initialSeekMs > 0L) {
-                player.time = initialSeekMs
+                pendingInitialSeekMs = initialSeekMs
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error playing URI in LibVLC: $uriString", e)
@@ -832,10 +1070,16 @@ class VlcPlayerWrapper(private val context: Context) {
         }
     }
 
+    fun isEndedState(): Boolean = isEnded || (durationMs > 0L && currentPositionMs >= durationMs - 500L)
+
     fun play() {
         try {
             requestAudioFocus()
             registerNoisyReceiver()
+            if (isEndedState()) {
+                seekTo(0)
+                isEnded = false
+            }
             mediaPlayer?.play()
             isPlaying = true
             onIsPlayingChanged?.invoke(true)
@@ -849,8 +1093,7 @@ class VlcPlayerWrapper(private val context: Context) {
         try {
             mediaPlayer?.pause()
             isPlaying = false
-            abandonAudioFocus()
-            unregisterNoisyReceiver()
+            // Retain audio focus and noisy receiver during pause so headset buttons and bluetooth media keys can resume
             onIsPlayingChanged?.invoke(false)
             onPlaybackStateChanged?.invoke(false, false)
         } catch (e: Exception) {
@@ -1052,7 +1295,34 @@ class VlcPlayerWrapper(private val context: Context) {
         val player = mediaPlayer ?: return false
         return try {
             val uri = Uri.parse(subtitleUri)
-            val res = player.addSlave(IMedia.Slave.Type.Subtitle, uri, select)
+            val res: Boolean
+            if (uri.scheme == "file") {
+                res = player.addSlave(IMedia.Slave.Type.Subtitle, uri.path ?: subtitleUri, select)
+            } else if (uri.scheme == "content") {
+                // If content URI, copy to cached temp file so native LibVLC can demux and render it
+                var tempSubFile: File? = null
+                try {
+                    val input = context.contentResolver.openInputStream(uri)
+                    if (input != null) {
+                        val cacheDir = File(context.cacheDir, "subtitles").apply { mkdirs() }
+                        val fileExt = uri.path?.substringAfterLast('.', "srt") ?: "srt"
+                        val safeExt = if (fileExt.length in 2..5) fileExt else "srt"
+                        val temp = File(cacheDir, "vlc_sub_${System.currentTimeMillis()}.$safeExt")
+                        temp.outputStream().use { out -> input.copyTo(out) }
+                        tempSubFile = temp
+                    }
+                } catch (ex: Exception) {
+                    Log.w(TAG, "Failed caching content URI subtitle for LibVLC", ex)
+                }
+
+                if (tempSubFile != null && tempSubFile.exists()) {
+                    res = player.addSlave(IMedia.Slave.Type.Subtitle, tempSubFile.absolutePath, select)
+                } else {
+                    res = player.addSlave(IMedia.Slave.Type.Subtitle, uri, select)
+                }
+            } else {
+                res = player.addSlave(IMedia.Slave.Type.Subtitle, uri, select)
+            }
             if (select) {
                 targetSubtitleTrackId = -2
             }
@@ -1080,6 +1350,10 @@ class VlcPlayerWrapper(private val context: Context) {
 
     fun setSubtitleTextColor(colorHex: String) {
         currentSubtitleTextColor = colorHex
+    }
+
+    fun setSubtitleEncoding(encoding: String) {
+        currentSubtitleEncoding = encoding
     }
 
     fun applySubtitlePreferences(
@@ -1126,16 +1400,59 @@ class VlcPlayerWrapper(private val context: Context) {
         )
     }
 
+    /**
+     * Data holder representing a native media chapter parsed by LibVLC from MKV/MP4 files.
+     */
+    data class VlcChapter(
+        val name: String,
+        val timeOffsetMs: Long,
+        val durationMs: Long
+    )
+
+    /**
+     * Retrieves the native chapters from the current media if supported/embedded in the file (e.g. MKV/MP4).
+     */
+    fun getMediaChapters(): List<VlcChapter> {
+        val player = mediaPlayer ?: return emptyList()
+        return try {
+            val titleIndex = player.title.coerceAtLeast(0)
+            val chapters = player.getChapters(titleIndex)
+            if (chapters != null && chapters.isNotEmpty()) {
+                chapters.mapIndexed { idx, ch ->
+                    val chapterName = if (ch.name.isNullOrBlank()) "Chapter ${idx + 1}" else ch.name
+                    VlcChapter(
+                        name = chapterName,
+                        timeOffsetMs = ch.timeOffset,
+                        durationMs = ch.duration
+                    )
+                }
+            } else {
+                emptyList()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to get native chapters from LibVLC", e)
+            emptyList()
+        }
+    }
+
+    var onChaptersDiscovered: ((List<VlcChapter>) -> Unit)? = null
+
+
     fun release() {
         try {
             playerScope.cancel()
             abandonAudioFocus()
             unregisterNoisyReceiver()
             detachLayout()
+            detachSurface()
             try {
                 currentPfd?.close()
             } catch (e: Exception) {}
             currentPfd = null
+            try {
+                currentAfd?.close()
+            } catch (e: Exception) {}
+            currentAfd = null
             mediaPlayer?.stop()
             mediaPlayer?.release()
             mediaPlayer = null

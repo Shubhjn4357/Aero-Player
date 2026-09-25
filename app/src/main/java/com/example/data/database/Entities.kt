@@ -137,7 +137,7 @@ data class PreferenceEntity(
     val groupByStyle: String = "none",
     val deletedUrisJson: String = "[]",
     val isCastEnabled: Boolean = true,
-    val selectedCastDevice: String = "Living Room TV (Chromecast)",
+    val selectedCastDevice: String = "",
     val castProtocol: String = "Chromecast / DLNA",
     val castQuality: String = "High (320kbps / 1080p)",
     val castBufferSize: String = "Standard (3s)",

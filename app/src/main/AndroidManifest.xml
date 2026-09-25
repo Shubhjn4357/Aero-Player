@@ -39,6 +39,16 @@
                 <action android:name="android.intent.action.MAIN" />
 
                 <category android:name="android.intent.category.LAUNCHER" />
+                <category android:name="android.intent.category.APP_MUSIC" />
+                <category android:name="android.intent.category.APP_GALLERY" />
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+            </intent-filter>
+
+            <!-- Multimedia Music Player Intent Filter -->
+            <intent-filter>
+                <action android:name="android.intent.action.MUSIC_PLAYER" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.APP_MUSIC" />
             </intent-filter>
 
             <!-- Video Player Intent Filter (MIME Type) -->
@@ -161,8 +171,7 @@
         <receiver
             android:name=".receiver.PlayerActionReceiver"
             android:exported="true">
-            <intent-filter android:priority="1000">
-                <action android:name="android.intent.action.MEDIA_BUTTON" />
+            <intent-filter>
                 <action android:name="android.media.AUDIO_BECOMING_NOISY" />
                 <action android:name="com.example.ACTION_PLAY_PAUSE" />
                 <action android:name="com.example.ACTION_PLAY" />
@@ -197,6 +206,16 @@
             <meta-data
                 android:name="android.appwidget.provider"
                 android:resource="@xml/player_widget_2x2_info" />
+        </receiver>
+
+        <!-- CLI Broadcast Receiver for ADB and Terminal Automation -->
+        <receiver
+            android:name="com.example.player.VlcCliReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.example.player.VLC_CLI" />
+                <action android:name="com.example.player.MEDIA_CLI" />
+            </intent-filter>
         </receiver>
     </application>
 

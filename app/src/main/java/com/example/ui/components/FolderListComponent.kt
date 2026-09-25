@@ -69,16 +69,46 @@ fun FolderListComponent(
         mediaList.filter { it.genre != "Live Stream" }
     }
 
-    val groupedByFolder = remember(nonStreamMedia) {
+    val isArtistMode = prefs.groupByStyle == "artist"
+    val isTypeMode = prefs.groupByStyle == "file_type"
+    val isGenreMode = prefs.groupByStyle == "genre"
+    val groupIcon = when {
+        isArtistMode -> Icons.Default.Person
+        isTypeMode -> Icons.Default.Category
+        isGenreMode -> Icons.Default.MusicNote
+        else -> Icons.Default.Folder
+    }
+
+    val groupedByFolder = remember(nonStreamMedia, prefs.groupByStyle) {
         val map = linkedMapOf<String, MutableList<MediaEntity>>()
         nonStreamMedia.forEach { item ->
-            val parentName = try {
-                val f = java.io.File(item.path)
-                f.parentFile?.name ?: "Root Folder"
-            } catch (e: Exception) {
-                "Root Folder"
+            val key = when (prefs.groupByStyle) {
+                "artist" -> {
+                    val art = item.displayArtist.trim()
+                    if (art.isEmpty() || art.equals("<unknown>", ignoreCase = true) || art.equals("unknown", ignoreCase = true)) {
+                        "Unknown Artist"
+                    } else art
+                }
+                "file_type" -> {
+                    val ext = item.path.substringAfterLast('.', "").uppercase().trim()
+                    if (ext.isEmpty()) "OTHER" else ext
+                }
+                "genre" -> {
+                    val gen = item.genre?.trim() ?: ""
+                    if (gen.isEmpty() || gen.equals("<unknown>", ignoreCase = true) || gen.equals("unknown", ignoreCase = true)) {
+                        "Unknown Genre"
+                    } else gen
+                }
+                else -> {
+                    try {
+                        val f = java.io.File(item.path)
+                        f.parentFile?.name ?: "Root Folder"
+                    } catch (e: Exception) {
+                        "Root Folder"
+                    }
+                }
             }
-            map.getOrPut(parentName) { mutableListOf() }.add(item)
+            map.getOrPut(key) { mutableListOf() }.add(item)
         }
         map
     }
@@ -125,12 +155,12 @@ fun FolderListComponent(
             targetState = activeFolder,
             transitionSpec = {
                 if (targetState != null) {
-                    (slideInHorizontally(animationSpec = tween(250)) { it } + fadeIn()).togetherWith(
-                        slideOutHorizontally(animationSpec = tween(250)) { -it } + fadeOut()
+                    (slideInHorizontally(animationSpec = tween(140)) { it } + fadeIn(animationSpec = tween(120))).togetherWith(
+                        slideOutHorizontally(animationSpec = tween(140)) { -it } + fadeOut(animationSpec = tween(120))
                     )
                 } else {
-                    (slideInHorizontally(animationSpec = tween(250)) { -it } + fadeIn()).togetherWith(
-                        slideOutHorizontally(animationSpec = tween(250)) { it } + fadeOut()
+                    (slideInHorizontally(animationSpec = tween(140)) { -it } + fadeIn(animationSpec = tween(120))).togetherWith(
+                        slideOutHorizontally(animationSpec = tween(140)) { it } + fadeOut(animationSpec = tween(120))
                     )
                 }
             },
@@ -141,30 +171,36 @@ fun FolderListComponent(
                 // LEVEL 1: ROOT FOLDERS OVERVIEW
                 // -------------------------------------------------------------
                 if (foldersList.isEmpty()) {
+                    val emptyLabel = when {
+                        isArtistMode -> "No artists found"
+                        isTypeMode -> "No media types found"
+                        isGenreMode -> "No genres found"
+                        else -> "No media folders found"
+                    }
                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             Icon(
-                                imageVector = Icons.Default.FolderOpen,
+                                imageVector = groupIcon,
                                 contentDescription = null,
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
-                                modifier = Modifier.size(64.dp)
+                                modifier = Modifier.size(56.dp)
                             )
                             Text(
-                                text = "No media folders found",
+                                text = emptyLabel,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                                fontSize = 15.sp,
+                                fontSize = 14.sp,
                                 fontWeight = FontWeight.Medium
                             )
                         }
                     }
                 } else {
                     if (prefs.useGroupWiseFolderStyle || prefs.listStyle == "Grid") {
-                        // Grid Layout for Folders
+                        // Compact Condensed Grid Layout for Folders
                         LazyVerticalGrid(
-                            columns = GridCells.Adaptive(minSize = 110.dp),
-                            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 120.dp),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                            columns = GridCells.Adaptive(minSize = 92.dp),
+                            contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 8.dp, bottom = 120.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
                             modifier = Modifier
                                 .fillMaxSize()
                                 .testTag("folder_grid_view")
@@ -178,7 +214,6 @@ fun FolderListComponent(
                                 Card(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .aspectRatio(0.85f)
                                         .combinedClickable(
                                             onClick = {
                                                 if (isSelectModeActive) {
@@ -204,29 +239,37 @@ fun FolderListComponent(
                                         .testTag("folder_card_$folderName"),
                                     shape = RoundedCornerShape(14.dp),
                                     colors = CardDefaults.cardColors(
-                                        containerColor = if (isFolderSelected) accentColor.copy(alpha = 0.18f) else Color.Transparent
+                                        containerColor = if (isFolderSelected) accentColor.copy(alpha = 0.14f) else MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.65f)
                                     ),
-                                    border = if (isFolderSelected) BorderStroke(1.5.dp, accentColor) else null
+                                    border = null
                                 ) {
-                                    Box(modifier = Modifier.fillMaxSize().padding(8.dp)) {
+                                    Box(modifier = Modifier.fillMaxWidth().padding(8.dp)) {
                                         Column(
-                                            modifier = Modifier.fillMaxSize(),
-                                            verticalArrangement = Arrangement.SpaceBetween,
-                                            horizontalAlignment = Alignment.CenterHorizontally
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalAlignment = Alignment.CenterHorizontally,
+                                            verticalArrangement = Arrangement.Center
                                         ) {
-                                            FolderThumbnail(
-                                                folderFiles = folderVideos,
+                                            Box(
                                                 modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .aspectRatio(1.25f)
-                                            )
-                                            Spacer(modifier = Modifier.height(4.dp))
+                                                    .size(42.dp)
+                                                    .clip(RoundedCornerShape(11.dp))
+                                                    .background(accentColor.copy(alpha = 0.12f)),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Icon(
+                                                    imageVector = groupIcon,
+                                                    contentDescription = null,
+                                                    tint = accentColor,
+                                                    modifier = Modifier.size(24.dp)
+                                                )
+                                            }
+                                            Spacer(modifier = Modifier.height(6.dp))
                                             Text(
                                                 text = folderName,
-                                                fontSize = 12.sp,
-                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 11.5.sp,
+                                                fontWeight = FontWeight.SemiBold,
                                                 color = MaterialTheme.colorScheme.onSurface,
-                                                maxLines = 2,
+                                                maxLines = 1,
                                                 overflow = TextOverflow.Ellipsis,
                                                 textAlign = TextAlign.Center
                                             )
@@ -235,8 +278,8 @@ fun FolderListComponent(
                                             val subtext = if (sizeStr.isNotEmpty()) "${folderVideos.size} files • $sizeStr" else "${folderVideos.size} files"
                                             Text(
                                                 text = subtext,
-                                                fontSize = 10.sp,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                                fontSize = 9.5.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
                                                 textAlign = TextAlign.Center,
                                                 maxLines = 1,
                                                 overflow = TextOverflow.Ellipsis
@@ -247,8 +290,7 @@ fun FolderListComponent(
                                             Box(
                                                 modifier = Modifier
                                                     .align(Alignment.TopEnd)
-                                                    .padding(2.dp)
-                                                    .size(22.dp)
+                                                    .size(18.dp)
                                                     .clip(CircleShape)
                                                     .background(accentColor),
                                                 contentAlignment = Alignment.Center
@@ -257,7 +299,7 @@ fun FolderListComponent(
                                                     imageVector = Icons.Default.Check,
                                                     contentDescription = "Selected",
                                                     tint = Color.White,
-                                                    modifier = Modifier.size(14.dp)
+                                                    modifier = Modifier.size(12.dp)
                                                 )
                                             }
                                         }
@@ -266,10 +308,10 @@ fun FolderListComponent(
                             }
                         }
                     } else {
-                        // List Layout for Folders
+                        // Compact Condensed List Layout for Folders
                         LazyColumn(
-                            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 120.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 8.dp, bottom = 120.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
                             modifier = Modifier
                                 .fillMaxSize()
                                 .testTag("folder_list_view")
@@ -308,26 +350,36 @@ fun FolderListComponent(
                                         .testTag("folder_row_$folderName"),
                                     shape = RoundedCornerShape(12.dp),
                                     colors = CardDefaults.cardColors(
-                                        containerColor = if (isFolderSelected) accentColor.copy(alpha = 0.18f) else Color.Transparent
+                                        containerColor = if (isFolderSelected) accentColor.copy(alpha = 0.14f) else MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.45f)
                                     ),
-                                    border = if (isFolderSelected) BorderStroke(1.5.dp, accentColor) else null
+                                    border = null
                                 ) {
                                     Row(
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .padding(12.dp),
+                                            .padding(horizontal = 12.dp, vertical = 7.dp),
                                         verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(14.dp)
+                                        horizontalArrangement = Arrangement.spacedBy(12.dp)
                                     ) {
-                                        FolderThumbnail(
-                                            folderFiles = folderVideos,
-                                            modifier = Modifier.size(52.dp)
-                                        )
+                                        Box(
+                                            modifier = Modifier
+                                                .size(38.dp)
+                                                .clip(RoundedCornerShape(10.dp))
+                                                .background(accentColor.copy(alpha = 0.12f)),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                imageVector = groupIcon,
+                                                contentDescription = null,
+                                                tint = accentColor,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        }
                                         Column(modifier = Modifier.weight(1f)) {
                                             Text(
                                                 text = folderName,
-                                                fontWeight = FontWeight.Bold,
-                                                fontSize = 15.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                fontSize = 13.5.sp,
                                                 color = MaterialTheme.colorScheme.onSurface,
                                                 maxLines = 1,
                                                 overflow = TextOverflow.Ellipsis
@@ -337,14 +389,14 @@ fun FolderListComponent(
                                             val subtext = if (sizeStr.isNotEmpty()) "${folderVideos.size} items • $sizeStr" else "${folderVideos.size} items"
                                             Text(
                                                 text = subtext,
-                                                fontSize = 12.sp,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                                                fontSize = 11.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f)
                                             )
                                         }
                                         if (isFolderSelected) {
                                             Box(
                                                 modifier = Modifier
-                                                    .size(24.dp)
+                                                    .size(20.dp)
                                                     .clip(CircleShape)
                                                     .background(accentColor),
                                                 contentAlignment = Alignment.Center
@@ -353,15 +405,15 @@ fun FolderListComponent(
                                                     imageVector = Icons.Default.Check,
                                                     contentDescription = "Selected",
                                                     tint = Color.White,
-                                                    modifier = Modifier.size(16.dp)
+                                                    modifier = Modifier.size(13.dp)
                                                 )
                                             }
                                         } else {
                                             Icon(
                                                 imageVector = Icons.Default.KeyboardArrowRight,
                                                 contentDescription = null,
-                                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
-                                                modifier = Modifier.size(20.dp)
+                                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f),
+                                                modifier = Modifier.size(18.dp)
                                             )
                                         }
                                     }
@@ -385,142 +437,19 @@ fun FolderListComponent(
                     }
                 }
 
-                Column(modifier = Modifier.fillMaxSize()) {
-                    // Header / Breadcrumbs Bar
-                    Surface(
-                        color = Color.Transparent,
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 6.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 8.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                Box(modifier = Modifier.fillMaxSize()) {
+                    if (files.isEmpty()) {
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center
                         ) {
-                            IconButton(
-                                onClick = { onFolderSelect(null) },
-                                modifier = Modifier.size(36.dp).testTag("folder_back_button")
-                            ) {
-                                Icon(
-                                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                    contentDescription = "Back to Folders",
-                                    tint = accentColor,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            }
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Icon(
-                                imageVector = Icons.Default.FolderOpen,
-                                contentDescription = null,
-                                tint = accentColor,
-                                modifier = Modifier.size(22.dp)
+                            Text(
+                                text = "No media files found",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                                fontSize = 14.sp
                             )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = currentFolder,
-                                    fontSize = 15.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.onSurface,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Text(
-                                    text = "${files.size} items",
-                                    fontSize = 11.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                                )
-                            }
                         }
-                    }
-
-                    // Action Controls Row (Play All, Queue All, View Mode Toggle, Select All)
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 4.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Button(
-                                onClick = { viewModel.playAll(files) },
-                                enabled = files.isNotEmpty(),
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = accentColor,
-                                    contentColor = MaterialTheme.colorScheme.onPrimary
-                                ),
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                                shape = RoundedCornerShape(10.dp),
-                                modifier = Modifier.height(34.dp).testTag("folder_play_all_button")
-                            ) {
-                                Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("Play All", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                            }
-
-                            OutlinedButton(
-                                onClick = { viewModel.addToQueue(files) },
-                                enabled = files.isNotEmpty(),
-                                colors = ButtonDefaults.outlinedButtonColors(contentColor = accentColor),
-                                border = BorderStroke(1.dp, accentColor),
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                                shape = RoundedCornerShape(10.dp),
-                                modifier = Modifier.height(34.dp).testTag("folder_queue_all_button")
-                            ) {
-                                Icon(Icons.Default.PlaylistAdd, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("Queue All", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                            }
-                        }
-
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            // Scoped Select All for current folder
-                            if (isSelectModeActive) {
-                                val allFolderFilesSelected = files.isNotEmpty() && files.all { f -> selectedMediaSet.any { it.uriString == f.uriString } }
-                                IconButton(
-                                    onClick = {
-                                        if (allFolderFilesSelected) {
-                                            selectedMediaSet.removeAll(files.toSet())
-                                            if (selectedMediaSet.isEmpty()) onToggleSelectMode(false)
-                                        } else {
-                                            selectedMediaSet.addAll(files)
-                                        }
-                                    },
-                                    modifier = Modifier.size(36.dp).testTag("folder_select_all_button")
-                                ) {
-                                    Icon(
-                                        imageVector = if (allFolderFilesSelected) Icons.Default.Deselect else Icons.Default.SelectAll,
-                                        contentDescription = "Select All in Folder",
-                                        tint = accentColor,
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                }
-                            }
-
-                            // View Mode Toggle
-                            IconButton(
-                                onClick = {
-                                    val newStyle = if (prefs.listStyle == "Grid") "List" else "Grid"
-                                    viewModel.updateListStyle(newStyle)
-                                },
-                                modifier = Modifier.size(36.dp).testTag("folder_toggle_view_button")
-                            ) {
-                                Icon(
-                                    imageVector = if (prefs.listStyle == "Grid") Icons.Default.List else Icons.Default.GridView,
-                                    contentDescription = "Toggle Grid/List View",
-                                    tint = accentColor,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            }
-                        }
-                    }
-
-                    // Files Content (Grid or List)
-                    if (prefs.listStyle == "Grid") {
+                    } else if (prefs.listStyle == "Grid") {
                         LazyVerticalGrid(
                             columns = GridCells.Adaptive(minSize = 140.dp),
                             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 120.dp),

@@ -108,6 +108,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _currentPlayingItem = MutableStateFlow<MediaEntity?>(null)
     val currentPlayingItem: StateFlow<MediaEntity?> = _currentPlayingItem.asStateFlow()
 
+    private val _playbackTrigger = MutableStateFlow<Long>(0L)
+    val playbackTrigger: StateFlow<Long> = _playbackTrigger.asStateFlow()
+
     private val _isPlaying = MutableStateFlow(false)
     val isPlaying: StateFlow<Boolean> = _isPlaying.asStateFlow()
 
@@ -145,17 +148,59 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         .build()
                     val loadControl = androidx.media3.exoplayer.DefaultLoadControl.Builder()
                         .setBufferDurationsMs(
-                            500,   // minBufferMs for rapid local startup
-                            5000,  // maxBufferMs
-                            100,   // bufferForPlaybackMs (instant play in 100ms)
-                            200    // bufferForPlaybackAfterRebufferMs
+                            15000, // minBufferMs (15s robust buffer prevents stall on pause/unpause)
+                            50000, // maxBufferMs (50s)
+                            1000,  // bufferForPlaybackMs (1s responsive startup)
+                            2000   // bufferForPlaybackAfterRebufferMs (2s)
                         )
-                        .setBackBuffer(3000, true)
+                        .setBackBuffer(5000, true)
                         .setPrioritizeTimeOverSizeThresholds(true)
                         .build()
                     val appContext: android.content.Context = getApplication()
-                    val renderersFactory = androidx.media3.exoplayer.DefaultRenderersFactory(appContext)
+                    val renderersFactory = object : androidx.media3.exoplayer.DefaultRenderersFactory(appContext) {
+                        override fun buildAudioRenderers(
+                            context: android.content.Context,
+                            extensionRendererMode: Int,
+                            mediaCodecSelector: androidx.media3.exoplayer.mediacodec.MediaCodecSelector,
+                            enableDecoderFallback: Boolean,
+                            audioSink: androidx.media3.exoplayer.audio.AudioSink,
+                            eventHandler: android.os.Handler,
+                            eventListener: androidx.media3.exoplayer.audio.AudioRendererEventListener,
+                            out: java.util.ArrayList<androidx.media3.exoplayer.Renderer>
+                        ) {
+                            super.buildAudioRenderers(
+                                context,
+                                extensionRendererMode,
+                                mediaCodecSelector,
+                                enableDecoderFallback,
+                                audioSink,
+                                eventHandler,
+                                eventListener,
+                                out
+                            )
+                            val hasFfmpeg = out.any { it is androidx.media3.decoder.ffmpeg.FfmpegAudioRenderer }
+                            if (!hasFfmpeg && androidx.media3.decoder.ffmpeg.FfmpegLibrary.isAvailable()) {
+                                try {
+                                    out.add(androidx.media3.decoder.ffmpeg.FfmpegAudioRenderer(eventHandler, eventListener, audioSink))
+                                    android.util.Log.i("MainViewModel", "Attached FfmpegAudioRenderer extension to ExoPlayer renderers")
+                                } catch (e: Throwable) {
+                                    android.util.Log.w("MainViewModel", "Failed to explicitly instantiate FfmpegAudioRenderer: ${e.message}", e)
+                                }
+                            }
+                        }
+                    }
+                        .setExtensionRendererMode(androidx.media3.exoplayer.DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
                         .setEnableDecoderFallback(true)
+                        .setEnableAudioFloatOutput(true)
+                        .setEnableAudioTrackPlaybackParams(true)
+
+                    try {
+                        if (androidx.media3.decoder.ffmpeg.FfmpegLibrary.isAvailable()) {
+                            android.util.Log.i("MainViewModel", "Media3 FFmpeg extension active. Version: ${androidx.media3.decoder.ffmpeg.FfmpegLibrary.getVersion()}, supports TrueHD: ${androidx.media3.decoder.ffmpeg.FfmpegLibrary.supportsFormat("audio/true-hd")}")
+                        }
+                    } catch (e: Throwable) {
+                        android.util.Log.w("MainViewModel", "FFmpegLibrary check: ${e.message}")
+                    }
                     val extractorsFactory = androidx.media3.extractor.DefaultExtractorsFactory()
                         .setConstantBitrateSeekingEnabled(true)
                     val mediaSourceFactory = androidx.media3.exoplayer.source.DefaultMediaSourceFactory(
@@ -166,11 +211,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         .setAudioAttributes(audioAttributes, true)
                         .setHandleAudioBecomingNoisy(true)
                         .setLoadControl(loadControl)
-                        .build()
+                        .setWakeMode(androidx.media3.common.C.WAKE_MODE_LOCAL)
+                        .build().apply {
+                            playWhenReady = true
+                        }
                 } catch (e: Throwable) {
                     android.util.Log.e("MainViewModel", "Failed to build ExoPlayer with custom attributes: ${e.message}", e)
                     val fallbackContext: android.content.Context = getApplication()
-                    _exoPlayerInstance = ExoPlayer.Builder(fallbackContext).build()
+                    _exoPlayerInstance = ExoPlayer.Builder(fallbackContext).build().apply {
+                        playWhenReady = true
+                    }
                 }
                 PlayerControlBridge.exoPlayerRef = WeakReference(_exoPlayerInstance)
             }
@@ -210,7 +260,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _pendingDeleteIntent = MutableStateFlow<PendingIntent?>(null)
     val pendingDeleteIntent: StateFlow<PendingIntent?> = _pendingDeleteIntent.asStateFlow()
 
-    val selectedCastDevice = MutableStateFlow("Living Room TV (Chromecast)")
+    val selectedCastDevice = MutableStateFlow("")
     val isCasting = MutableStateFlow(false)
 
     init {
@@ -220,12 +270,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         PlayerControlBridge.onPlayPauseListener = {
             try {
-                if (exoPlayer.isPlaying) {
-                    exoPlayer.pause()
-                    _isPlaying.value = false
+                val isVlc = PlayerControlBridge.activeEngineType == "VLC"
+                if (isVlc) {
+                    if (vlcPlayer.isPlaying) {
+                        vlcPlayer.pause()
+                        _isPlaying.value = false
+                    } else {
+                        vlcPlayer.play()
+                        _isPlaying.value = true
+                    }
                 } else {
-                    exoPlayer.play()
-                    _isPlaying.value = true
+                    val isExoActive = exoPlayer.isPlaying || exoPlayer.playWhenReady
+                    if (isExoActive) {
+                        exoPlayer.pause()
+                        _isPlaying.value = false
+                    } else {
+                        exoPlayer.play()
+                        _isPlaying.value = true
+                    }
                 }
             } catch (e: Throwable) {
                 e.printStackTrace()
@@ -233,7 +295,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         PlayerControlBridge.onPlayListener = {
             try {
-                exoPlayer.play()
+                val isVlc = PlayerControlBridge.activeEngineType == "VLC"
+                if (isVlc) {
+                    vlcPlayer.play()
+                } else {
+                    exoPlayer.play()
+                }
                 _isPlaying.value = true
             } catch (e: Throwable) {
                 e.printStackTrace()
@@ -241,7 +308,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         PlayerControlBridge.onPauseListener = {
             try {
-                exoPlayer.pause()
+                val isVlc = PlayerControlBridge.activeEngineType == "VLC"
+                if (isVlc) {
+                    vlcPlayer.pause()
+                } else {
+                    exoPlayer.pause()
+                }
                 _isPlaying.value = false
             } catch (e: Throwable) {
                 e.printStackTrace()
@@ -369,6 +441,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setPlayingItem(item: MediaEntity?) {
         _currentPlayingItem.value = item
+        _playbackTrigger.value = System.currentTimeMillis()
         if (item != null) {
             val currentQueue = _playQueue.value
             val existingIndex = currentQueue.indexOfFirst { it.uriString == item.uriString }
@@ -403,6 +476,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val safeIndex = if (index in queue.indices) index else queue.indexOfFirst { it.uriString == item.uriString }.coerceAtLeast(0)
         _currentQueueIndex.value = safeIndex
         _currentPlayingItem.value = item
+        _playbackTrigger.value = System.currentTimeMillis()
     }
 
     fun autoLoadFolderToQueue(item: MediaEntity) {
@@ -418,6 +492,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val newIndex = targetQueue.indexOfFirst { it.uriString == item.uriString }.coerceAtLeast(0)
         _currentQueueIndex.value = newIndex
         _currentPlayingItem.value = item
+        _playbackTrigger.value = System.currentTimeMillis()
     }
 
     fun autoLoadAllMediaToQueue(isVideo: Boolean) {

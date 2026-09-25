@@ -292,6 +292,22 @@ class MainActivity : ComponentActivity() {
                     return true
                 }
             }
+        } else if (event.action == android.view.KeyEvent.ACTION_UP) {
+            when (keyCode) {
+                android.view.KeyEvent.KEYCODE_HEADSETHOOK,
+                android.view.KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+                android.view.KeyEvent.KEYCODE_MEDIA_PLAY,
+                android.view.KeyEvent.KEYCODE_MEDIA_PAUSE,
+                android.view.KeyEvent.KEYCODE_MEDIA_STOP,
+                android.view.KeyEvent.KEYCODE_MEDIA_NEXT,
+                android.view.KeyEvent.KEYCODE_MEDIA_SKIP_FORWARD,
+                android.view.KeyEvent.KEYCODE_MEDIA_PREVIOUS,
+                android.view.KeyEvent.KEYCODE_MEDIA_SKIP_BACKWARD,
+                android.view.KeyEvent.KEYCODE_MEDIA_FAST_FORWARD,
+                android.view.KeyEvent.KEYCODE_MEDIA_REWIND -> {
+                    return true
+                }
+            }
         }
         return super.dispatchKeyEvent(event)
     }
@@ -305,39 +321,6 @@ class MainActivity : ComponentActivity() {
                     if (mainViewModel.onVolumeKeyPressed(keyCode)) {
                         return true
                     }
-                }
-                android.view.KeyEvent.KEYCODE_HEADSETHOOK -> {
-                    PlayerControlBridge.onHeadsetHookClick()
-                    return true
-                }
-                android.view.KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
-                    PlayerControlBridge.playPause()
-                    return true
-                }
-                android.view.KeyEvent.KEYCODE_MEDIA_PLAY -> {
-                    PlayerControlBridge.play()
-                    return true
-                }
-                android.view.KeyEvent.KEYCODE_MEDIA_PAUSE,
-                android.view.KeyEvent.KEYCODE_MEDIA_STOP -> {
-                    PlayerControlBridge.pause()
-                    return true
-                }
-                android.view.KeyEvent.KEYCODE_MEDIA_NEXT -> {
-                    PlayerControlBridge.next()
-                    return true
-                }
-                android.view.KeyEvent.KEYCODE_MEDIA_PREVIOUS -> {
-                    PlayerControlBridge.prev()
-                    return true
-                }
-                android.view.KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> {
-                    PlayerControlBridge.seekBy(10000L)
-                    return true
-                }
-                android.view.KeyEvent.KEYCODE_MEDIA_REWIND -> {
-                    PlayerControlBridge.seekBy(-10000L)
-                    return true
                 }
             }
         }

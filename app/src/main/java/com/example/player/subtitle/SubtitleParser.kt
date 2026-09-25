@@ -21,6 +21,8 @@ object SubtitleParser {
     private val WEBVTT_VOICE_TAG_REGEX = Pattern.compile("<[vV][^>]*>|</[vV]>|<c[^>]*>|</c>|<[0-9:.]+>")
     private val SRT_TIME_REGEX = Pattern.compile("(\\d{1,2}):(\\d{2}):(\\d{2})[,.](\\d{1,3})\\s*-->\\s*(\\d{1,2}):(\\d{2}):(\\d{2})[,.](\\d{1,3})")
     private val VTT_SHORT_TIME_REGEX = Pattern.compile("(\\d{1,2}):(\\d{2})[,.](\\d{1,3})\\s*-->\\s*(\\d{1,2}):(\\d{2})[,.](\\d{1,3})")
+    private val ASS_COORDINATE_PATTERN = Pattern.compile("-?\\d+(?:\\.\\d+)?[\\s,-]+-?\\d+(?:\\.\\d+)?")
+    private val ASS_DRAWING_CMD_PATTERN = Pattern.compile("(?i)(?:^|[\\s\\]])([mlbspc])\\s+-?\\d+")
 
     /**
      * Parse subtitle from content URI or file path silently with fallback encodings.
@@ -282,7 +284,9 @@ object SubtitleParser {
      */
     fun cleanCueText(text: String): String {
         if (text.isBlank()) return ""
-        var cleaned = text
+        // Strip null characters and unprintable control characters
+        var cleaned = text.replace("\u0000", "")
+            .replace(Regex("[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F]"), "")
         // 1. Remove ASS drawing vector blocks {\p1}m...{\p0}
         cleaned = ASS_DRAWING_REGEX.matcher(cleaned).replaceAll("")
         // 2. Remove ASS override tags {\...} (e.g. {\pos(x,y)}, {\c&H...&}, {\fn...}, {\fs...})
@@ -298,8 +302,57 @@ object SubtitleParser {
             .replace("\\h", " ")
             .replace("\\t", " ")
         // 6. Decode standard XML/HTML entities
-        cleaned = unescapeHtmlEntities(cleaned)
-        return cleaned.trim()
+        cleaned = unescapeHtmlEntities(cleaned).trim()
+
+        // 7. Suppress binary bitstream junk artifacts (e.g. "0101010101", "01 01 01", raw bitstreams)
+        if (isBinaryOrNoise(cleaned)) {
+            return ""
+        }
+
+        // 8. Suppress ASS drawing vector coordinate streams and typesetting graphics
+        if (isAssDrawingOrCoordinateArtifact(cleaned)) {
+            return ""
+        }
+
+        return cleaned
+    }
+
+    private fun isAssDrawingOrCoordinateArtifact(text: String): Boolean {
+        if (text.length < 12) return false
+
+        val matcher = ASS_COORDINATE_PATTERN.matcher(text)
+        var coordCount = 0
+        while (matcher.find()) {
+            coordCount++
+            if (coordCount >= 3) return true
+        }
+
+        if (ASS_DRAWING_CMD_PATTERN.matcher(text).find() && coordCount >= 1) {
+            return true
+        }
+
+        val nonSpace = text.filter { !it.isWhitespace() }
+        if (nonSpace.length >= 25) {
+            val numSymbolCount = nonSpace.count { it.isDigit() || it == '.' || it == '-' || it == ',' }
+            if (numSymbolCount.toFloat() / nonSpace.length > 0.60f) {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    private fun isBinaryOrNoise(text: String): Boolean {
+        if (text.length < 6) return false
+        val noSpaces = text.replace(" ", "").replace("\t", "").replace("\n", "")
+        if (noSpaces.length >= 6 && noSpaces.all { it == '0' || it == '1' }) {
+            return true
+        }
+        val zeroOneCount = noSpaces.count { it == '0' || it == '1' }
+        if (noSpaces.length >= 10 && zeroOneCount.toFloat() / noSpaces.length > 0.85f) {
+            return true
+        }
+        return false
     }
 
     private fun cleanHtmlTags(text: String): String {
@@ -334,25 +387,90 @@ object SubtitleParser {
             return Charsets.UTF_16LE
         }
 
-        // 2. Try user preferred encoding
-        try {
-            val normalized = when {
-                preferredEncoding.contains("1252", ignoreCase = true) -> "windows-1252"
-                preferredEncoding.contains("8859-1", ignoreCase = true) -> "ISO-8859-1"
-                preferredEncoding.contains("UTF-16", ignoreCase = true) -> "UTF-16"
-                preferredEncoding.contains("GBK", ignoreCase = true) || preferredEncoding.contains("GB2312", ignoreCase = true) -> "GBK"
-                preferredEncoding.contains("Shift", ignoreCase = true) -> "Shift_JIS"
-                preferredEncoding.contains("Big5", ignoreCase = true) -> "Big5"
-                preferredEncoding.contains("EUC-KR", ignoreCase = true) -> "EUC-KR"
-                else -> preferredEncoding
+        // 2. Detect UTF-16 without BOM (Null-byte pattern)
+        if (bytes.size >= 16) {
+            var nullOnOdd = 0
+            var nullOnEven = 0
+            val sampleLimit = minOf(bytes.size, 1024)
+            for (i in 0 until sampleLimit) {
+                if (bytes[i] == 0.toByte()) {
+                    if (i % 2 == 1) nullOnOdd++ else nullOnEven++
+                }
             }
-            if (Charset.isSupported(normalized)) {
-                return Charset.forName(normalized)
+            if (nullOnOdd > sampleLimit / 4 && nullOnEven < 5) {
+                return Charsets.UTF_16LE
             }
-        } catch (e: Exception) {
-            // Fallback
+            if (nullOnEven > sampleLimit / 4 && nullOnOdd < 5) {
+                return Charsets.UTF_16BE
+            }
+        }
+
+        // 3. Try user preferred encoding
+        if (preferredEncoding.isNotBlank() && !preferredEncoding.equals("Auto", ignoreCase = true)) {
+            try {
+                val normalized = when {
+                    preferredEncoding.contains("1252", ignoreCase = true) -> "windows-1252"
+                    preferredEncoding.contains("8859-1", ignoreCase = true) -> "ISO-8859-1"
+                    preferredEncoding.contains("UTF-16LE", ignoreCase = true) -> "UTF-16LE"
+                    preferredEncoding.contains("UTF-16BE", ignoreCase = true) -> "UTF-16BE"
+                    preferredEncoding.contains("UTF-16", ignoreCase = true) -> "UTF-16"
+                    preferredEncoding.contains("GBK", ignoreCase = true) || preferredEncoding.contains("GB2312", ignoreCase = true) -> "GBK"
+                    preferredEncoding.contains("Shift", ignoreCase = true) -> "Shift_JIS"
+                    preferredEncoding.contains("Big5", ignoreCase = true) -> "Big5"
+                    preferredEncoding.contains("EUC-KR", ignoreCase = true) -> "EUC-KR"
+                    else -> preferredEncoding
+                }
+                if (Charset.isSupported(normalized)) {
+                    return Charset.forName(normalized)
+                }
+            } catch (e: Exception) {
+                // Fallback
+            }
+        }
+
+        // 4. Validate UTF-8 compliance, fallback to Windows-1252 / ISO-8859-1 if invalid
+        if (!isValidUtf8(bytes)) {
+            try {
+                return Charset.forName("windows-1252")
+            } catch (e: Exception) {
+                return Charsets.ISO_8859_1
+            }
         }
 
         return Charsets.UTF_8
+    }
+
+    private fun isValidUtf8(bytes: ByteArray): Boolean {
+        var i = 0
+        val len = bytes.size
+        while (i < len) {
+            val b = bytes[i].toInt() and 0xFF
+            when {
+                b in 0x00..0x7F -> i++
+                b in 0xC2..0xDF -> {
+                    if (i + 1 >= len) return false
+                    val b2 = bytes[i + 1].toInt() and 0xFF
+                    if (b2 !in 0x80..0xBF) return false
+                    i += 2
+                }
+                b in 0xE0..0xEF -> {
+                    if (i + 2 >= len) return false
+                    val b2 = bytes[i + 1].toInt() and 0xFF
+                    val b3 = bytes[i + 2].toInt() and 0xFF
+                    if (b2 !in 0x80..0xBF || b3 !in 0x80..0xBF) return false
+                    i += 3
+                }
+                b in 0xF0..0xF4 -> {
+                    if (i + 3 >= len) return false
+                    val b2 = bytes[i + 1].toInt() and 0xFF
+                    val b3 = bytes[i + 2].toInt() and 0xFF
+                    val b4 = bytes[i + 3].toInt() and 0xFF
+                    if (b2 !in 0x80..0xBF || b3 !in 0x80..0xBF || b4 !in 0x80..0xBF) return false
+                    i += 4
+                }
+                else -> return false
+            }
+        }
+        return true
     }
 }

@@ -281,36 +281,51 @@ data class NetworkCastDevice(
 )
 
 object NetworkCastScanner {
-    operator fun invoke(context: Context? = null): NetworkCastScanner = this
+    private var castManager: com.example.cast.CastManager? = null
 
-    private val _discoveredDevices = MutableStateFlow<List<NetworkCastDevice>>(
-        listOf(
-            NetworkCastDevice("Living Room TV (Chromecast)", "192.168.1.102", 8009, "Google Cast / mDNS", "_googlecast._tcp"),
-            NetworkCastDevice("Aero Audio Receiver (DLNA)", "192.168.1.115", 49152, "DLNA / UPnP MediaRenderer", "_upnp._tcp"),
-            NetworkCastDevice("Bedroom Soundbar (AirPlay)", "192.168.1.120", 7000, "AirPlay 2 Audio", "_airplay._tcp"),
-            NetworkCastDevice("Kitchen Smart Speaker (HTTP)", "192.168.1.134", 8080, "HTTP Live Stream", "_http._tcp"),
-            NetworkCastDevice("Local Media Server (SMB)", "192.168.1.50", 445, "SMB / Samba Share", "_smb._tcp"),
-            NetworkCastDevice("Network Storage (FTP)", "192.168.1.60", 21, "FTP Media Server", "_ftp._tcp")
-        )
-    )
+    operator fun invoke(context: Context? = null): NetworkCastScanner {
+        if (context != null && castManager == null) {
+            castManager = com.example.cast.CastManager.getInstance(context)
+        }
+        return this
+    }
+
+    private val _discoveredDevices = MutableStateFlow<List<NetworkCastDevice>>(emptyList())
     val discoveredDevices: StateFlow<List<NetworkCastDevice>> = _discoveredDevices.asStateFlow()
 
     private val _isScanning = MutableStateFlow(false)
     val isScanning: StateFlow<Boolean> = _isScanning.asStateFlow()
 
-    private var scanJob: Job? = null
-
     fun startScan(context: Context? = null) {
-        scanJob?.cancel()
-        _isScanning.value = true
-        scanJob = CoroutineScope(Dispatchers.Default).launch {
-            delay(1500)
-            _isScanning.value = false
+        if (context != null && castManager == null) {
+            castManager = com.example.cast.CastManager.getInstance(context)
+        }
+        val mgr = castManager
+        if (mgr != null) {
+            mgr.startScan()
+            CoroutineScope(Dispatchers.Main).launch {
+                mgr.discoveredDevices.collect { list ->
+                    if (list.isNotEmpty()) {
+                        _discoveredDevices.value = list.map {
+                            NetworkCastDevice(it.name, it.ipAddress, it.port, it.protocol, it.serviceType)
+                        }
+                    }
+                }
+            }
+            CoroutineScope(Dispatchers.Main).launch {
+                mgr.isScanning.collect { _isScanning.value = it }
+            }
+        } else {
+            _isScanning.value = true
+            CoroutineScope(Dispatchers.Default).launch {
+                delay(1500)
+                _isScanning.value = false
+            }
         }
     }
 
     fun stopScan() {
-        scanJob?.cancel()
+        castManager?.stopScan()
         _isScanning.value = false
     }
 }

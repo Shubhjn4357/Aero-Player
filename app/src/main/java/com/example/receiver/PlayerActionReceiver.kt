@@ -29,57 +29,15 @@ class PlayerActionReceiver : BroadcastReceiver() {
             return
         }
 
-        if (action == Intent.ACTION_MEDIA_BUTTON) {
-            val keyEvent = if (android.os.Build.VERSION.SDK_INT >= 33) {
-                intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT, KeyEvent::class.java)
-            } else {
-                @Suppress("DEPRECATION")
-                intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT) as? KeyEvent
-            }
-            if (keyEvent != null && keyEvent.action == KeyEvent.ACTION_DOWN) {
-                when (keyEvent.keyCode) {
-                    KeyEvent.KEYCODE_HEADSETHOOK -> {
-                        PlayerControlBridge.onHeadsetHookClick()
-                    }
-                    KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
-                        PlayerControlBridge.playPause()
-                    }
-                    KeyEvent.KEYCODE_MEDIA_PLAY -> {
-                        PlayerControlBridge.play()
-                    }
-                    KeyEvent.KEYCODE_MEDIA_PAUSE -> {
-                        PlayerControlBridge.pause()
-                    }
-                    KeyEvent.KEYCODE_MEDIA_NEXT,
-                    KeyEvent.KEYCODE_MEDIA_SKIP_FORWARD -> {
-                        PlayerControlBridge.next()
-                    }
-                    KeyEvent.KEYCODE_MEDIA_PREVIOUS,
-                    KeyEvent.KEYCODE_MEDIA_SKIP_BACKWARD -> {
-                        PlayerControlBridge.prev()
-                    }
-                    KeyEvent.KEYCODE_MEDIA_STOP -> {
-                        PlayerControlBridge.pause()
-                    }
-                    KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> {
-                        PlayerControlBridge.seekBy(10000L)
-                    }
-                    KeyEvent.KEYCODE_MEDIA_REWIND -> {
-                        PlayerControlBridge.seekBy(-10000L)
-                    }
-                }
-            }
-        } else {
-            when (action) {
-                ACTION_PLAY_PAUSE -> PlayerControlBridge.playPause()
-                ACTION_PLAY -> PlayerControlBridge.play()
-                ACTION_PAUSE -> PlayerControlBridge.pause()
-                ACTION_PREV -> PlayerControlBridge.prev()
-                ACTION_NEXT -> PlayerControlBridge.next()
-                ACTION_SEEK_FORWARD -> PlayerControlBridge.seekBy(10000L)
-                ACTION_SEEK_BACKWARD -> PlayerControlBridge.seekBy(-10000L)
-                ACTION_STOP -> PlayerControlBridge.pause()
-            }
+        when (action) {
+            ACTION_PLAY_PAUSE -> PlayerControlBridge.playPause()
+            ACTION_PLAY -> PlayerControlBridge.play()
+            ACTION_PAUSE -> PlayerControlBridge.pause()
+            ACTION_PREV -> PlayerControlBridge.prev()
+            ACTION_NEXT -> PlayerControlBridge.next()
+            ACTION_SEEK_FORWARD -> PlayerControlBridge.seekBy(10000L)
+            ACTION_SEEK_BACKWARD -> PlayerControlBridge.seekBy(-10000L)
+            ACTION_STOP -> PlayerControlBridge.pause()
         }
     }
 

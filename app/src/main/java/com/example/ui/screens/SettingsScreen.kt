@@ -660,6 +660,7 @@ private fun MainSettingsContent(
     onNavigateTo: (SettingsSubScreen) -> Unit,
     onOpenAbout: () -> Unit
 ) {
+    var showEngineDialog by remember { mutableStateOf(false) }
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -709,6 +710,12 @@ private fun MainSettingsContent(
             title = "Video screen orientation",
             subtitle = prefs.defaultOrientation,
             onClick = onOpenOrientationDialog
+        )
+
+        SettingsClickableItem(
+            title = "Default player engine",
+            subtitle = prefs.defaultPlayerEngine,
+            onClick = { showEngineDialog = true }
         )
 
         Spacer(modifier = Modifier.height(16.dp))
@@ -820,6 +827,24 @@ private fun MainSettingsContent(
 
         Spacer(modifier = Modifier.height(32.dp))
     }
+
+    if (showEngineDialog) {
+        val engineOptions = listOf(
+            "Auto (Smart Format Detection)",
+            "Media3 ExoPlayer",
+            "VLC Engine (vlcjni)"
+        )
+        SingleChoiceOptionDialog(
+            title = "Default player engine",
+            options = engineOptions,
+            selectedOption = prefs.defaultPlayerEngine,
+            onDismiss = { showEngineDialog = false },
+            onSelect = {
+                viewModel.updateDefaultPlayerEngine(it)
+                showEngineDialog = false
+            }
+        )
+    }
 }
 
 // -------------------------------------------------------------
@@ -830,6 +855,7 @@ private fun VideoSettingsSubScreen(
     prefs: PreferenceEntity,
     viewModel: MainViewModel
 ) {
+    var showEngineDialog by remember { mutableStateOf(false) }
     var showResolutionDialog by remember { mutableStateOf(false) }
     var showVideoOutputDialog by remember { mutableStateOf(false) }
 
@@ -839,6 +865,12 @@ private fun VideoSettingsSubScreen(
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 16.dp, vertical = 8.dp)
     ) {
+        SettingsClickableItem(
+            title = "Default player engine",
+            subtitle = prefs.defaultPlayerEngine,
+            onClick = { showEngineDialog = true }
+        )
+
         SettingsClickableItem(
             title = "Video output",
             subtitle = prefs.videoOutput,
@@ -910,6 +942,24 @@ private fun VideoSettingsSubScreen(
             onSelect = {
                 viewModel.updateVideoOutput(it)
                 showVideoOutputDialog = false
+            }
+        )
+    }
+
+    if (showEngineDialog) {
+        val engineOptions = listOf(
+            "Auto (Smart Format Detection)",
+            "Media3 ExoPlayer",
+            "VLC Engine (vlcjni)"
+        )
+        SingleChoiceOptionDialog(
+            title = "Default player engine",
+            options = engineOptions,
+            selectedOption = prefs.defaultPlayerEngine,
+            onDismiss = { showEngineDialog = false },
+            onSelect = {
+                viewModel.updateDefaultPlayerEngine(it)
+                showEngineDialog = false
             }
         )
     }

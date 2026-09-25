@@ -37,6 +37,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.material3.*
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
@@ -70,6 +71,16 @@ import androidx.compose.ui.layout.ContentScale
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Dispatchers
 
+private fun formatBytesSize(bytes: Long): String {
+    if (bytes <= 0) return ""
+    val mb = bytes.toDouble() / (1024 * 1024)
+    return if (mb >= 1024) {
+        String.format(java.util.Locale.US, "%.1f GB", mb / 1024)
+    } else {
+        String.format(java.util.Locale.US, "%.1f MB", mb)
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun MainScreen(
@@ -86,6 +97,18 @@ fun MainScreen(
         historyList.associate { it.uriString to (it.progressMs.toFloat() / it.duration.coerceAtLeast(1L).toFloat()).coerceIn(0f, 1f) }
     }
     val prefs by viewModel.preferencesState.collectAsState()
+    val favoriteFolders = remember(prefs.favoriteFoldersJson) {
+        try {
+            val array = org.json.JSONArray(prefs.favoriteFoldersJson)
+            val list = mutableListOf<String>()
+            for (i in 0 until array.length()) {
+                list.add(array.getString(i))
+            }
+            list
+        } catch (e: java.lang.Exception) {
+            listOf("Movies", "Music", "WhatsApp")
+        }
+    }
     val searchQuery by viewModel.searchQuery.collectAsState()
     val isScanning by viewModel.isScanning.collectAsState()
     
@@ -178,10 +201,13 @@ fun MainScreen(
         }
     }
 
+    var activeBrowseDirectory by remember { mutableStateOf<java.io.File?>(null) }
+
     val isBackEnabled = showAboutAppSection || 
                         isSelectModeActive || 
                         isSearchExpanded || 
                         activeFolderGroup != null ||
+                        activeBrowseDirectory != null ||
                         selectedMediaForOptions != null || 
                         showInfoDialogForMedia != null || 
                         showAddStreamDrawer || 
@@ -203,6 +229,15 @@ fun MainScreen(
             }
             activeFolderGroup != null -> {
                 viewModel.setActiveFolder(null)
+            }
+            activeBrowseDirectory != null -> {
+                val currentFolder = activeBrowseDirectory!!
+                val parent = currentFolder.parentFile
+                if (currentFolder.absolutePath == "/storage/emulated/0" || parent == null || parent.absolutePath == "/" || parent.absolutePath == "/storage") {
+                    activeBrowseDirectory = null
+                } else {
+                    activeBrowseDirectory = parent
+                }
             }
             isSelectModeActive -> {
                 isSelectModeActive = false
@@ -256,9 +291,10 @@ fun MainScreen(
 
     LaunchedEffect(playSubTab, prefs.groupByStyle) {
         viewModel.setActiveFolder(null)
+        activeBrowseDirectory = null
     }
 
-    // Grouping computation for folder / artist / file_type sorting
+    // Grouping computation for folder / artist / file_type / genre sorting
     val groupedMediaMap = remember(mediaList, prefs.groupByStyle) {
         when (prefs.groupByStyle) {
             "folder" -> {
@@ -273,9 +309,65 @@ fun MainScreen(
             "file_type" -> {
                 mediaList.groupBy { it.path.substringAfterLast('.', "UNKNOWN").uppercase() }
             }
+            "genre" -> {
+                mediaList.groupBy {
+                    val g = it.genre?.trim() ?: ""
+                    if (g.isEmpty() || g.equals("<unknown>", ignoreCase = true) || g.equals("unknown", ignoreCase = true)) {
+                        "Unknown Genre"
+                    } else g
+                }
+            }
             else -> {
                 emptyMap()
             }
+        }
+    }
+
+    val activeFolderFiles = remember(mediaList, activeFolderGroup, playSubTab, prefs.groupByStyle, prefs.sortBy, prefs.sortAscending) {
+        if (activeFolderGroup == null) emptyList()
+        else {
+            val nonStreams = mediaList.filter { 
+                it.genre != "Live Stream" &&
+                if (playSubTab == "Video") it.isVideo else if (playSubTab == "Audio") !it.isVideo else true
+            }
+            val raw = nonStreams.filter { item ->
+                when (prefs.groupByStyle) {
+                    "artist" -> {
+                        val art = item.displayArtist.trim()
+                        val key = if (art.isEmpty() || art.equals("<unknown>", ignoreCase = true) || art.equals("unknown", ignoreCase = true)) "Unknown Artist" else art
+                        key == activeFolderGroup
+                    }
+                    "file_type" -> {
+                        val ext = item.path.substringAfterLast('.', "").uppercase().trim()
+                        val key = if (ext.isEmpty()) "OTHER" else ext
+                        key == activeFolderGroup
+                    }
+                    "genre" -> {
+                        val gen = item.genre?.trim() ?: ""
+                        val key = if (gen.isEmpty() || gen.equals("<unknown>", ignoreCase = true) || gen.equals("unknown", ignoreCase = true)) "Unknown Genre" else gen
+                        key == activeFolderGroup
+                    }
+                    else -> {
+                        val f = try { java.io.File(item.path) } catch (e: Exception) { null }
+                        (f?.parentFile?.name ?: "Root Folder") == activeFolderGroup
+                    }
+                }
+            }
+            when (prefs.sortBy) {
+                "date" -> if (prefs.sortAscending) raw.sortedBy { it.dateAdded } else raw.sortedByDescending { it.dateAdded }
+                "size" -> if (prefs.sortAscending) raw.sortedBy { it.size } else raw.sortedByDescending { it.size }
+                "length", "duration" -> if (prefs.sortAscending) raw.sortedBy { it.duration } else raw.sortedByDescending { it.duration }
+                "artist" -> if (prefs.sortAscending) raw.sortedBy { (it.artist ?: "").lowercase() } else raw.sortedByDescending { (it.artist ?: "").lowercase() }
+                else -> if (prefs.sortAscending) raw.sortedBy { it.title.lowercase() } else raw.sortedByDescending { it.title.lowercase() }
+            }
+        }
+    }
+
+    val activeBrowseMediaFiles = remember(activeBrowseDirectory, mediaList) {
+        if (activeBrowseDirectory == null) emptyList()
+        else {
+            val dirPath = activeBrowseDirectory!!.absolutePath
+            mediaList.filter { it.path.startsWith(dirPath) }
         }
     }
 
@@ -816,7 +908,10 @@ fun MainScreen(
                                         .testTag("search_field_media")
                                 )
                             }
-                        } else {
+                        } else if (activeFolderGroup != null) {
+                            // =========================================================================
+                            // UNIFIED HEADER FOR OPENED FOLDER / DIR / TYPE / GENRE VIEW
+                            // =========================================================================
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -824,7 +919,367 @@ fun MainScreen(
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                // Branding Title with Hamburger Menu Button
+                                IconButton(
+                                    onClick = { viewModel.setActiveFolder(null) },
+                                    modifier = Modifier.testTag("unified_header_back")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                        contentDescription = "Back",
+                                        tint = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+
+                                val categoryIcon = when (prefs.groupByStyle) {
+                                    "artist" -> Icons.Default.Person
+                                    "file_type" -> Icons.Default.Category
+                                    "genre" -> Icons.Default.MusicNote
+                                    else -> Icons.Default.Folder
+                                }
+                                val totalFolderSize = remember(activeFolderFiles) { activeFolderFiles.sumOf { it.size } }
+                                val folderSizeStr = formatBytesSize(totalFolderSize)
+                                val folderSubtitle = if (folderSizeStr.isNotBlank()) "${activeFolderFiles.size} items • $folderSizeStr" else "${activeFolderFiles.size} items"
+
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .padding(start = 2.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(36.dp)
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = categoryIcon,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Column(modifier = Modifier.weight(1f, fill = false)) {
+                                        Text(
+                                            text = activeFolderGroup ?: "",
+                                            fontSize = 17.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.onSurface,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Text(
+                                            text = folderSubtitle,
+                                            fontSize = 12.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
+
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                                ) {
+                                    IconButton(
+                                        onClick = { isSearchExpanded = true },
+                                        modifier = Modifier.testTag("folder_header_search")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Search,
+                                            contentDescription = "Search",
+                                            tint = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
+
+                                    IconButton(
+                                        onClick = { viewModel.playAll(activeFolderFiles) },
+                                        enabled = activeFolderFiles.isNotEmpty(),
+                                        modifier = Modifier.testTag("folder_header_play_all")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.PlayArrow,
+                                            contentDescription = "Play All",
+                                            tint = if (activeFolderFiles.isNotEmpty()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+                                        )
+                                    }
+
+                                    var showFolderMenu by remember { mutableStateOf(false) }
+                                    Box {
+                                        IconButton(
+                                            onClick = { showFolderMenu = true },
+                                            modifier = Modifier.testTag("folder_header_more")
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.MoreVert,
+                                                contentDescription = "Folder options",
+                                                tint = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
+
+                                        DropdownMenu(
+                                            expanded = showFolderMenu,
+                                            onDismissRequest = { showFolderMenu = false }
+                                        ) {
+                                            DropdownMenuItem(
+                                                text = { Text(if (prefs.listStyle == "Grid") "Switch to List View" else "Switch to Grid View") },
+                                                leadingIcon = { Icon(if (prefs.listStyle == "Grid") Icons.Default.List else Icons.Default.GridView, contentDescription = null) },
+                                                onClick = {
+                                                    val newStyle = if (prefs.listStyle == "Grid") "List" else "Grid"
+                                                    viewModel.updateListStyle(newStyle)
+                                                    showFolderMenu = false
+                                                }
+                                            )
+                                            DropdownMenuItem(
+                                                text = { Text("Queue All") },
+                                                leadingIcon = { Icon(Icons.Default.PlaylistAdd, contentDescription = null) },
+                                                onClick = {
+                                                    showFolderMenu = false
+                                                    viewModel.addToQueue(activeFolderFiles)
+                                                    android.widget.Toast.makeText(context, "Added ${activeFolderFiles.size} items to queue", android.widget.Toast.LENGTH_SHORT).show()
+                                                }
+                                            )
+                                            HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                                            DropdownMenuItem(
+                                                text = { Text("Select Items") },
+                                                leadingIcon = { Icon(Icons.Default.CheckCircleOutline, contentDescription = null) },
+                                                onClick = {
+                                                    showFolderMenu = false
+                                                    isSelectModeActive = true
+                                                }
+                                            )
+                                            DropdownMenuItem(
+                                                text = { Text("Select All in Folder") },
+                                                leadingIcon = { Icon(Icons.Default.SelectAll, contentDescription = null) },
+                                                onClick = {
+                                                    showFolderMenu = false
+                                                    isSelectModeActive = true
+                                                    selectedMediaSet.clear()
+                                                    selectedMediaSet.addAll(activeFolderFiles)
+                                                }
+                                            )
+                                            DropdownMenuItem(
+                                                text = { Text("Add All to Playlist") },
+                                                leadingIcon = { Icon(Icons.Default.PlaylistAdd, contentDescription = null) },
+                                                onClick = {
+                                                    showFolderMenu = false
+                                                    if (activeFolderFiles.isNotEmpty()) {
+                                                        showPlaylistPickerForFolder = activeFolderFiles
+                                                    }
+                                                }
+                                            )
+                                            HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                                            DropdownMenuItem(
+                                                text = { Text("Sort by Title") },
+                                                leadingIcon = { Icon(Icons.Default.Title, contentDescription = null, tint = if (prefs.sortBy == "title") MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurface) },
+                                                trailingIcon = { if (prefs.sortBy == "title") Icon(Icons.Default.Check, contentDescription = null, tint = MaterialTheme.colorScheme.secondary) },
+                                                onClick = {
+                                                    viewModel.updateSorting("title", prefs.sortAscending)
+                                                    showFolderMenu = false
+                                                }
+                                            )
+                                            DropdownMenuItem(
+                                                text = { Text("Sort by Date Added") },
+                                                leadingIcon = { Icon(Icons.Default.DateRange, contentDescription = null, tint = if (prefs.sortBy == "date") MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurface) },
+                                                trailingIcon = { if (prefs.sortBy == "date") Icon(Icons.Default.Check, contentDescription = null, tint = MaterialTheme.colorScheme.secondary) },
+                                                onClick = {
+                                                    viewModel.updateSorting("date", prefs.sortAscending)
+                                                    showFolderMenu = false
+                                                }
+                                            )
+                                            DropdownMenuItem(
+                                                text = { Text("Sort by File Size") },
+                                                leadingIcon = { Icon(Icons.Default.SdCard, contentDescription = null, tint = if (prefs.sortBy == "size") MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurface) },
+                                                trailingIcon = { if (prefs.sortBy == "size") Icon(Icons.Default.Check, contentDescription = null, tint = MaterialTheme.colorScheme.secondary) },
+                                                onClick = {
+                                                    viewModel.updateSorting("size", prefs.sortAscending)
+                                                    showFolderMenu = false
+                                                }
+                                            )
+                                            DropdownMenuItem(
+                                                text = { Text("Sort by Duration") },
+                                                leadingIcon = { Icon(Icons.Default.Schedule, contentDescription = null, tint = if (prefs.sortBy in listOf("length", "duration")) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurface) },
+                                                trailingIcon = { if (prefs.sortBy in listOf("length", "duration")) Icon(Icons.Default.Check, contentDescription = null, tint = MaterialTheme.colorScheme.secondary) },
+                                                onClick = {
+                                                    viewModel.updateSorting("duration", prefs.sortAscending)
+                                                    showFolderMenu = false
+                                                }
+                                            )
+                                            HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                                            DropdownMenuItem(
+                                                text = { Text(if (prefs.sortAscending) "Order: Ascending" else "Order: Descending") },
+                                                leadingIcon = { Icon(if (prefs.sortAscending) Icons.Default.ArrowUpward else Icons.Default.ArrowDownward, contentDescription = null) },
+                                                onClick = {
+                                                    viewModel.updateSorting(prefs.sortBy, !prefs.sortAscending)
+                                                    showFolderMenu = false
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        } else if (playSubTab == "Folder" && activeBrowseDirectory != null) {
+                            // =========================================================================
+                            // UNIFIED HEADER FOR OPENED STORAGE DIRECTORY
+                            // =========================================================================
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                IconButton(
+                                    onClick = {
+                                        val currentFolder = activeBrowseDirectory!!
+                                        val parent = currentFolder.parentFile
+                                        if (currentFolder.absolutePath == "/storage/emulated/0" || parent == null || parent.absolutePath == "/" || parent.absolutePath == "/storage") {
+                                            activeBrowseDirectory = null
+                                        } else {
+                                            activeBrowseDirectory = parent
+                                        }
+                                    },
+                                    modifier = Modifier.testTag("browse_header_back")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                        contentDescription = "Back",
+                                        tint = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .padding(start = 2.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(36.dp)
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.FolderOpen,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Column(modifier = Modifier.weight(1f, fill = false)) {
+                                        Text(
+                                            text = activeBrowseDirectory?.name ?: "Folder",
+                                            fontSize = 17.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.onSurface,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Text(
+                                            text = activeBrowseDirectory?.absolutePath ?: "",
+                                            fontSize = 11.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
+
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                                ) {
+                                    IconButton(
+                                        onClick = { isSearchExpanded = true },
+                                        modifier = Modifier.testTag("browse_header_search")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Search,
+                                            contentDescription = "Search",
+                                            tint = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
+
+                                    if (activeBrowseMediaFiles.isNotEmpty()) {
+                                        IconButton(
+                                            onClick = { viewModel.playAll(activeBrowseMediaFiles) },
+                                            modifier = Modifier.testTag("browse_header_play_all")
+                                        ) {
+                                            Icon(Icons.Default.PlayArrow, contentDescription = "Play All", tint = MaterialTheme.colorScheme.primary)
+                                        }
+                                    }
+
+                                    var showBrowseMoreMenu by remember { mutableStateOf(false) }
+                                    Box {
+                                        IconButton(
+                                            onClick = { showBrowseMoreMenu = true },
+                                            modifier = Modifier.testTag("browse_header_more")
+                                        ) {
+                                            Icon(Icons.Default.MoreVert, contentDescription = "Options", tint = MaterialTheme.colorScheme.primary)
+                                        }
+                                        DropdownMenu(expanded = showBrowseMoreMenu, onDismissRequest = { showBrowseMoreMenu = false }) {
+                                            DropdownMenuItem(
+                                                text = { Text(if (prefs.listStyle == "Grid") "Switch to List View" else "Switch to Grid View") },
+                                                leadingIcon = { Icon(if (prefs.listStyle == "Grid") Icons.Default.List else Icons.Default.GridView, contentDescription = null) },
+                                                onClick = {
+                                                    val newStyle = if (prefs.listStyle == "Grid") "List" else "Grid"
+                                                    viewModel.updateListStyle(newStyle)
+                                                    showBrowseMoreMenu = false
+                                                }
+                                            )
+                                            if (activeBrowseMediaFiles.isNotEmpty()) {
+                                                DropdownMenuItem(
+                                                    text = { Text("Queue All") },
+                                                    leadingIcon = { Icon(Icons.Default.PlaylistAdd, contentDescription = null) },
+                                                    onClick = {
+                                                        showBrowseMoreMenu = false
+                                                        viewModel.addToQueue(activeBrowseMediaFiles)
+                                                        android.widget.Toast.makeText(context, "Added ${activeBrowseMediaFiles.size} items to queue", android.widget.Toast.LENGTH_SHORT).show()
+                                                    }
+                                                )
+                                            }
+                                            HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                                            DropdownMenuItem(
+                                                text = { Text("Select Items") },
+                                                leadingIcon = { Icon(Icons.Default.CheckCircleOutline, contentDescription = null) },
+                                                onClick = {
+                                                    showBrowseMoreMenu = false
+                                                    isSelectModeActive = true
+                                                }
+                                            )
+                                            val currentDirName = activeBrowseDirectory?.name ?: ""
+                                            val isFav = favoriteFolders.contains(currentDirName) || favoriteFolders.contains(activeBrowseDirectory?.absolutePath ?: "")
+                                            DropdownMenuItem(
+                                                text = { Text(if (isFav) "Remove from Favorite Folders" else "Pin to Favorite Folders") },
+                                                leadingIcon = { Icon(if (isFav) Icons.Default.Star else Icons.Default.StarBorder, contentDescription = null) },
+                                                onClick = {
+                                                    showBrowseMoreMenu = false
+                                                    activeBrowseDirectory?.name?.let { viewModel.toggleFavoriteFolder(it) }
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            // =========================================================================
+                            // ROOT VIEW UNIFIED HEADER (OPTIONS TOGGLE ACCORDING TO FOLDER / TYPE / GENRE LIST)
+                            // =========================================================================
+                            val rootTitle = "Aero"
+
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -836,21 +1291,25 @@ fun MainScreen(
                                             tint = MaterialTheme.colorScheme.primary
                                         )
                                     }
-                                    Text(
-                                        text = "Aero",
-                                        fontSize = 24.sp,
-                                        fontWeight = FontWeight.Black,
-                                        color = MaterialTheme.colorScheme.primary,
-                                        letterSpacing = (-0.5).sp
-                                    )
+                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        Text(
+                                            text = rootTitle,
+                                            fontSize = 22.sp,
+                                            fontWeight = FontWeight.Black,
+                                            color = MaterialTheme.colorScheme.primary,
+                                            letterSpacing = (-0.5).sp
+                                        )
+                                    }
                                 }
 
-                                // Quick Actions: Search, Layout Toggle, Add, Settings
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    horizontalArrangement = Arrangement.spacedBy(2.dp)
                                 ) {
-                                    IconButton(onClick = { isSearchExpanded = true }) {
+                                    IconButton(
+                                        onClick = { isSearchExpanded = true },
+                                        modifier = Modifier.testTag("root_header_search")
+                                    ) {
                                         Icon(
                                             imageVector = Icons.Default.Search,
                                             contentDescription = "Search",
@@ -858,129 +1317,70 @@ fun MainScreen(
                                         )
                                     }
 
+                                    IconButton(
+                                        onClick = {
+                                            val newStyle = if (prefs.listStyle == "Grid") "List" else "Grid"
+                                            viewModel.updateListStyle(newStyle)
+                                        },
+                                        modifier = Modifier.testTag("root_header_layout_toggle")
+                                    ) {
+                                        Icon(
+                                            imageVector = if (prefs.listStyle == "Grid") Icons.Default.List else Icons.Default.GridView,
+                                            contentDescription = "Toggle Grid/List View",
+                                            tint = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
+
+                                    var showRootMoreMenu by remember { mutableStateOf(false) }
                                     Box {
-                                        IconButton(onClick = { showDisplaySettingsBottomSheet = true }) {
+                                        IconButton(
+                                            onClick = { showRootMoreMenu = true },
+                                            modifier = Modifier.testTag("root_header_more_menu")
+                                        ) {
                                             Icon(
-                                                imageVector = Icons.Default.Sort,
-                                                contentDescription = "Sort and view options",
+                                                imageVector = Icons.Default.MoreVert,
+                                                contentDescription = "More options",
                                                 tint = MaterialTheme.colorScheme.primary
                                             )
                                         }
                                         DropdownMenu(
-                                            expanded = showSortMenu,
-                                            onDismissRequest = { showSortMenu = false }
+                                            expanded = showRootMoreMenu,
+                                            onDismissRequest = { showRootMoreMenu = false }
                                         ) {
-                                            // VIEW LAYOUT TOGGLE
                                             DropdownMenuItem(
-                                                text = { Text(if (prefs.listStyle == "Grid") "Switch to List View" else "Switch to Grid View") },
-                                                leadingIcon = { Icon(if (prefs.listStyle == "Grid") Icons.Default.List else Icons.Default.GridView, contentDescription = null) },
+                                                text = { Text("Display & Sort Settings") },
+                                                leadingIcon = { Icon(Icons.Default.Sort, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
                                                 onClick = {
-                                                    val newStyle = if (prefs.listStyle == "Grid") "List" else "Grid"
-                                                    viewModel.updateListStyle(newStyle)
-                                                    showSortMenu = false
+                                                    showRootMoreMenu = false
+                                                    showDisplaySettingsBottomSheet = true
                                                 }
                                             )
-                                            
+                                            DropdownMenuItem(
+                                                text = { Text("Settings") },
+                                                leadingIcon = { Icon(Icons.Default.Settings, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
+                                                onClick = {
+                                                    showRootMoreMenu = false
+                                                    onNavigateToSettings()
+                                                }
+                                            )
                                             HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-
-                                            // SORT OPTIONS
                                             DropdownMenuItem(
-                                                text = { Text("Sort by Title") },
-                                                leadingIcon = { Icon(Icons.Default.Title, contentDescription = null, tint = if (prefs.sortBy == "title") MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurface) },
-                                                trailingIcon = { if (prefs.sortBy == "title") Icon(Icons.Default.Check, contentDescription = null, tint = MaterialTheme.colorScheme.secondary) },
+                                                text = { Text("Browse Files from Storage") },
+                                                leadingIcon = { Icon(Icons.Default.Folder, contentDescription = null, tint = MaterialTheme.colorScheme.secondary) },
                                                 onClick = {
-                                                    viewModel.updateSorting("title", prefs.sortAscending)
-                                                    showSortMenu = false
+                                                    showRootMoreMenu = false
+                                                    showStorageBrowser = true
                                                 }
                                             )
                                             DropdownMenuItem(
-                                                text = { Text("Sort by Date Added") },
-                                                leadingIcon = { Icon(Icons.Default.DateRange, contentDescription = null, tint = if (prefs.sortBy == "date") MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurface) },
-                                                trailingIcon = { if (prefs.sortBy == "date") Icon(Icons.Default.Check, contentDescription = null, tint = MaterialTheme.colorScheme.secondary) },
+                                                text = { Text("Open File (System Picker)") },
+                                                leadingIcon = { Icon(Icons.Default.FolderOpen, contentDescription = null, tint = MaterialTheme.colorScheme.secondary) },
                                                 onClick = {
-                                                    viewModel.updateSorting("date", prefs.sortAscending)
-                                                    showSortMenu = false
+                                                    showRootMoreMenu = false
+                                                    openDocumentLauncher.launch(arrayOf("video/*", "audio/*", "*/*"))
                                                 }
                                             )
-                                            DropdownMenuItem(
-                                                text = { Text("Sort by File Size") },
-                                                leadingIcon = { Icon(Icons.Default.SdCard, contentDescription = null, tint = if (prefs.sortBy == "size") MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurface) },
-                                                trailingIcon = { if (prefs.sortBy == "size") Icon(Icons.Default.Check, contentDescription = null, tint = MaterialTheme.colorScheme.secondary) },
-                                                onClick = {
-                                                    viewModel.updateSorting("size", prefs.sortAscending)
-                                                    showSortMenu = false
-                                                }
-                                            )
-                                            DropdownMenuItem(
-                                                text = { Text("Merge Group Wise (Folder)") },
-                                                leadingIcon = { Icon(Icons.Default.Folder, contentDescription = null, tint = if (prefs.sortBy == "folder") MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurface) },
-                                                trailingIcon = { if (prefs.sortBy == "folder") Icon(Icons.Default.Check, contentDescription = null, tint = MaterialTheme.colorScheme.secondary) },
-                                                onClick = {
-                                                    viewModel.updateSorting("folder", prefs.sortAscending)
-                                                    showSortMenu = false
-                                                }
-                                            )
-                                            DropdownMenuItem(
-                                                text = { Text("Merge Group Wise (Artist)") },
-                                                leadingIcon = { Icon(Icons.Default.Group, contentDescription = null, tint = if (prefs.sortBy == "artist") MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurface) },
-                                                trailingIcon = { if (prefs.sortBy == "artist") Icon(Icons.Default.Check, contentDescription = null, tint = MaterialTheme.colorScheme.secondary) },
-                                                onClick = {
-                                                    viewModel.updateSorting("artist", prefs.sortAscending)
-                                                    showSortMenu = false
-                                                }
-                                            )
-
-                                             HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-
-                                             // SORT ORDER DIRECTION
-                                             DropdownMenuItem(
-                                                 text = { Text(if (prefs.sortAscending) "Order: Ascending" else "Order: Descending") },
-                                                 leadingIcon = { Icon(if (prefs.sortAscending) Icons.Default.ArrowUpward else Icons.Default.ArrowDownward, contentDescription = null) },
-                                                 onClick = {
-                                                     viewModel.updateSorting(prefs.sortBy, !prefs.sortAscending)
-                                                     showSortMenu = false
-                                                 }
-                                             )
-
-                                             HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-
-                                             // STORAGE PICKER ENTRY
-                                             DropdownMenuItem(
-                                                 text = { Text("Browse Files from Storage") },
-                                                 leadingIcon = { Icon(Icons.Default.Folder, contentDescription = null, tint = MaterialTheme.colorScheme.secondary) },
-                                                 onClick = {
-                                                     showStorageBrowser = true
-                                                     showSortMenu = false
-                                                 }
-                                             )
-                                             DropdownMenuItem(
-                                                 text = { Text("Open File (System Picker)") },
-                                                 leadingIcon = { Icon(Icons.Default.FolderOpen, contentDescription = null, tint = MaterialTheme.colorScheme.secondary) },
-                                                 onClick = {
-                                                     openDocumentLauncher.launch(arrayOf("video/*", "audio/*", "*/*"))
-                                                     showSortMenu = false
-                                                 }
-                                             )
-                                             DropdownMenuItem(
-                                                 text = { Text("Load Sample Media Pack") },
-                                                 leadingIcon = { Icon(Icons.Default.Movie, contentDescription = null, tint = MaterialTheme.colorScheme.secondary) },
-                                                 onClick = {
-                                                     viewModel.loadDemoMediaPack()
-                                                     showSortMenu = false
-                                                     android.widget.Toast.makeText(context, "Loaded HD sample videos and audio tracks", android.widget.Toast.LENGTH_SHORT).show()
-                                                 }
-                                             )
-                                         }
-                                     }
-
-                                    // Removed stream icon as requested
-
-                                    IconButton(onClick = onNavigateToSettings) {
-                                        Icon(
-                                            imageVector = Icons.Default.Settings,
-                                            contentDescription = "Settings",
-                                            tint = MaterialTheme.colorScheme.primary
-                                        )
+                                        }
                                     }
                                 }
                             }
@@ -1300,7 +1700,13 @@ fun MainScreen(
                                     FavoritesTabContent(viewModel = viewModel, onPlayItem = onPlayItem)
                                 }
                                 "Folder" -> {
-                                    BrowseTabContent(viewModel = viewModel, onPlayItem = onPlayItem)
+                                    BrowseTabContent(
+                                        viewModel = viewModel,
+                                        onPlayItem = onPlayItem,
+                                        activeBrowseFolder = activeBrowseDirectory,
+                                        onBrowseFolderChange = { activeBrowseDirectory = it },
+                                        externalSearchQuery = if (isSearchExpanded) searchQuery else ""
+                                    )
                                 }
                                 "Browse" -> {
                                     StreamOnlyTabContent(
@@ -1331,6 +1737,14 @@ fun MainScreen(
                                             "file_type" -> {
                                                 nonStreamMediaList.groupBy { it.path.substringAfterLast('.', "UNKNOWN").uppercase() }
                                             }
+                                            "genre" -> {
+                                                nonStreamMediaList.groupBy {
+                                                    val g = it.genre?.trim() ?: ""
+                                                    if (g.isEmpty() || g.equals("<unknown>", ignoreCase = true) || g.equals("unknown", ignoreCase = true)) {
+                                                        "Unknown Genre"
+                                                    } else g
+                                                }
+                                            }
                                             else -> {
                                                 emptyMap()
                                             }
@@ -1343,13 +1757,9 @@ fun MainScreen(
                                             onScanClick = { viewModel.scanLocalMedia() },
                                             onOpenFileClick = {
                                                 openDocumentLauncher.launch(arrayOf("video/*", "audio/*", "*/*"))
-                                            },
-                                            onLoadDemoClick = {
-                                                viewModel.loadDemoMediaPack()
-                                                android.widget.Toast.makeText(context, "Loaded HD sample videos and audio tracks", android.widget.Toast.LENGTH_SHORT).show()
                                             }
                                         )
-                                    } else if (prefs.groupByStyle == "folder") {
+                                    } else if (prefs.groupByStyle in listOf("folder", "artist", "file_type", "genre")) {
                                         FolderListComponent(
                                             mediaList = nonStreamMediaList,
                                             viewModel = viewModel,
@@ -2098,6 +2508,28 @@ fun MainScreen(
                                 Text("Type", color = MaterialTheme.colorScheme.onSurface, fontSize = 12.sp, fontWeight = FontWeight.Medium)
                             }
                         }
+                    }
+
+                    // Genre
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        val isGenreSelected = prefs.groupByStyle == "genre"
+                        Card(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(40.dp)
+                                .clickable { viewModel.updateGroupByStyle("genre") },
+                            shape = RoundedCornerShape(10.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (isGenreSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                            ),
+                            border = BorderStroke(1.dp, if (isGenreSelected) MaterialTheme.colorScheme.primary else Color.Transparent)
+                        ) {
+                            Row(modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Icon(Icons.Default.MusicNote, contentDescription = null, modifier = Modifier.size(16.dp), tint = if (isGenreSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text("Genre", color = MaterialTheme.colorScheme.onSurface, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                            }
+                        }
+                        Spacer(modifier = Modifier.weight(1f))
                     }
                 }
                 
@@ -3564,12 +3996,11 @@ fun MediaGridCard(
             )
             .testTag("media_grid_card_${item.title.replace(" ", "_")}"),
         colors = CardDefaults.cardColors(
-            containerColor = if (isSelected || isActive) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f) 
-                             else Color.Transparent
+            containerColor = if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f) 
+                             else if (isActive) MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
+                             else MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.5f)
         ),
-        border = if (isSelected) androidx.compose.foundation.BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
-                 else if (isActive) androidx.compose.foundation.BorderStroke(1.5.dp, MaterialTheme.colorScheme.secondary)
-                 else null,
+        border = null,
         shape = RoundedCornerShape(14.dp)
     ) {
         Column {
@@ -3738,13 +4169,12 @@ fun MediaListRow(
                 onLongClick = onLongClick
             ),
         colors = CardDefaults.cardColors(
-            containerColor = if (isSelected || isActive) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f) 
-                             else Color.Transparent
+            containerColor = if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f) 
+                             else if (isActive) MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
+                             else MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.4f)
         ),
-        border = if (isSelected) androidx.compose.foundation.BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
-                 else if (isActive) androidx.compose.foundation.BorderStroke(1.5.dp, MaterialTheme.colorScheme.secondary)
-                 else null,
-        shape = RoundedCornerShape(12.dp)
+        border = null,
+        shape = RoundedCornerShape(14.dp)
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
             Row(
@@ -3895,7 +4325,7 @@ fun EmptyState(
             Spacer(modifier = Modifier.height(8.dp))
 
             Text(
-                text = "Discover media across device storage, open any file directly, or explore high-definition sample media.",
+                text = "Discover media across device storage or open any file directly.",
                 fontSize = 13.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                 textAlign = TextAlign.Center,
@@ -3929,16 +4359,6 @@ fun EmptyState(
                     Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(8.dp))
                     Text("Open File from Storage", fontWeight = FontWeight.Bold)
-                }
-
-                FilledTonalButton(
-                    onClick = onLoadDemoClick,
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Icon(Icons.Default.Movie, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Load Sample Media Pack", fontWeight = FontWeight.Bold)
                 }
             }
         }
@@ -4681,17 +5101,169 @@ fun GroupHeaderRow(
     }
 }
 
-
-
-
-
-
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun BrowseFileCard(
+    file: java.io.File,
+    isDir: Boolean,
+    isVideo: Boolean,
+    isAudio: Boolean,
+    isItemSelected: Boolean,
+    isGrid: Boolean,
+    accentOrange: Color,
+    onItemClick: () -> Unit,
+    onItemLongClick: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .combinedClickable(
+                onClick = onItemClick,
+                onLongClick = onItemLongClick
+            ),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isItemSelected) accentOrange.copy(alpha = 0.25f) else if (isDir) {
+                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (isGrid) 0.25f else 0.2f)
+            } else {
+                MaterialTheme.colorScheme.surface.copy(alpha = 0.7f)
+            }
+        ),
+        border = BorderStroke(
+            if (isItemSelected) 2.dp else 1.dp,
+            if (isItemSelected) accentOrange else MaterialTheme.colorScheme.outline.copy(alpha = 0.12f)
+        )
+    ) {
+        if (isGrid) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.TopEnd) {
+                    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = when {
+                                isDir -> Icons.Default.Folder
+                                isVideo -> Icons.Default.Movie
+                                else -> Icons.Default.MusicNote
+                            },
+                            contentDescription = null,
+                            tint = when {
+                                isDir -> MaterialTheme.colorScheme.primary
+                                isVideo -> MaterialTheme.colorScheme.secondary
+                                else -> MaterialTheme.colorScheme.tertiary
+                            },
+                            modifier = Modifier.size(36.dp)
+                        )
+                    }
+                    if (isItemSelected) {
+                        Box(
+                            modifier = Modifier
+                                .size(20.dp)
+                                .clip(CircleShape)
+                                .background(accentOrange),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(Icons.Default.Check, contentDescription = "Selected", tint = Color.White, modifier = Modifier.size(12.dp))
+                        }
+                    }
+                }
+                Text(
+                    text = file.name,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 12.sp,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                )
+                val detailsText = if (isDir) {
+                    val count = try { file.list()?.size ?: 0 } catch (e: Exception) { 0 }
+                    "$count items"
+                } else {
+                    val sizeMb = file.length().toFloat() / (1024 * 1024)
+                    String.format("%.1f MB", sizeMb)
+                }
+                Text(
+                    text = detailsText,
+                    fontSize = 10.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                )
+            }
+        } else {
+            Row(
+                modifier = Modifier.padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Icon(
+                    imageVector = when {
+                        isDir -> Icons.Default.Folder
+                        isVideo -> Icons.Default.Movie
+                        else -> Icons.Default.MusicNote
+                    },
+                    contentDescription = null,
+                    tint = when {
+                        isDir -> MaterialTheme.colorScheme.primary
+                        isVideo -> MaterialTheme.colorScheme.secondary
+                        else -> MaterialTheme.colorScheme.tertiary
+                    },
+                    modifier = Modifier.size(28.dp)
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = file.name,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 13.sp,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    val detailsText = if (isDir) {
+                        val count = try { file.list()?.size ?: 0 } catch(e:Exception) { 0 }
+                        "$count items"
+                    } else {
+                        val sizeMb = file.length().toFloat() / (1024 * 1024)
+                        String.format("%.1f MB", sizeMb)
+                    }
+                    Text(
+                        text = detailsText,
+                        fontSize = 10.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                    )
+                }
+                if (isItemSelected) {
+                    Box(
+                        modifier = Modifier
+                            .size(22.dp)
+                            .clip(CircleShape)
+                            .background(accentOrange),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(Icons.Default.Check, contentDescription = "Selected", tint = Color.White, modifier = Modifier.size(14.dp))
+                    }
+                } else if (isDir) {
+                    Icon(
+                        imageVector = Icons.Default.KeyboardArrowRight,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+        }
+    }
+}
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun BrowseTabContent(
     viewModel: MainViewModel,
-    onPlayItem: (MediaEntity) -> Unit
+    onPlayItem: (MediaEntity) -> Unit,
+    activeBrowseFolder: java.io.File? = null,
+    onBrowseFolderChange: (java.io.File?) -> Unit = {},
+    externalSearchQuery: String = ""
 ) {
     val mediaList by viewModel.filteredMediaList.collectAsState()
     val prefs by viewModel.preferencesState.collectAsState()
@@ -4716,16 +5288,23 @@ fun BrowseTabContent(
     var isNetworkScanning by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
-    var currentBrowseFolder by remember { mutableStateOf<java.io.File?>(null) }
-    var searchQuery by remember { mutableStateOf("") }
+    var internalBrowseFolder by remember { mutableStateOf<java.io.File?>(null) }
+    val currentBrowseFolder = activeBrowseFolder ?: internalBrowseFolder
+    val setBrowseFolder: (java.io.File?) -> Unit = { folder ->
+        internalBrowseFolder = folder
+        onBrowseFolderChange(folder)
+    }
+
+    var localSearchQuery by remember { mutableStateOf("") }
+    val searchQuery = if (externalSearchQuery.isNotEmpty()) externalSearchQuery else localSearchQuery
 
     BackHandler(enabled = currentBrowseFolder != null) {
         val currentFolder = currentBrowseFolder!!
         val parent = currentFolder.parentFile
         if (currentFolder.absolutePath == "/storage/emulated/0" || parent == null || parent.absolutePath == "/" || parent.absolutePath == "/storage") {
-            currentBrowseFolder = null
+            setBrowseFolder(null)
         } else {
-            currentBrowseFolder = parent
+            setBrowseFolder(parent)
         }
     }
 
@@ -4748,16 +5327,11 @@ fun BrowseTabContent(
             dirs
         }
 
-        val filesList = remember(currentFolder, searchQuery, mediaList) {
+        val filesList = remember(currentFolder, searchQuery, mediaList, prefs.sortBy, prefs.sortAscending) {
             try {
-                val files = currentFolder.listFiles()
-                if (files != null && files.isNotEmpty()) {
-                    val sorted = files.sortedWith(compareBy({ !it.isDirectory }, { it.name.lowercase() }))
-                    if (searchQuery.isEmpty()) {
-                        sorted.toList()
-                    } else {
-                        sorted.filter { it.name.contains(searchQuery, ignoreCase = true) }
-                    }
+                val rawFiles = currentFolder.listFiles()
+                val candidateFiles = if (rawFiles != null && rawFiles.isNotEmpty()) {
+                    rawFiles.toList()
                 } else {
                     // Fallback: Reconstruct virtual directory structure from mediaList!
                     val folderPath = currentFolder.absolutePath
@@ -4771,11 +5345,27 @@ fun BrowseTabContent(
                             }
                         }
                     }
-                    val sorted = directChildren.sortedWith(compareBy({ !it.isDirectory && !virtualDirs.contains(it.absolutePath) }, { it.name.lowercase() }))
-                    if (searchQuery.isEmpty()) {
-                        sorted
+                    directChildren.toList()
+                }
+
+                val filtered = if (searchQuery.isEmpty()) {
+                    candidateFiles
+                } else {
+                    candidateFiles.filter { it.name.contains(searchQuery, ignoreCase = true) }
+                }
+
+                filtered.sortedWith { f1, f2 ->
+                    val isDir1 = f1.isDirectory || virtualDirs.contains(f1.absolutePath)
+                    val isDir2 = f2.isDirectory || virtualDirs.contains(f2.absolutePath)
+                    if (isDir1 != isDir2) {
+                        if (isDir1) -1 else 1
                     } else {
-                        sorted.filter { it.name.contains(searchQuery, ignoreCase = true) }
+                        val comp = when (prefs.sortBy) {
+                            "size" -> f1.length().compareTo(f2.length())
+                            "date" -> f1.lastModified().compareTo(f2.lastModified())
+                            else -> f1.name.lowercase().compareTo(f2.name.lowercase())
+                        }
+                        if (prefs.sortAscending) comp else -comp
                     }
                 }
             } catch (e: Exception) {
@@ -4783,100 +5373,100 @@ fun BrowseTabContent(
             }
         }
 
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-            contentPadding = PaddingValues(bottom = 120.dp)
-        ) {
-            item {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+        if (filesList.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(vertical = 48.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    IconButton(
-                        onClick = {
-                            val parent = currentFolder.parentFile
-                            if (currentFolder.absolutePath == "/storage/emulated/0" || parent == null || parent.absolutePath == "/" || parent.absolutePath == "/storage") {
-                                currentBrowseFolder = null
-                            } else {
-                                currentBrowseFolder = parent
-                            }
-                        },
-                        colors = IconButtonDefaults.iconButtonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
-                    ) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
-                    }
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = currentFolder.name,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 16.sp,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            text = currentFolder.absolutePath,
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                }
-            }
-
-            item {
-                OutlinedTextField(
-                    value = searchQuery,
-                    onValueChange = { searchQuery = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    placeholder = { Text("Search files & folders...", fontSize = 13.sp) },
-                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(20.dp)) },
-                    trailingIcon = if (searchQuery.isNotEmpty()) {
-                        {
-                            IconButton(onClick = { searchQuery = "" }) {
-                                Icon(Icons.Default.Clear, contentDescription = "Clear search", modifier = Modifier.size(20.dp))
-                            }
-                        }
-                    } else null,
-                    singleLine = true,
-                    shape = RoundedCornerShape(12.dp),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = MaterialTheme.colorScheme.primary,
-                        unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
+                    Icon(
+                        imageVector = Icons.Default.FolderOpen,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                        modifier = Modifier.size(48.dp)
                     )
-                )
+                    Text(
+                        text = "No files or folders found",
+                        fontSize = 14.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                    )
+                }
             }
-
-            if (filesList.isEmpty()) {
-                item {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 48.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
+        } else if (prefs.listStyle == "Grid") {
+            LazyVerticalGrid(
+                columns = GridCells.Adaptive(140.dp),
+                contentPadding = PaddingValues(bottom = 120.dp, start = 16.dp, end = 16.dp, top = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier.fillMaxSize()
+            ) {
+                if (activeBrowseFolder == null) {
+                    item(span = { GridItemSpan(maxLineSpan) }) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.FolderOpen,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
-                                modifier = Modifier.size(48.dp)
-                            )
-                            Text(
-                                text = "No files or folders found",
-                                fontSize = 14.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-                            )
+                            IconButton(
+                                onClick = {
+                                    val parent = currentFolder.parentFile
+                                    if (currentFolder.absolutePath == "/storage/emulated/0" || parent == null || parent.absolutePath == "/" || parent.absolutePath == "/storage") {
+                                        setBrowseFolder(null)
+                                    } else {
+                                        setBrowseFolder(parent)
+                                    }
+                                },
+                                colors = IconButtonDefaults.iconButtonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+                            ) {
+                                Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                            }
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = currentFolder.name,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 16.sp,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = currentFolder.absolutePath,
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
                         }
                     }
+
+                    item(span = { GridItemSpan(maxLineSpan) }) {
+                        OutlinedTextField(
+                            value = localSearchQuery,
+                            onValueChange = { localSearchQuery = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            placeholder = { Text("Search files & folders...", fontSize = 13.sp) },
+                            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(20.dp)) },
+                            trailingIcon = if (localSearchQuery.isNotEmpty()) {
+                                {
+                                    IconButton(onClick = { localSearchQuery = "" }) {
+                                        Icon(Icons.Default.Clear, contentDescription = "Clear search", modifier = Modifier.size(20.dp))
+                                    }
+                                }
+                            } else null,
+                            singleLine = true,
+                            shape = RoundedCornerShape(12.dp),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = MaterialTheme.colorScheme.primary,
+                                unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
+                            )
+                        )
+                    }
                 }
-            } else {
+
                 items(filesList, key = { it.absolutePath }) { file ->
                     val isDir = file.isDirectory || virtualDirs.contains(file.absolutePath)
                     val ext = file.extension.lowercase()
@@ -4887,131 +5477,198 @@ fun BrowseTabContent(
                     } else {
                         selectionState.selectedVideoIds.contains(file.absolutePath) || mediaList.find { it.path == file.absolutePath }?.let { selectionState.selectedVideoIds.contains(it.uriString) } == true
                     }
-                    
+
                     if (isDir || isVideo || isAudio) {
-                        Card(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .combinedClickable(
-                                    onClick = {
-                                        if (selectionState.isInSelectionMode || isSelectModeActive) {
-                                            if (isDir) {
-                                                viewModel.toggleFolderSelection(file.name)
-                                            } else {
-                                                val matched = mediaList.find { it.path == file.absolutePath }
-                                                val targetUri = matched?.uriString ?: "file://${file.absolutePath}"
-                                                viewModel.toggleVideoSelection(targetUri)
-                                            }
-                                        } else {
-                                            if (isDir) {
-                                                searchQuery = ""
-                                                currentBrowseFolder = file
-                                            } else {
-                                                val matchedMedia = mediaList.find { it.path == file.absolutePath }
-                                                if (matchedMedia != null) {
-                                                    onPlayItem(matchedMedia)
-                                                } else {
-                                                    val mediaItem = MediaEntity(
-                                                        uriString = "file://${file.absolutePath}",
-                                                        title = file.nameWithoutExtension,
-                                                        artist = "Local File",
-                                                        album = file.parentFile?.name ?: "Storage",
-                                                        duration = 0L,
-                                                        size = file.length(),
-                                                        dateAdded = file.lastModified(),
-                                                        isVideo = isVideo,
-                                                        path = file.absolutePath,
-                                                        mimeType = if (isVideo) "video/*" else "audio/*"
-                                                    )
-                                                    onPlayItem(mediaItem)
-                                                }
-                                                android.widget.Toast.makeText(context, "Playing: ${file.nameWithoutExtension}", android.widget.Toast.LENGTH_SHORT).show()
-                                            }
-                                        }
-                                    },
-                                        onLongClick = {
-                                            if (isDir) {
-                                                viewModel.toggleFolderSelection(file.name)
-                                            } else {
-                                                val matched = mediaList.find { it.path == file.absolutePath }
-                                                val targetUri = matched?.uriString ?: "file://${file.absolutePath}"
-                                                viewModel.toggleVideoSelection(targetUri)
-                                            }
-                                        }
-                                    ),
-                            shape = RoundedCornerShape(12.dp),
-                            colors = CardDefaults.cardColors(
-                                containerColor = if (isItemSelected) accentOrange.copy(alpha = 0.25f) else if (isDir) {
-                                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.2f)
-                                } else {
-                                    MaterialTheme.colorScheme.surface.copy(alpha = 0.7f)
-                                }
-                            ),
-                            border = BorderStroke(
-                                if (isItemSelected) 2.dp else 1.dp,
-                                if (isItemSelected) accentOrange else MaterialTheme.colorScheme.outline.copy(alpha = 0.12f)
-                            )
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(12.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(12.dp)
-                            ) {
-                                Icon(
-                                    imageVector = when {
-                                        isDir -> Icons.Default.Folder
-                                        isVideo -> Icons.Default.Movie
-                                        else -> Icons.Default.MusicNote
-                                    },
-                                    contentDescription = null,
-                                    tint = when {
-                                        isDir -> MaterialTheme.colorScheme.primary
-                                        isVideo -> MaterialTheme.colorScheme.secondary
-                                        else -> MaterialTheme.colorScheme.tertiary
-                                    },
-                                    modifier = Modifier.size(28.dp)
-                                )
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = file.name,
-                                        fontWeight = FontWeight.SemiBold,
-                                        fontSize = 13.sp,
-                                        maxLines = 2,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                    val detailsText = if (isDir) {
-                                        val count = try { file.list()?.size ?: 0 } catch(e:Exception) { 0 }
-                                        "$count items"
+                        BrowseFileCard(
+                            file = file,
+                            isDir = isDir,
+                            isVideo = isVideo,
+                            isAudio = isAudio,
+                            isItemSelected = isItemSelected,
+                            isGrid = true,
+                            accentOrange = accentOrange,
+                            onItemClick = {
+                                if (selectionState.isInSelectionMode || isSelectModeActive) {
+                                    if (isDir) {
+                                        viewModel.toggleFolderSelection(file.name)
                                     } else {
-                                        val sizeMb = file.length().toFloat() / (1024 * 1024)
-                                        String.format("%.1f MB", sizeMb)
+                                        val matched = mediaList.find { it.path == file.absolutePath }
+                                        val targetUri = matched?.uriString ?: "file://${file.absolutePath}"
+                                        viewModel.toggleVideoSelection(targetUri)
                                     }
-                                    Text(
-                                        text = detailsText,
-                                        fontSize = 10.sp,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-                                    )
+                                } else {
+                                    if (isDir) {
+                                        setBrowseFolder(file)
+                                    } else {
+                                        val matchedMedia = mediaList.find { it.path == file.absolutePath }
+                                        if (matchedMedia != null) {
+                                            onPlayItem(matchedMedia)
+                                        } else {
+                                            val mediaItem = MediaEntity(
+                                                uriString = "file://${file.absolutePath}",
+                                                title = file.nameWithoutExtension,
+                                                artist = "Local File",
+                                                album = file.parentFile?.name ?: "Storage",
+                                                duration = 0L,
+                                                size = file.length(),
+                                                dateAdded = file.lastModified(),
+                                                isVideo = isVideo,
+                                                path = file.absolutePath,
+                                                mimeType = if (isVideo) "video/*" else "audio/*"
+                                            )
+                                            onPlayItem(mediaItem)
+                                        }
+                                        android.widget.Toast.makeText(context, "Playing: ${file.nameWithoutExtension}", android.widget.Toast.LENGTH_SHORT).show()
+                                    }
                                 }
-                                if (isItemSelected) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(22.dp)
-                                            .clip(CircleShape)
-                                            .background(accentOrange),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Icon(Icons.Default.Check, contentDescription = "Selected", tint = Color.White, modifier = Modifier.size(14.dp))
-                                    }
-                                } else if (isDir) {
-                                    Icon(
-                                        imageVector = Icons.Default.KeyboardArrowRight,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
-                                        modifier = Modifier.size(20.dp)
-                                    )
+                            },
+                            onItemLongClick = {
+                                if (isDir) {
+                                    viewModel.toggleFolderSelection(file.name)
+                                } else {
+                                    val matched = mediaList.find { it.path == file.absolutePath }
+                                    val targetUri = matched?.uriString ?: "file://${file.absolutePath}"
+                                    viewModel.toggleVideoSelection(targetUri)
                                 }
                             }
+                        )
+                    }
+                }
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                contentPadding = PaddingValues(bottom = 120.dp)
+            ) {
+                if (activeBrowseFolder == null) {
+                    item {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            IconButton(
+                                onClick = {
+                                    val parent = currentFolder.parentFile
+                                    if (currentFolder.absolutePath == "/storage/emulated/0" || parent == null || parent.absolutePath == "/" || parent.absolutePath == "/storage") {
+                                        setBrowseFolder(null)
+                                    } else {
+                                        setBrowseFolder(parent)
+                                    }
+                                },
+                                colors = IconButtonDefaults.iconButtonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+                            ) {
+                                Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                            }
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = currentFolder.name,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 16.sp,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = currentFolder.absolutePath,
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
                         }
+                    }
+
+                    item {
+                        OutlinedTextField(
+                            value = localSearchQuery,
+                            onValueChange = { localSearchQuery = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            placeholder = { Text("Search files & folders...", fontSize = 13.sp) },
+                            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(20.dp)) },
+                            trailingIcon = if (localSearchQuery.isNotEmpty()) {
+                                {
+                                    IconButton(onClick = { localSearchQuery = "" }) {
+                                        Icon(Icons.Default.Clear, contentDescription = "Clear search", modifier = Modifier.size(20.dp))
+                                    }
+                                }
+                            } else null,
+                            singleLine = true,
+                            shape = RoundedCornerShape(12.dp),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = MaterialTheme.colorScheme.primary,
+                                unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
+                            )
+                        )
+                    }
+                }
+                items(filesList, key = { it.absolutePath }) { file ->
+                    val isDir = file.isDirectory || virtualDirs.contains(file.absolutePath)
+                    val ext = file.extension.lowercase()
+                    val isVideo = ext in setOf("mp4", "mkv", "webm", "avi", "mov", "3gp")
+                    val isAudio = ext in setOf("mp3", "wav", "m4a", "ogg", "flac", "aac")
+                    val isItemSelected = if (isDir) {
+                        selectionState.selectedFolderPaths.contains(file.name) || selectionState.selectedFolderPaths.contains(file.absolutePath)
+                    } else {
+                        selectionState.selectedVideoIds.contains(file.absolutePath) || mediaList.find { it.path == file.absolutePath }?.let { selectionState.selectedVideoIds.contains(it.uriString) } == true
+                    }
+
+                    if (isDir || isVideo || isAudio) {
+                        BrowseFileCard(
+                            file = file,
+                            isDir = isDir,
+                            isVideo = isVideo,
+                            isAudio = isAudio,
+                            isItemSelected = isItemSelected,
+                            isGrid = false,
+                            accentOrange = accentOrange,
+                            onItemClick = {
+                                if (selectionState.isInSelectionMode || isSelectModeActive) {
+                                    if (isDir) {
+                                        viewModel.toggleFolderSelection(file.name)
+                                    } else {
+                                        val matched = mediaList.find { it.path == file.absolutePath }
+                                        val targetUri = matched?.uriString ?: "file://${file.absolutePath}"
+                                        viewModel.toggleVideoSelection(targetUri)
+                                    }
+                                } else {
+                                    if (isDir) {
+                                        setBrowseFolder(file)
+                                    } else {
+                                        val matchedMedia = mediaList.find { it.path == file.absolutePath }
+                                        if (matchedMedia != null) {
+                                            onPlayItem(matchedMedia)
+                                        } else {
+                                            val mediaItem = MediaEntity(
+                                                uriString = "file://${file.absolutePath}",
+                                                title = file.nameWithoutExtension,
+                                                artist = "Local File",
+                                                album = file.parentFile?.name ?: "Storage",
+                                                duration = 0L,
+                                                size = file.length(),
+                                                dateAdded = file.lastModified(),
+                                                isVideo = isVideo,
+                                                path = file.absolutePath,
+                                                mimeType = if (isVideo) "video/*" else "audio/*"
+                                            )
+                                            onPlayItem(mediaItem)
+                                        }
+                                        android.widget.Toast.makeText(context, "Playing: ${file.nameWithoutExtension}", android.widget.Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            },
+                            onItemLongClick = {
+                                if (isDir) {
+                                    viewModel.toggleFolderSelection(file.name)
+                                } else {
+                                    val matched = mediaList.find { it.path == file.absolutePath }
+                                    val targetUri = matched?.uriString ?: "file://${file.absolutePath}"
+                                    viewModel.toggleVideoSelection(targetUri)
+                                }
+                            }
+                        )
                     }
                 }
             }
@@ -5070,7 +5727,7 @@ fun BrowseTabContent(
                                                 else -> null
                                             }
                                             if (targetFolder != null && targetFolder.exists()) {
-                                                currentBrowseFolder = targetFolder
+                                                setBrowseFolder(targetFolder)
                                             } else if (filesInFolder.isNotEmpty()) {
                                                 viewModel.playAll(filesInFolder)
                                                 android.widget.Toast.makeText(context, "Playing all files in $folderShortName", android.widget.Toast.LENGTH_SHORT).show()
@@ -5160,9 +5817,9 @@ fun BrowseTabContent(
                             onClick = {
                                 val f = java.io.File(path)
                                 if (f.exists() && f.canRead()) {
-                                    currentBrowseFolder = f
+                                    setBrowseFolder(f)
                                 } else if (storageName.contains("Internal")) {
-                                    currentBrowseFolder = java.io.File("/storage/emulated/0")
+                                    setBrowseFolder(java.io.File("/storage/emulated/0"))
                                 } else {
                                     android.widget.Toast.makeText(context, "Storage $storageName is not accessible", android.widget.Toast.LENGTH_SHORT).show()
                                 }

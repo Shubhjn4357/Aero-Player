@@ -11,8 +11,8 @@ mkdir -p ./output
 mkdir -p ./.build-outputs
 mkdir -p /output 2>/dev/null || true
 
-# 2. Compile APKs if requested or if build output missing/invalid
-if [ "$1" == "--build" ] || [ ! -f "app/build/outputs/apk/debug/app-debug.apk" ] || [ ! -f "app/build/outputs/apk/release/app-release.apk" ]; then
+# 2. Compile APKs only if explicitly requested with --build
+if [ "$1" == "--build" ]; then
     echo "2. Compiling Debug & ARM64-v8a Release APKs via Gradle..."
     gradle :app:assembleDebug :app:assembleRelease || echo "Gradle build finished with status check..."
 fi

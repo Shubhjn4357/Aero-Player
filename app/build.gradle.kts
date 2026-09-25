@@ -146,7 +146,7 @@ dependencies {
   implementation(libs.androidx.media3.exoplayer.dash)
   implementation(libs.androidx.media3.ui)
   implementation(libs.androidx.media3.session)
-  // implementation(libs.jellyfin.media3.ffmpeg.decoder)
+  implementation(libs.jellyfin.media3.ffmpeg.decoder)
   implementation(libs.libvlc.all)
   implementation(libs.converter.moshi)
   // implementation(libs.firebase.ai)
@@ -271,12 +271,34 @@ tasks.register("autoExportReleaseApkToSystemOutput") {
   }
 }
 
-tasks.configureEach {
-  if (name == "assembleDebug") {
-    finalizedBy("autoExportApkToSystemOutput")
+val copyScriptAbsolutePath = rootDir.resolve("copy.sh").absolutePath
+val rootDirectoryAbsolutePath = rootDir.absolutePath
+
+tasks.register("runApkCopyScript") {
+  val scriptPath = copyScriptAbsolutePath
+  val dirPath = rootDirectoryAbsolutePath
+  doLast {
+    val copyScript = File(scriptPath)
+    if (copyScript.exists()) {
+      try {
+        val proc = ProcessBuilder("bash", scriptPath)
+          .directory(File(dirPath))
+          .redirectErrorStream(true)
+          .start()
+        proc.waitFor()
+      } catch (e: Exception) {
+        println("runApkCopyScript execution note: ${e.message}")
+      }
+    }
   }
-  if (name == "assembleRelease") {
-    finalizedBy("autoExportReleaseApkToSystemOutput")
+}
+
+tasks.configureEach {
+  if (name in listOf("assembleDebug", "assemble", "packageDebug", "bundleDebug")) {
+    finalizedBy("autoExportApkToSystemOutput", "runApkCopyScript")
+  }
+  if (name in listOf("assembleRelease", "packageRelease", "bundleRelease")) {
+    finalizedBy("autoExportReleaseApkToSystemOutput", "runApkCopyScript")
   }
 }
 

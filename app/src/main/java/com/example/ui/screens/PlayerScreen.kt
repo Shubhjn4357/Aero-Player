@@ -92,6 +92,7 @@ fun PlayerScreen(
     val prefs by viewModel.preferencesState.collectAsState()
 
     val currentPlayingItemFromVm by viewModel.currentPlayingItem.collectAsState()
+    val playbackTrigger by viewModel.playbackTrigger.collectAsState()
     var activeMediaItem by remember(mediaItem) { mutableStateOf(mediaItem) }
     
     LaunchedEffect(currentPlayingItemFromVm) {
@@ -120,9 +121,21 @@ fun PlayerScreen(
     val exoPlayer = viewModel.exoPlayer
     val vlcPlayer = viewModel.vlcPlayer
 
-    var activeEngine by remember(prefs.defaultPlayerEngine) {
+    val perVideoEngine = remember(prefs.perVideoSettingsJson, activeMediaItem.uriString) {
+        try {
+            if (prefs.perVideoSettingsJson.isNotBlank()) {
+                val json = org.json.JSONObject(prefs.perVideoSettingsJson)
+                if (json.has(activeMediaItem.uriString)) {
+                    json.getJSONObject(activeMediaItem.uriString).optString("playerEngine", "")
+                } else ""
+            } else ""
+        } catch (e: Exception) { "" }
+    }
+
+    var activeEngine by remember(prefs.defaultPlayerEngine, perVideoEngine) {
         mutableStateOf(
-            if (prefs.defaultPlayerEngine.contains("VLC")) "VLC"
+            if (perVideoEngine.isNotBlank()) perVideoEngine
+            else if (prefs.defaultPlayerEngine.contains("VLC")) "VLC"
             else if (prefs.defaultPlayerEngine.contains("ExoPlayer")) "ExoPlayer"
             else "Auto"
         )
@@ -132,7 +145,8 @@ fun PlayerScreen(
     val isVlcRequiredFormat = targetPath.endsWith(".avi") ||
             targetPath.endsWith(".flv") || targetPath.endsWith(".wmv") ||
             targetPath.endsWith(".vob") || targetPath.endsWith(".ogv") || targetPath.endsWith(".divx") ||
-            targetPath.endsWith(".rmvb") || targetPath.endsWith(".rm") || targetPath.endsWith(".iso")
+            targetPath.endsWith(".rmvb") || targetPath.endsWith(".rm") || targetPath.endsWith(".iso") ||
+            targetPath.endsWith(".ts") || targetPath.endsWith(".m2ts")
     val effectiveEngine = when (activeEngine) {
         "VLC" -> "VLC"
         "ExoPlayer" -> "ExoPlayer"
@@ -149,9 +163,11 @@ fun PlayerScreen(
     var resumePosition by remember { mutableStateOf(0L) }
     var isPlaying by remember { mutableStateOf(true) }
     var audioFallbackAttempted by remember { mutableStateOf(false) }
+    var engineSwitchAttemptedUri by remember { mutableStateOf<String?>(null) }
     var generalRetryCount by remember { androidx.compose.runtime.mutableIntStateOf(0) }
     var playbackErrorMsg by remember { mutableStateOf<String?>(null) }
     var isBuffering by remember { mutableStateOf(false) }
+    var isFileRunning by remember { mutableStateOf(false) }
     val currentEqualizerPreset by viewModel.currentEqualizerPreset.collectAsState()
     val subEngineState by viewModel.subtitleEngine.state.collectAsState()
     var resizeMode by remember { mutableStateOf(AspectRatioFrameLayout.RESIZE_MODE_FIT) }
@@ -159,6 +175,7 @@ fun PlayerScreen(
     var showOnlineSubtitleDownloader by remember { mutableStateOf(false) }
     var playAsAudioOnly by remember { mutableStateOf(viewModel.audioOnlyPlaybackRequested) }
     var tracksUpdateTrigger by remember { mutableStateOf(0) }
+    var activePlayerViewRef by remember { mutableStateOf<PlayerView?>(null) }
 
     // Session-based screen orientation override (not stored persistently)
     var sessionOrientation by remember {
@@ -179,11 +196,8 @@ fun PlayerScreen(
         val activity = context as? android.app.Activity
         if (activity != null) {
             if (isAudio) {
-                if (prefs.rotationLock) {
-                    activity.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-                } else {
-                    activity.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR
-                }
+                // Audio mode is strictly restricted to portrait mode (no landscape mode)
+                activity.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
             } else {
                 if (prefs.rotationLock) {
                     activity.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LOCKED
@@ -236,7 +250,7 @@ fun PlayerScreen(
 
     // Listen to Lifecycle Events to pause playback instantly when minimized/locked and auto-resume on return
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner, exoPlayer, vlcPlayer, prefs, isInPipMode, activeMediaItem, effectiveEngine) {
+    DisposableEffect(lifecycleOwner, exoPlayer, vlcPlayer, prefs, isInPipMode, activeMediaItem, effectiveEngine, playAsAudioOnly) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
             val activity = context as? android.app.Activity
             val activityInPip = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
@@ -247,14 +261,16 @@ fun PlayerScreen(
             val inPip = isInPipMode || activityInPip
 
             if (event == androidx.lifecycle.Lifecycle.Event.ON_PAUSE || event == androidx.lifecycle.Lifecycle.Event.ON_STOP) {
+                val isAudio = !activeMediaItem.isVideo || playAsAudioOnly
                 val bgModeNormalized = when (prefs.backgroundMode) {
                     "PLAY_BACKGROUND_AUDIO", "Play in Background" -> "PLAY_BACKGROUND_AUDIO"
                     "LAUNCH_PIP_MODE", "PiP" -> "LAUNCH_PIP_MODE"
                     else -> "STOP_PLAYBACK"
                 }
-                val shouldPlayBackground = bgModeNormalized == "PLAY_BACKGROUND_AUDIO" ||
+                val shouldPlayBackground = isAudio || bgModeNormalized == "PLAY_BACKGROUND_AUDIO" ||
                         (bgModeNormalized == "LAUNCH_PIP_MODE" && activeMediaItem.isVideo && inPip)
 
+                activePlayerViewRef?.onPause()
                 if (!shouldPlayBackground) {
                     if (effectiveEngine == "VLC") {
                         if (vlcPlayer.isPlaying) wasPlayingBeforePause = true
@@ -263,19 +279,42 @@ fun PlayerScreen(
                         if (exoPlayer.isPlaying) wasPlayingBeforePause = true
                         exoPlayer.pause()
                     }
+                    isPlaying = false
+                    viewModel.setPlayingState(false)
+                    com.example.ui.viewmodel.PlayerControlBridge.onPlayerStateChanged(false)
+                } else if (shouldPlayBackground && activeMediaItem.isVideo && !inPip) {
+                    // Keep surface attached so video can immediately continue rendering upon return without black screen or audio desync
                 }
             } else if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                playbackErrorMsg = null
+                activePlayerViewRef?.let { pv ->
+                    if (pv.player != exoPlayer) {
+                        pv.player = exoPlayer
+                    }
+                    pv.onResume()
+                }
                 if (effectiveEngine == "VLC") {
                     vlcPlayer.ensureInitializedAsync {
                         vlcPlayer.refreshVideoSurface()
                     }
-                }
-                if (!inPip && wasPlayingBeforePause) {
-                    wasPlayingBeforePause = false
-                    if (effectiveEngine == "VLC") {
+                    if (!inPip && wasPlayingBeforePause) {
+                        wasPlayingBeforePause = false
                         vlcPlayer.play()
-                    } else {
+                        isPlaying = true
+                        viewModel.setPlayingState(true)
+                        com.example.ui.viewmodel.PlayerControlBridge.onPlayerStateChanged(true)
+                    }
+                } else {
+                    if (exoPlayer.playerError != null || exoPlayer.playbackState == Player.STATE_IDLE) {
+                        exoPlayer.prepare()
+                    }
+                    val curPos = exoPlayer.currentPosition
+                    if (!inPip && wasPlayingBeforePause) {
+                        wasPlayingBeforePause = false
                         exoPlayer.play()
+                        isPlaying = true
+                        viewModel.setPlayingState(true)
+                        com.example.ui.viewmodel.PlayerControlBridge.onPlayerStateChanged(true)
                     }
                 }
             }
@@ -287,7 +326,7 @@ fun PlayerScreen(
     }
 
     // Load Uri Source Configurations & Primary Player Setup
-    LaunchedEffect(activeMediaItem.uriString, effectiveEngine) {
+    LaunchedEffect(activeMediaItem.uriString, effectiveEngine, playbackTrigger) {
         audioFallbackAttempted = false
         isNewSession = false
 
@@ -407,7 +446,10 @@ fun PlayerScreen(
         // Apply configurations
         resizeMode = resizeToApply
         if (effectiveEngine == "VLC") {
-            exoPlayer.pause()
+            try {
+                exoPlayer.stop()
+                exoPlayer.clearMediaItems()
+            } catch (e: Exception) {}
             vlcPlayer.setSpeed(speedToApply)
             vlcPlayer.volume = volumeToApply
             vlcPlayer.setSubtitleSizeSp(prefs.subtitleSize)
@@ -416,7 +458,9 @@ fun PlayerScreen(
                 vlcPlayer.loadSubtitle(externalSubToLoad!!)
             }
         } else {
-            vlcPlayer.pause()
+            try {
+                vlcPlayer.stop()
+            } catch (e: Exception) {}
             exoPlayer.setPlaybackSpeed(speedToApply)
             exoPlayer.volume = volumeToApply
             val trackBuilder = exoPlayer.trackSelectionParameters.buildUpon()
@@ -465,6 +509,10 @@ fun PlayerScreen(
         // 3. Player Engine Media Loading
         playbackErrorMsg = null
         if (effectiveEngine == "VLC") {
+            // Ensure ExoPlayer is paused and unallocated from audio focus when VLC is the active engine
+            if (exoPlayer.isPlaying) {
+                exoPlayer.pause()
+            }
             val isSameUriAlreadyLoaded = vlcPlayer.currentPlayingUri == activeMediaItem.uriString &&
                     (vlcPlayer.isPlaying || vlcPlayer.currentPositionMs > 0L) &&
                     viewModel.lastLoadedEngineType == "VLC"
@@ -496,18 +544,31 @@ fun PlayerScreen(
                     if (savedVlcSubTrackId != -2) {
                         vlcPlayer.selectSubtitleTrack(savedVlcSubTrackId)
                     }
+                    vlcPlayer.play()
+                    isPlaying = true
                 } catch (e: Throwable) {
-                    playbackErrorMsg = "VLC Error: ${e.localizedMessage ?: "Playback error"}"
+                    if (engineSwitchAttemptedUri != activeMediaItem.uriString) {
+                        engineSwitchAttemptedUri = activeMediaItem.uriString
+                        android.util.Log.w("PlayerScreen", "VLC failed to load media, auto-switching to ExoPlayer: ${e.message}")
+                        activeEngine = "ExoPlayer"
+                        viewModel.updatePerVideoEngine(activeMediaItem.uriString, "ExoPlayer")
+                        playbackErrorMsg = null
+                    } else {
+                        playbackErrorMsg = "VLC Error: ${e.localizedMessage ?: "Playback error"}"
+                    }
                 }
             } else {
                 if (startSeekMs > 0L && kotlin.math.abs(vlcPlayer.currentPositionMs - startSeekMs) > 2000L) {
                     vlcPlayer.seekTo(startSeekMs)
                 }
-                if (!vlcPlayer.isPlaying) {
-                    vlcPlayer.play()
-                }
+                vlcPlayer.play()
+                isPlaying = true
             }
         } else {
+            // Ensure VLC is paused when ExoPlayer is the active engine
+            if (vlcPlayer.isPlaying) {
+                vlcPlayer.pause()
+            }
             val currentMediaId = exoPlayer.currentMediaItem?.mediaId
             val currentPlayingUri = exoPlayer.currentMediaItem?.localConfiguration?.uri?.toString()
             val isSameUriAlreadyLoaded = exoPlayer.currentMediaItem != null &&
@@ -538,20 +599,48 @@ fun PlayerScreen(
                     }
                     exoPlayer.playWhenReady = true
                     exoPlayer.play()
+                    isPlaying = true
                 } catch (e: Throwable) {
-                    playbackErrorMsg = "Playback Error: ${e.localizedMessage ?: "Unknown media error"}"
+                    if (engineSwitchAttemptedUri != activeMediaItem.uriString) {
+                        engineSwitchAttemptedUri = activeMediaItem.uriString
+                        android.util.Log.w("PlayerScreen", "ExoPlayer failed to load media, auto-switching to VLC: ${e.message}")
+                        activeEngine = "VLC"
+                        viewModel.updatePerVideoEngine(activeMediaItem.uriString, "VLC")
+                        playbackErrorMsg = null
+                    } else {
+                        playbackErrorMsg = "Playback Error: ${e.localizedMessage ?: "Unknown media error"}"
+                    }
                 }
             } else {
                 if (startSeekMs > 0L && kotlin.math.abs(exoPlayer.currentPosition - startSeekMs) > 2000L) {
                     exoPlayer.seekTo(startSeekMs)
                 }
-                if (!exoPlayer.isPlaying && exoPlayer.playbackState != Player.STATE_ENDED) {
-                    exoPlayer.play()
+                if (exoPlayer.playbackState == Player.STATE_ENDED) {
+                    exoPlayer.seekTo(0L)
                 }
+                exoPlayer.playWhenReady = true
+                exoPlayer.play()
+                isPlaying = true
             }
         }
         viewModel.lastLoadedPlayerUri = activeMediaItem.uriString
         viewModel.lastLoadedEngineType = effectiveEngine
+
+        // Auto jump-start guard: If player is stuck or paused right after initial load, nudge it to play
+        // without requiring the user to drag/seek the progress bar
+        kotlinx.coroutines.delay(400)
+        if (effectiveEngine == "VLC") {
+            if (!vlcPlayer.isPlaying && playbackErrorMsg == null) {
+                vlcPlayer.play()
+                isPlaying = true
+            }
+        } else {
+            if (!exoPlayer.isPlaying && playbackErrorMsg == null) {
+                exoPlayer.playWhenReady = true
+                exoPlayer.play()
+                isPlaying = true
+            }
+        }
     }
 
     // Log History periodically
@@ -647,47 +736,67 @@ fun PlayerScreen(
         }
     }
 
+    val resumeOrJumpStartPlayback: () -> Unit = {
+        playbackErrorMsg = null
+        if (effectiveEngine == "VLC") {
+            if (vlcPlayer.isEndedState()) {
+                vlcPlayer.seekTo(0)
+            }
+            vlcPlayer.play()
+        } else {
+            activePlayerViewRef?.let { pv ->
+                if (pv.player != exoPlayer) {
+                    pv.player = exoPlayer
+                }
+            }
+            if (exoPlayer.playerError != null || exoPlayer.playbackState == Player.STATE_IDLE) {
+                exoPlayer.prepare()
+            }
+            if (exoPlayer.playbackState == Player.STATE_ENDED) {
+                exoPlayer.seekTo(0)
+            }
+            exoPlayer.play()
+        }
+        isPlaying = true
+        viewModel.setPlayingState(true)
+        com.example.ui.viewmodel.PlayerControlBridge.onPlayerStateChanged(true)
+    }
+
+    val pausePlayback: () -> Unit = {
+        if (effectiveEngine == "VLC") {
+            vlcPlayer.pause()
+        } else {
+            exoPlayer.pause()
+        }
+        isPlaying = false
+        viewModel.setPlayingState(false)
+        com.example.ui.viewmodel.PlayerControlBridge.onPlayerStateChanged(false)
+    }
+
+    val togglePlayPause: () -> Unit = {
+        val currentlyPlaying = if (effectiveEngine == "VLC") vlcPlayer.isPlaying else exoPlayer.isPlaying
+        if (currentlyPlaying) {
+            pausePlayback()
+        } else {
+            resumeOrJumpStartPlayback()
+        }
+    }
+
     // Keep PlayerControlBridge updated with active player engine reference & controls
-    LaunchedEffect(effectiveEngine) {
+    DisposableEffect(effectiveEngine) {
         com.example.ui.viewmodel.PlayerControlBridge.activeEngineType = effectiveEngine
         com.example.ui.viewmodel.PlayerControlBridge.activeEngineName = if (effectiveEngine == "VLC") "LibVLC Universal Engine" else "Media3 ExoPlayer"
         com.example.ui.viewmodel.PlayerControlBridge.vlcPlayerRef = java.lang.ref.WeakReference(vlcPlayer)
         com.example.ui.viewmodel.PlayerControlBridge.exoPlayerRef = java.lang.ref.WeakReference(exoPlayer)
         com.example.ui.viewmodel.PlayerControlBridge.viewModelRef = java.lang.ref.WeakReference(viewModel)
         com.example.ui.viewmodel.PlayerControlBridge.onPlayListener = {
-            if (effectiveEngine == "VLC") {
-                vlcPlayer.play()
-            } else {
-                exoPlayer.play()
-            }
-            isPlaying = true
+            resumeOrJumpStartPlayback()
         }
         com.example.ui.viewmodel.PlayerControlBridge.onPauseListener = {
-            if (effectiveEngine == "VLC") {
-                vlcPlayer.pause()
-            } else {
-                exoPlayer.pause()
-            }
-            isPlaying = false
+            pausePlayback()
         }
         com.example.ui.viewmodel.PlayerControlBridge.onPlayPauseListener = {
-            if (effectiveEngine == "VLC") {
-                if (vlcPlayer.isPlaying) {
-                    vlcPlayer.pause()
-                    isPlaying = false
-                } else {
-                    vlcPlayer.play()
-                    isPlaying = true
-                }
-            } else {
-                if (exoPlayer.isPlaying) {
-                    exoPlayer.pause()
-                    isPlaying = false
-                } else {
-                    exoPlayer.play()
-                    isPlaying = true
-                }
-            }
+            togglePlayPause()
         }
         com.example.ui.viewmodel.PlayerControlBridge.onNextListener = {
             isAutoTransitioning = true
@@ -706,6 +815,16 @@ fun PlayerScreen(
         }
         com.example.ui.viewmodel.PlayerControlBridge.onSeekToListener = { targetMs ->
             performSeek(targetMs)
+        }
+
+        onDispose {
+            com.example.ui.viewmodel.PlayerControlBridge.onPlayListener = null
+            com.example.ui.viewmodel.PlayerControlBridge.onPauseListener = null
+            com.example.ui.viewmodel.PlayerControlBridge.onPlayPauseListener = null
+            com.example.ui.viewmodel.PlayerControlBridge.onNextListener = null
+            com.example.ui.viewmodel.PlayerControlBridge.onPrevListener = null
+            com.example.ui.viewmodel.PlayerControlBridge.onSeekByListener = null
+            com.example.ui.viewmodel.PlayerControlBridge.onSeekToListener = null
         }
     }
 
@@ -736,8 +855,8 @@ fun PlayerScreen(
     var isSaved by remember(activeMediaItem.uriString, prefs.playlistsJson) {
         mutableStateOf(viewModel.isMediaFavorite(activeMediaItem.uriString))
     }
-    var isLeftPillExpanded by remember { mutableStateOf(false) }
-    var isRightPillExpanded by remember { mutableStateOf(false) }
+    var isLeftPillExpanded by remember { mutableStateOf(true) }
+    var isRightPillExpanded by remember { mutableStateOf(true) }
     var rotateAngle by remember { mutableStateOf(0f) }
     var isLockControlVisible by remember { mutableStateOf(true) }
     var scrubbingBitmap by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
@@ -873,8 +992,56 @@ fun PlayerScreen(
     var showEqualizerSheet by remember { mutableStateOf(false) }
     var showAudioSubtitleSelectorSheet by remember { mutableStateOf(false) }
     var showCastControlSheet by remember { mutableStateOf(false) }
+    var showVideoPointsBottomSheet by remember { mutableStateOf(false) }
     var isCastingActive by remember { mutableStateOf(false) }
     var connectedCastDevice by remember { mutableStateOf<String?>(null) }
+
+    var customPrologueSec by remember { mutableStateOf<Int?>(null) }
+    var customPostCreditSec by remember { mutableStateOf<Int?>(null) }
+    var nativeDiscoveredChapters by remember { mutableStateOf<List<com.example.util.VideoPointDetector.NativeChapterRaw>>(emptyList()) }
+
+    // Clear native chapters on media switch and actively query video file for chapters
+    LaunchedEffect(activeMediaItem.uriString) {
+        nativeDiscoveredChapters = emptyList()
+        // Proactively probe native chapters directly from the active engine
+        kotlinx.coroutines.delay(600)
+        try {
+            val vlcCh = vlcPlayer.getMediaChapters()
+            if (vlcCh.isNotEmpty()) {
+                nativeDiscoveredChapters = vlcCh.map {
+                    com.example.util.VideoPointDetector.NativeChapterRaw(
+                        name = it.name,
+                        startTimeMs = it.timeOffsetMs,
+                        durationMs = it.durationMs
+                    )
+                }
+            }
+        } catch (e: Exception) {}
+    }
+
+    val videoPoints = remember(duration, customPrologueSec, customPostCreditSec, nativeDiscoveredChapters) {
+        com.example.util.VideoPointDetector.detectPoints(
+            durationMs = duration,
+            customPrologueSec = customPrologueSec,
+            customPostCreditSec = customPostCreditSec,
+            nativeChapters = nativeDiscoveredChapters
+        )
+    }
+
+    val castManager = remember { com.example.cast.CastManager.getInstance(context) }
+    val discoveredCastDevices by castManager.discoveredDevices.collectAsState()
+    val isCastScanning by castManager.isScanning.collectAsState()
+    val hasAvailableCastDevices by castManager.hasAvailableDevices.collectAsState()
+    val castSessionState by castManager.sessionState.collectAsState()
+
+    LaunchedEffect(castSessionState.isConnected, castSessionState.isStreaming, castSessionState.device) {
+        isCastingActive = castSessionState.isConnected || castSessionState.isStreaming
+        connectedCastDevice = castSessionState.device?.name
+    }
+
+    LaunchedEffect(Unit) {
+        castManager.startQuickScan()
+    }
 
     LaunchedEffect(resizeMode, effectiveEngine) {
         if (effectiveEngine == "VLC") {
@@ -937,24 +1104,38 @@ fun PlayerScreen(
                                 exoPlayer.pause()
                             }
                             isPlaying = false
+                            viewModel.setPlayingState(false)
+                            com.example.ui.viewmodel.PlayerControlBridge.onPlayerStateChanged(false)
+                        } else {
+                            // Background audio allowed for video:
+                            // Clear video surface so MediaCodec does not attempt decoding to destroyed surface
+                            if (activeMediaItem.isVideo && effectiveEngine == "ExoPlayer") {
+                                exoPlayer.clearVideoSurface()
+                            }
                         }
                     }
                     android.content.Intent.ACTION_SCREEN_ON,
                     android.content.Intent.ACTION_USER_PRESENT -> {
+                        playbackErrorMsg = null
                         if (effectiveEngine == "VLC") {
                             vlcPlayer.ensureInitializedAsync {
                                 vlcPlayer.refreshVideoSurface()
+                            }
+                        } else {
+                            activePlayerViewRef?.let { pv ->
+                                if (pv.player != exoPlayer) {
+                                    pv.player = exoPlayer
+                                }
+                                pv.onResume()
+                            }
+                            if (exoPlayer.playerError != null || exoPlayer.playbackState == Player.STATE_IDLE) {
+                                exoPlayer.prepare()
                             }
                         }
                     }
                     android.media.AudioManager.ACTION_AUDIO_BECOMING_NOISY -> {
                         // Earbuds / Bluetooth headphones disconnected -> pause immediately
-                        if (effectiveEngine == "VLC") {
-                            vlcPlayer.pause()
-                        } else {
-                            exoPlayer.pause()
-                        }
-                        isPlaying = false
+                        pausePlayback()
                     }
                 }
             }
@@ -1176,6 +1357,9 @@ fun PlayerScreen(
                 if (playing) {
                     playbackErrorMsg = null
                     generalRetryCount = 0
+                    isFileRunning = true
+                    isBuffering = false
+                    isAutoTransitioning = false
                 }
             }
             override fun onPlaybackStateChanged(playbackState: Int) {
@@ -1184,6 +1368,8 @@ fun PlayerScreen(
                     duration = exoPlayer.duration
                     playbackErrorMsg = null
                     generalRetryCount = 0
+                    isFileRunning = true
+                    isAutoTransitioning = false
                 } else if (playbackState == Player.STATE_ENDED) {
                     if (repeatModeState == 1) { // Repeat One
                         exoPlayer.seekTo(0)
@@ -1218,7 +1404,94 @@ fun PlayerScreen(
                 viewModel.subtitleEngine.onExoCues(cueGroup.cues)
             }
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
-                playbackErrorMsg = "Playback Error: ${error.localizedMessage ?: "Format not supported"}"
+                val errorMsg = error.localizedMessage ?: error.message ?: "Format not supported"
+                val isVideoSurfaceOrSleepGlitch = errorMsg.contains("surface", ignoreCase = true) ||
+                        errorMsg.contains("MediaCodecVideoRenderer", ignoreCase = true) ||
+                        errorMsg.contains("0x80001001", ignoreCase = true) ||
+                        errorMsg.contains("SurfaceNotValidException", ignoreCase = true) ||
+                        (error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_DECODING_FAILED && activeMediaItem.isVideo)
+
+                if (isVideoSurfaceOrSleepGlitch && generalRetryCount < 3) {
+                    generalRetryCount++
+                    val recoveryPos = exoPlayer.currentPosition
+                    android.util.Log.w("PlayerScreen", "Auto-recovering from surface/sleep glitch at pos $recoveryPos: $errorMsg")
+                    try {
+                        exoPlayer.clearVideoSurface()
+                    } catch (e: Exception) {}
+                    activePlayerViewRef?.let { pv ->
+                        if (pv.player != exoPlayer) {
+                            pv.player = exoPlayer
+                        }
+                    }
+                    exoPlayer.prepare()
+                    if (recoveryPos > 0L) {
+                        exoPlayer.seekTo(recoveryPos)
+                    }
+                    if (isPlaying || wasPlayingBeforePause) {
+                        exoPlayer.play()
+                    }
+                    playbackErrorMsg = null
+                    return
+                }
+
+                val isAudioCodecError = error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_DECODER_INIT_FAILED ||
+                        error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_DECODING_FAILED ||
+                        errorMsg.contains("MediaCodecAudioRenderer", ignoreCase = true) ||
+                        errorMsg.contains("true-hd", ignoreCase = true) ||
+                        errorMsg.contains("NO_UNSUPPORTED_TYPE", ignoreCase = true)
+
+                if (isAudioCodecError && !audioFallbackAttempted) {
+                    audioFallbackAttempted = true
+                    // Try to find an alternate supported audio track first
+                    val currentTracks = exoPlayer.currentTracks
+                    var alternateFound = false
+                    for (group in currentTracks.groups) {
+                        if (group.type == androidx.media3.common.C.TRACK_TYPE_AUDIO) {
+                            for (i in 0 until group.length) {
+                                if (group.isTrackSupported(i) && !group.isTrackSelected(i)) {
+                                    val override = androidx.media3.common.TrackSelectionOverride(group.mediaTrackGroup, i)
+                                    exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
+                                        .buildUpon()
+                                        .setOverrideForType(override)
+                                        .build()
+                                    exoPlayer.prepare()
+                                    exoPlayer.play()
+                                    alternateFound = true
+                                    break
+                                }
+                            }
+                        }
+                        if (alternateFound) break
+                    }
+
+                    if (!alternateFound) {
+                        // Automatically switch to VLC Engine to play TrueHD / unsupported audio seamlessly
+                        android.widget.Toast.makeText(context, "Switching to VLC Engine for unsupported audio track", android.widget.Toast.LENGTH_SHORT).show()
+                        try {
+                            exoPlayer.stop()
+                            exoPlayer.clearMediaItems()
+                        } catch (e: Exception) {}
+                        activeEngine = "VLC"
+                        viewModel.updatePerVideoEngine(activeMediaItem.uriString, "VLC")
+                        playbackErrorMsg = null
+                        return
+                    }
+                }
+
+                if (engineSwitchAttemptedUri != activeMediaItem.uriString) {
+                    engineSwitchAttemptedUri = activeMediaItem.uriString
+                    android.util.Log.w("PlayerScreen", "ExoPlayer failed, auto-switching to VLC engine: $errorMsg")
+                    try {
+                        exoPlayer.stop()
+                        exoPlayer.clearMediaItems()
+                    } catch (e: Exception) {}
+                    activeEngine = "VLC"
+                    viewModel.updatePerVideoEngine(activeMediaItem.uriString, "VLC")
+                    playbackErrorMsg = null
+                    return
+                }
+
+                playbackErrorMsg = "Playback Error: $errorMsg"
             }
             override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
                 isShuffleEnabled = shuffleModeEnabled
@@ -1228,6 +1501,69 @@ fun PlayerScreen(
                     Player.REPEAT_MODE_ONE -> 1
                     Player.REPEAT_MODE_ALL -> 2
                     else -> 0
+                }
+            }
+            override fun onRenderedFirstFrame() {
+                isFileRunning = true
+                isBuffering = false
+                isAutoTransitioning = false
+            }
+            override fun onMetadata(metadata: androidx.media3.common.Metadata) {
+                try {
+                    val extracted = mutableListOf<com.example.util.VideoPointDetector.NativeChapterRaw>()
+                    for (i in 0 until metadata.length()) {
+                        val entry = metadata.get(i)
+                        if (entry is androidx.media3.extractor.metadata.id3.ChapterFrame) {
+                            var chName = entry.chapterId
+                            for (j in 0 until entry.subFrameCount) {
+                                val sub = entry.getSubFrame(j)
+                                if (sub is androidx.media3.extractor.metadata.id3.TextInformationFrame) {
+                                    if (!sub.values.isNullOrEmpty()) {
+                                        chName = sub.values[0]
+                                    }
+                                }
+                            }
+                            extracted.add(
+                                com.example.util.VideoPointDetector.NativeChapterRaw(
+                                    name = chName,
+                                    startTimeMs = entry.startTimeMs.toLong(),
+                                    durationMs = (entry.endTimeMs - entry.startTimeMs).toLong().coerceAtLeast(0L)
+                                )
+                            )
+                        }
+                    }
+                    if (extracted.isNotEmpty()) {
+                        nativeDiscoveredChapters = extracted
+                    }
+                } catch (e: Exception) {}
+            }
+            override fun onTimelineChanged(timeline: androidx.media3.common.Timeline, reason: Int) {
+                try {
+                    if (!timeline.isEmpty) {
+                        val window = androidx.media3.common.Timeline.Window()
+                        val extracted = mutableListOf<com.example.util.VideoPointDetector.NativeChapterRaw>()
+                        for (w in 0 until timeline.windowCount) {
+                            timeline.getWindow(w, window)
+                            val manifest = window.manifest
+                            // Check mediaItem metadata and window tags for native chapters
+                            val mediaItem = window.mediaItem
+                            val metadata = mediaItem.mediaMetadata
+                            // If chapters exist in timeline periods/cues
+                        }
+                    }
+                } catch (e: Exception) {}
+            }
+            override fun onPositionDiscontinuity(
+                oldPosition: Player.PositionInfo,
+                newPosition: Player.PositionInfo,
+                reason: Int
+            ) {
+                if (reason == Player.DISCONTINUITY_REASON_AUTO_TRANSITION ||
+                    reason == Player.DISCONTINUITY_REASON_SEEK_ADJUSTMENT ||
+                    reason == Player.DISCONTINUITY_REASON_REMOVE
+                ) {
+                    isFileRunning = true
+                    isAutoTransitioning = false
                 }
             }
         }
@@ -1243,6 +1579,9 @@ fun PlayerScreen(
                 if (playing) {
                     playbackErrorMsg = null
                     generalRetryCount = 0
+                    isFileRunning = true
+                    isBuffering = false
+                    isAutoTransitioning = false
                 }
             }
             vlcPlayer.onBufferingChanged = { buffering ->
@@ -1252,6 +1591,9 @@ fun PlayerScreen(
                 if (dur > 0) duration = dur
             }
             vlcPlayer.onPositionChanged = { pos ->
+                if (pos > 0L) {
+                    isFileRunning = true
+                }
                 viewModel.subtitleEngine.updatePosition(pos)
             }
             vlcPlayer.onPlaybackEnded = {
@@ -1281,10 +1623,35 @@ fun PlayerScreen(
                 }
             }
             vlcPlayer.onError = { errorMsg ->
-                playbackErrorMsg = "VLC Error: $errorMsg"
+                if (engineSwitchAttemptedUri != activeMediaItem.uriString) {
+                    engineSwitchAttemptedUri = activeMediaItem.uriString
+                    android.util.Log.w("PlayerScreen", "VLC failed, auto-switching to ExoPlayer engine: $errorMsg")
+                    try {
+                        vlcPlayer.stop()
+                    } catch (e: Exception) {}
+                    activeEngine = "ExoPlayer"
+                    viewModel.updatePerVideoEngine(activeMediaItem.uriString, "ExoPlayer")
+                    playbackErrorMsg = null
+                } else {
+                    playbackErrorMsg = "VLC Error: $errorMsg"
+                }
             }
             vlcPlayer.onTracksUpdated = {
                 tracksUpdateTrigger++
+            }
+            vlcPlayer.onTracksChanged = {
+                tracksUpdateTrigger++
+            }
+            vlcPlayer.onChaptersDiscovered = { vlcChapters ->
+                if (vlcChapters.isNotEmpty()) {
+                    nativeDiscoveredChapters = vlcChapters.map {
+                        com.example.util.VideoPointDetector.NativeChapterRaw(
+                            name = it.name,
+                            startTimeMs = it.timeOffsetMs,
+                            durationMs = it.durationMs
+                        )
+                    }
+                }
             }
         }
         onDispose {
@@ -1295,6 +1662,8 @@ fun PlayerScreen(
                 vlcPlayer.onPlaybackEnded = null
                 vlcPlayer.onError = null
                 vlcPlayer.onTracksUpdated = null
+                vlcPlayer.onTracksChanged = null
+                vlcPlayer.onChaptersDiscovered = null
             }
         }
     }
@@ -1420,6 +1789,9 @@ fun PlayerScreen(
                 } else {
                     if (rawPos >= 0) {
                         currentPosition = rawPos
+                        if (isPlaying || rawPos > 0L) {
+                            if (!isFileRunning) isFileRunning = true
+                        }
                     }
                 }
 
@@ -1458,7 +1830,11 @@ fun PlayerScreen(
 
     val safeOnBack = {
         try {
-            exoPlayer.pause()
+            if (effectiveEngine == "VLC") {
+                vlcPlayer.pause()
+            } else {
+                exoPlayer.pause()
+            }
         } catch (e: Exception) {}
         isPlaying = false
         onBack()
@@ -1467,13 +1843,18 @@ fun PlayerScreen(
     DisposableEffect(Unit) {
         onDispose {
             try {
-                exoPlayer.pause()
+                if (effectiveEngine == "VLC") {
+                    vlcPlayer.pause()
+                } else {
+                    exoPlayer.pause()
+                }
             } catch (e: Exception) {}
         }
     }
 
     BackHandler {
         when {
+            showVideoPointsBottomSheet -> showVideoPointsBottomSheet = false
             showFileBrowserForSubtitle -> showFileBrowserForSubtitle = false
             showAudioSubtitleSelectorSheet -> showAudioSubtitleSelectorSheet = false
             showAdvancedControlsSheet -> showAdvancedControlsSheet = false
@@ -1990,11 +2371,7 @@ fun PlayerScreen(
                                     if (offset.x > width * 0.30f && offset.x < width * 0.70f) {
                                         centerDoubleTapOffset = offset
                                         centerRippleTrigger++
-                                        if (effectiveEngine == "VLC") {
-                                            if (vlcPlayer.isPlaying) vlcPlayer.pause() else vlcPlayer.play()
-                                        } else {
-                                            if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
-                                        }
+                                        togglePlayPause()
                                     } else if (offset.x <= width * 0.30f) {
                                         val curPos = if (effectiveEngine == "VLC") vlcPlayer.currentPositionMs else exoPlayer.currentPosition
                                         val targetSeek = (curPos - seekAmountMs).coerceAtLeast(0L)
@@ -2035,7 +2412,7 @@ fun PlayerScreen(
                     if (effectiveEngine == "VLC") {
                         val vlcAspectRatio = when (resizeMode) {
                             AspectRatioFrameLayout.RESIZE_MODE_FIT -> null
-                            AspectRatioFrameLayout.RESIZE_MODE_FILL -> "0"
+                            AspectRatioFrameLayout.RESIZE_MODE_FILL -> null
                             AspectRatioFrameLayout.RESIZE_MODE_ZOOM -> null
                             AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH -> "16:9"
                             AspectRatioFrameLayout.RESIZE_MODE_FIXED_HEIGHT -> "4:3"
@@ -2062,7 +2439,12 @@ fun PlayerScreen(
                         ) {
                             AndroidView(
                                 factory = { ctx ->
-                                    PlayerView(ctx).apply {
+                                    val view = android.view.LayoutInflater.from(ctx).inflate(
+                                        com.example.R.layout.view_exo_player,
+                                        null,
+                                        false
+                                    ) as PlayerView
+                                    view.apply {
                                         useController = false
                                         keepScreenOn = true
                                         setShutterBackgroundColor(android.graphics.Color.TRANSPARENT)
@@ -2094,11 +2476,17 @@ fun PlayerScreen(
                                             }
                                         }
                                         applySubtitleStyleToPlayerView(this, prefs, isBitmapActive = subEngineState.isBitmapSubtitleActive)
+                                        activePlayerViewRef = this
                                     }
                                 },
                                 update = { view -> 
+                                    activePlayerViewRef = view
                                     if (view.player != exoPlayer) {
                                         view.player = exoPlayer
+                                    }
+                                    if (isPlaying && !exoPlayer.isPlaying && (exoPlayer.playbackState == Player.STATE_READY || exoPlayer.playbackState == Player.STATE_BUFFERING)) {
+                                        exoPlayer.playWhenReady = true
+                                        exoPlayer.play()
                                     }
                                     if (view.resizeMode != exoResizeMode) {
                                         view.resizeMode = exoResizeMode
@@ -2126,7 +2514,9 @@ fun PlayerScreen(
                                     applySubtitleStyleToPlayerView(view, prefs, isBitmapActive = subEngineState.isBitmapSubtitleActive)
                                 },
                                 onRelease = { view ->
-                                    // Retain player binding to prevent blank frame on transient recomposition
+                                    if (activePlayerViewRef == view) {
+                                        activePlayerViewRef = null
+                                    }
                                 },
                                 modifier = Modifier.fillMaxSize()
                             )
@@ -2524,49 +2914,20 @@ fun PlayerScreen(
                 }
             }
 
-            // Buffering / Loading Indicator overlay (Only shown for remote network streams to prevent flickering on local files)
-            val isRemoteStream = activeMediaItem.genre == "Live Stream" || activeMediaItem.genre == "Playlist Stream Channel" || activeMediaItem.uriString.startsWith("http://") || activeMediaItem.uriString.startsWith("https://") || activeMediaItem.uriString.startsWith("rtsp://") || activeMediaItem.uriString.startsWith("mms://")
-            if (isBuffering && isRemoteStream && playbackErrorMsg == null) {
+            // Buffering / Loading Indicator overlay (Transparent with no background or text)
+            val showLoadingOverlay = !isAutoTransitioning && (!isFileRunning || isBuffering) && !isPlaying && playbackErrorMsg == null
+            if (showLoadingOverlay) {
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .background(Color.Black.copy(alpha = 0.5f)),
+                        .background(Color.Transparent),
                     contentAlignment = Alignment.Center
                 ) {
-                    Surface(
-                        shape = RoundedCornerShape(20.dp),
-                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f),
-                        tonalElevation = 8.dp,
-                        modifier = Modifier.padding(24.dp)
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(horizontal = 28.dp, vertical = 22.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(12.dp)
-                        ) {
-                            CircularProgressIndicator(
-                                color = MaterialTheme.colorScheme.primary,
-                                strokeWidth = 3.dp,
-                                modifier = Modifier.size(44.dp)
-                            )
-                            Text(
-                                text = if (activeMediaItem.genre == "Live Stream" || activeMediaItem.genre == "Playlist Stream Channel" || activeMediaItem.uriString.startsWith("http")) 
-                                    "Connecting to stream..." 
-                                else 
-                                    "Loading media...",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 14.sp,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            Text(
-                                text = activeMediaItem.title,
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                    }
+                    CircularProgressIndicator(
+                        color = MaterialTheme.colorScheme.primary,
+                        strokeWidth = 3.5.dp,
+                        modifier = Modifier.size(48.dp)
+                    )
                 }
             }
 
@@ -2590,8 +2951,8 @@ fun PlayerScreen(
                             verticalArrangement = Arrangement.spacedBy(16.dp)
                         ) {
                             Icon(Icons.Default.Error, contentDescription = null, tint = MaterialTheme.colorScheme.onErrorContainer, modifier = Modifier.size(44.dp))
-                            Text("Playback Error", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onErrorContainer, fontSize = 18.sp)
-                            Text(errorMsg, color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.8f), fontSize = 13.sp, textAlign = TextAlign.Center)
+                            Text("Both Playback Engines Failed", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onErrorContainer, fontSize = 18.sp)
+                            Text("Neither ExoPlayer nor VLC could decode this file. $errorMsg", color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.8f), fontSize = 13.sp, textAlign = TextAlign.Center)
                             Column(
                                 verticalArrangement = Arrangement.spacedBy(10.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally
@@ -2639,6 +3000,17 @@ fun PlayerScreen(
                                         playbackErrorMsg = null
                                         generalRetryCount = 0
                                         audioFallbackAttempted = false
+                                        if (alternateEngine == "VLC") {
+                                            try {
+                                                exoPlayer.stop()
+                                                exoPlayer.clearMediaItems()
+                                            } catch (e: Exception) {}
+                                        } else {
+                                            try {
+                                                vlcPlayer.stop()
+                                            } catch (e: Exception) {}
+                                        }
+                                        activeEngine = alternateEngine
                                         viewModel.updatePerVideoEngine(activeMediaItem.uriString, alternateEngine)
                                     },
                                     colors = ButtonDefaults.outlinedButtonColors(
@@ -2937,23 +3309,47 @@ fun PlayerScreen(
                                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    if (prefs.isCastEnabled) {
+                                    val shouldShowCastIcon = prefs.isCastEnabled && (hasAvailableCastDevices || isCastScanning || isCastingActive)
+                                    androidx.compose.animation.AnimatedVisibility(
+                                        visible = shouldShowCastIcon,
+                                        enter = fadeIn(animationSpec = tween(140)) + scaleIn(initialScale = 0.8f, animationSpec = tween(140)),
+                                        exit = fadeOut(animationSpec = tween(140)) + scaleOut(targetScale = 0.8f, animationSpec = tween(140))
+                                    ) {
                                         IconButton(
                                             onClick = {
                                                 hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
                                                 showCastControlSheet = true
+                                                castManager.startScan()
                                             },
                                             modifier = Modifier
                                                 .background(
-                                                    if (isCastingActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f),
+                                                    if (isCastingActive) MaterialTheme.colorScheme.primary 
+                                                    else if (isCastScanning) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.75f)
+                                                    else MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f),
                                                     CircleShape
                                                 )
                                         ) {
-                                            Icon(
-                                                imageVector = if (isCastingActive) Icons.Default.CastConnected else Icons.Default.Cast,
-                                                contentDescription = "Audio & Network Cast",
-                                                tint = if (isCastingActive) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
-                                            )
+                                            if (isCastScanning && !isCastingActive) {
+                                                Box(contentAlignment = Alignment.Center) {
+                                                    CircularProgressIndicator(
+                                                        modifier = Modifier.size(24.dp),
+                                                        strokeWidth = 2.dp,
+                                                        color = MaterialTheme.colorScheme.primary
+                                                    )
+                                                    Icon(
+                                                        imageVector = Icons.Default.Cast,
+                                                        contentDescription = "Scanning for Cast Devices",
+                                                        tint = MaterialTheme.colorScheme.primary,
+                                                        modifier = Modifier.size(13.dp)
+                                                    )
+                                                }
+                                            } else {
+                                                Icon(
+                                                    imageVector = if (isCastingActive) Icons.Default.CastConnected else Icons.Default.Cast,
+                                                    contentDescription = "Audio & Network Cast",
+                                                    tint = if (isCastingActive) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
+                                                )
+                                            }
                                         }
                                     }
 
@@ -3023,11 +3419,7 @@ fun PlayerScreen(
                                         isPlaying = isPlaying,
                                         onClick = {
                                             hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
-                                            if (effectiveEngine == "VLC") {
-                                                if (vlcPlayer.isPlaying) vlcPlayer.pause() else vlcPlayer.play()
-                                            } else {
-                                                if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
-                                            }
+                                            togglePlayPause()
                                         },
                                         modifier = Modifier
                                             .size(if (isMini) 52.dp else 76.dp),
@@ -3196,6 +3588,26 @@ fun PlayerScreen(
                                 }
 
                                 val displayPosition = if (isScrubbing) scrubPosition else currentPosition
+                                val activeSkippablePoint = remember(videoPoints, displayPosition) {
+                                    val skippable = com.example.util.VideoPointDetector.getActiveSkippablePoint(videoPoints, displayPosition)
+                                    if (skippable != null) {
+                                        skippable
+                                    } else {
+                                        // Also detect if currently in Intro/Prologue or Post-Credit chapter even if flag was default
+                                        val active = com.example.util.VideoPointDetector.getActivePoint(videoPoints, displayPosition)
+                                        if (active != null && (
+                                            active.type == com.example.util.VideoPointType.PROLOGUE ||
+                                            active.type == com.example.util.VideoPointType.RECAP ||
+                                            active.type == com.example.util.VideoPointType.POST_CREDIT ||
+                                            active.title.contains("Intro", ignoreCase = true) ||
+                                            active.title.contains("Opening", ignoreCase = true) ||
+                                            active.title.contains("Post", ignoreCase = true) ||
+                                            active.title.contains("Credit", ignoreCase = true)
+                                        )) {
+                                            active
+                                        } else null
+                                    }
+                                }
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     verticalAlignment = Alignment.CenterVertically,
@@ -3208,39 +3620,104 @@ fun PlayerScreen(
                                         fontWeight = FontWeight.SemiBold
                                     )
 
-                                    // Aspect Ratio / Screen Fit Button on top of progressbar right side
-                                    IconButton(
-                                        onClick = {
-                                            hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
-                                            val modes = listOf(
-                                                AspectRatioFrameLayout.RESIZE_MODE_FIT to "Fit (Original)",
-                                                AspectRatioFrameLayout.RESIZE_MODE_FILL to "Stretch / Fill",
-                                                AspectRatioFrameLayout.RESIZE_MODE_ZOOM to "Zoom / Crop",
-                                                AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH to "16:9 Widescreen",
-                                                AspectRatioFrameLayout.RESIZE_MODE_FIXED_HEIGHT to "4:3 Standard",
-                                                100 to "21:9 Cinema"
-                                            )
-                                            val currentModeIndex = modes.indexOfFirst { it.first == resizeMode }.coerceAtLeast(0)
-                                            val nextModeIndex = (currentModeIndex + 1) % modes.size
-                                            val nextMode = modes[nextModeIndex]
-                                            resizeMode = nextMode.first
-                                            gestureFeedbackValue = "Aspect: ${nextMode.second}"
-                                            gestureFeedbackType = "aspect_ratio"
-                                            coroutineScope.launch {
-                                                delay(1000)
-                                                if (gestureFeedbackType == "aspect_ratio") {
-                                                    gestureFeedbackType = ""
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        // Dynamic OTT Skip Option next to Aspect Ratio icon (Disney+ Hotstar style)
+                                        androidx.compose.animation.AnimatedVisibility(
+                                            visible = activeMediaItem.isVideo && !playAsAudioOnly && activeSkippablePoint != null,
+                                            enter = fadeIn(animationSpec = tween(220)) + expandHorizontally(),
+                                            exit = fadeOut(animationSpec = tween(180)) + shrinkHorizontally()
+                                        ) {
+                                            activeSkippablePoint?.let { point ->
+                                                val isPrologue = point.type == com.example.util.VideoPointType.PROLOGUE || point.type == com.example.util.VideoPointType.RECAP
+                                                val isPostCredit = point.type == com.example.util.VideoPointType.POST_CREDIT || point.title.contains("Post", ignoreCase = true)
+                                                val skipLabel = when {
+                                                    point.title.contains("Intro", ignoreCase = true) -> "Skip Intro"
+                                                    point.title.contains("Opening", ignoreCase = true) -> "Skip Opening"
+                                                    point.title.contains("Recap", ignoreCase = true) -> "Skip Recap"
+                                                    isPrologue -> "Skip Intro"
+                                                    isPostCredit -> "Skip Post-Credit"
+                                                    point.title.contains("Credit", ignoreCase = true) -> "Skip Credits"
+                                                    else -> "Skip Scene"
+                                                }
+                                                val skipIcon = if (isPrologue) Icons.Default.FastForward else Icons.Default.SkipNext
+
+                                                Surface(
+                                                    onClick = {
+                                                        hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                                        val targetMs = (point.skipTargetMs + 100L).coerceAtMost(duration)
+                                                        if (effectiveEngine == "VLC") {
+                                                            vlcPlayer.seekTo(targetMs)
+                                                        } else {
+                                                            exoPlayer.seekTo(targetMs)
+                                                        }
+                                                        currentPosition = targetMs
+                                                        android.widget.Toast.makeText(context, "$skipLabel (${formatPlayerDuration(targetMs)})", android.widget.Toast.LENGTH_SHORT).show()
+                                                    },
+                                                    shape = RoundedCornerShape(18.dp),
+                                                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.95f),
+                                                    border = null,
+                                                    shadowElevation = 6.dp,
+                                                    modifier = Modifier.testTag("dynamic_skip_button")
+                                                ) {
+                                                    Row(
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                                                    ) {
+                                                        Icon(
+                                                            imageVector = skipIcon,
+                                                            contentDescription = skipLabel,
+                                                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                                            modifier = Modifier.size(15.dp)
+                                                        )
+                                                        Text(
+                                                            text = skipLabel,
+                                                            fontSize = 11.sp,
+                                                            fontWeight = FontWeight.Black,
+                                                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                                                        )
+                                                    }
                                                 }
                                             }
-                                        },
-                                        modifier = Modifier.size(32.dp).testTag("aspect_ratio_button")
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.AspectRatio,
-                                            contentDescription = "Aspect Ratio",
-                                            tint = Color.White,
-                                            modifier = Modifier.size(20.dp)
-                                        )
+                                        }
+
+                                        // Aspect Ratio / Screen Fit Button on top of progressbar right side
+                                        IconButton(
+                                            onClick = {
+                                                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                                val modes = listOf(
+                                                    AspectRatioFrameLayout.RESIZE_MODE_FIT to "Fit (Original)",
+                                                    AspectRatioFrameLayout.RESIZE_MODE_FILL to "Stretch / Fill",
+                                                    AspectRatioFrameLayout.RESIZE_MODE_ZOOM to "Zoom / Crop",
+                                                    AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH to "16:9 Widescreen",
+                                                    AspectRatioFrameLayout.RESIZE_MODE_FIXED_HEIGHT to "4:3 Standard",
+                                                    100 to "21:9 Cinema"
+                                                )
+                                                val currentModeIndex = modes.indexOfFirst { it.first == resizeMode }.coerceAtLeast(0)
+                                                val nextModeIndex = (currentModeIndex + 1) % modes.size
+                                                val nextMode = modes[nextModeIndex]
+                                                resizeMode = nextMode.first
+                                                gestureFeedbackValue = "Aspect: ${nextMode.second}"
+                                                gestureFeedbackType = "aspect_ratio"
+                                                coroutineScope.launch {
+                                                    delay(1000)
+                                                    if (gestureFeedbackType == "aspect_ratio") {
+                                                        gestureFeedbackType = ""
+                                                    }
+                                                }
+                                            },
+                                            modifier = Modifier.size(32.dp).testTag("aspect_ratio_button")
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.AspectRatio,
+                                                contentDescription = "Aspect Ratio",
+                                                tint = Color.White,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        }
                                     }
                                 }
 
@@ -3290,9 +3767,20 @@ fun PlayerScreen(
                                     Box(
                                         modifier = Modifier.align(if (isLandscape) Alignment.CenterStart else Alignment.BottomStart)
                                     ) {
-                                        if (!isLandscape) {
+                                         if (!isLandscape) {
+                                            val collapseRotation by animateFloatAsState(
+                                                targetValue = if (isLeftPillExpanded) 0f else 180f,
+                                                animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMediumLow),
+                                                label = "LeftPillPortraitRotation"
+                                            )
                                             Column(
                                                 modifier = Modifier
+                                                    .animateContentSize(
+                                                        animationSpec = spring(
+                                                            dampingRatio = Spring.DampingRatioLowBouncy,
+                                                            stiffness = Spring.StiffnessMediumLow
+                                                        )
+                                                    )
                                                     .wrapContentSize()
                                                     .clip(RoundedCornerShape(24.dp))
                                                     .background(MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.88f))
@@ -3302,19 +3790,20 @@ fun PlayerScreen(
                                             ) {
                                                 AnimatedVisibility(
                                                     visible = isLeftPillExpanded,
-                                                    enter = expandVertically() + fadeIn(),
-                                                    exit = shrinkVertically() + fadeOut()
+                                                    enter = expandVertically(
+                                                        animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessMediumLow),
+                                                        expandFrom = Alignment.Bottom
+                                                    ) + fadeIn(animationSpec = tween(220, easing = FastOutSlowInEasing)),
+                                                    exit = shrinkVertically(
+                                                        animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMedium),
+                                                        shrinkTowards = Alignment.Bottom
+                                                    ) + fadeOut(animationSpec = tween(180, easing = FastOutLinearInEasing))
                                                 ) {
                                                     Column(
                                                         verticalArrangement = Arrangement.spacedBy(4.dp),
                                                         horizontalAlignment = Alignment.CenterHorizontally
                                                     ) {
-                                                        // 1. Interactive Save / Favorite Button with spring animation scale
-                                                        val saveScale by animateFloatAsState(
-                                                            targetValue = if (isSaved) 1.25f else 1.0f,
-                                                            animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium),
-                                                            label = "SaveScale"
-                                                        )
+                                                        // 1. Interactive Save / Favorite Button
                                                         IconButton(
                                                             onClick = {
                                                                 viewModel.toggleFavoriteMedia(activeMediaItem.uriString)
@@ -3322,10 +3811,7 @@ fun PlayerScreen(
                                                                 val msg = if (!isSaved) "Saved to Library " else "Removed from Library"
                                                                 android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
                                                             },
-                                                            modifier = Modifier.size(36.dp).graphicsLayer {
-                                                                scaleX = saveScale
-                                                                scaleY = saveScale
-                                                            }
+                                                            modifier = Modifier.size(36.dp)
                                                         ) {
                                                             Icon(
                                                                 imageVector = if (isSaved) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
@@ -3335,15 +3821,9 @@ fun PlayerScreen(
                                                             )
                                                         }
 
-                                                        // 2. Interactive Rotation button with full-spin spring rotation animation
-                                                        val rotateAngleAnim by animateFloatAsState(
-                                                            targetValue = rotateAngle,
-                                                            animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessLow),
-                                                            label = "RotateSpin"
-                                                        )
+                                                        // 2. Interactive Rotation button
                                                         IconButton(
                                                             onClick = {
-                                                                rotateAngle += 360f
                                                                 hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
                                                                 sessionOrientation = if (sessionOrientation == android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE || sessionOrientation == android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE) {
                                                                     android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
@@ -3351,9 +3831,7 @@ fun PlayerScreen(
                                                                     android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
                                                                 }
                                                             },
-                                                            modifier = Modifier.size(36.dp).graphicsLayer {
-                                                                rotationZ = rotateAngleAnim
-                                                            }
+                                                            modifier = Modifier.size(36.dp)
                                                         ) {
                                                             Icon(
                                                                 imageVector = Icons.Default.ScreenRotation,
@@ -3440,16 +3918,29 @@ fun PlayerScreen(
                                                     modifier = Modifier.size(36.dp).testTag("left_pill_collapse_button")
                                                 ) {
                                                     Icon(
-                                                        imageVector = if (isLeftPillExpanded) Icons.Default.KeyboardArrowDown else Icons.Default.KeyboardArrowUp,
+                                                        imageVector = Icons.Default.KeyboardArrowDown,
                                                         contentDescription = if (isLeftPillExpanded) "Collapse Tools" else "Expand Tools",
                                                         tint = MaterialTheme.colorScheme.primary,
-                                                        modifier = Modifier.size(24.dp)
+                                                        modifier = Modifier
+                                                            .size(24.dp)
+                                                            .graphicsLayer { rotationZ = collapseRotation }
                                                     )
                                                 }
                                             }
                                         } else {
+                                            val collapseRotationLandscape by animateFloatAsState(
+                                                targetValue = if (isLeftPillExpanded) 0f else 180f,
+                                                animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMediumLow),
+                                                label = "LeftPillLandscapeRotation"
+                                            )
                                             Row(
                                                 modifier = Modifier
+                                                    .animateContentSize(
+                                                        animationSpec = spring(
+                                                            dampingRatio = Spring.DampingRatioLowBouncy,
+                                                            stiffness = Spring.StiffnessMediumLow
+                                                        )
+                                                    )
                                                     .wrapContentSize()
                                                     .clip(CircleShape)
                                                     .background(MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.88f))
@@ -3466,28 +3957,31 @@ fun PlayerScreen(
                                                     modifier = Modifier.size(36.dp).testTag("left_pill_collapse_button")
                                                 ) {
                                                     Icon(
-                                                        imageVector = if (isLeftPillExpanded) Icons.Default.KeyboardArrowLeft else Icons.Default.KeyboardArrowRight,
+                                                        imageVector = Icons.Default.KeyboardArrowLeft,
                                                         contentDescription = if (isLeftPillExpanded) "Collapse Tools" else "Expand Tools",
                                                         tint = MaterialTheme.colorScheme.primary,
-                                                        modifier = Modifier.size(24.dp)
+                                                        modifier = Modifier
+                                                            .size(24.dp)
+                                                            .graphicsLayer { rotationZ = collapseRotationLandscape }
                                                     )
                                                 }
 
                                                 AnimatedVisibility(
                                                     visible = isLeftPillExpanded,
-                                                    enter = expandHorizontally() + fadeIn(),
-                                                    exit = shrinkHorizontally() + fadeOut()
+                                                    enter = expandHorizontally(
+                                                        animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessMediumLow),
+                                                        expandFrom = Alignment.Start
+                                                    ) + fadeIn(animationSpec = tween(220, easing = FastOutSlowInEasing)),
+                                                    exit = shrinkHorizontally(
+                                                        animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMedium),
+                                                        shrinkTowards = Alignment.Start
+                                                    ) + fadeOut(animationSpec = tween(180, easing = FastOutLinearInEasing))
                                                 ) {
                                                     Row(
                                                         horizontalArrangement = Arrangement.spacedBy(4.dp),
                                                         verticalAlignment = Alignment.CenterVertically
                                                     ) {
-                                                        // 1. Interactive Save / Favorite Button with spring animation scale
-                                                        val saveScale by animateFloatAsState(
-                                                            targetValue = if (isSaved) 1.25f else 1.0f,
-                                                            animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium),
-                                                            label = "SaveScale"
-                                                        )
+                                                        // 1. Interactive Save / Favorite Button
                                                         IconButton(
                                                             onClick = {
                                                                 viewModel.toggleFavoriteMedia(activeMediaItem.uriString)
@@ -3495,10 +3989,7 @@ fun PlayerScreen(
                                                                 val msg = if (!isSaved) "Saved to Library " else "Removed from Library"
                                                                 android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
                                                             },
-                                                            modifier = Modifier.size(36.dp).graphicsLayer {
-                                                                scaleX = saveScale
-                                                                scaleY = saveScale
-                                                            }
+                                                            modifier = Modifier.size(36.dp)
                                                         ) {
                                                             Icon(
                                                                 imageVector = if (isSaved) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
@@ -3508,15 +3999,9 @@ fun PlayerScreen(
                                                             )
                                                         }
 
-                                                        // 2. Interactive Rotation button with full-spin spring rotation animation
-                                                        val rotateAngleAnim by animateFloatAsState(
-                                                            targetValue = rotateAngle,
-                                                            animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessLow),
-                                                            label = "RotateSpin"
-                                                        )
+                                                        // 2. Interactive Rotation button
                                                         IconButton(
                                                             onClick = {
-                                                                rotateAngle += 360f
                                                                 hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
                                                                 sessionOrientation = if (sessionOrientation == android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE || sessionOrientation == android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE) {
                                                                     android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
@@ -3524,9 +4009,7 @@ fun PlayerScreen(
                                                                     android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
                                                                 }
                                                             },
-                                                            modifier = Modifier.size(36.dp).graphicsLayer {
-                                                                rotationZ = rotateAngleAnim
-                                                            }
+                                                            modifier = Modifier.size(36.dp)
                                                         ) {
                                                             Icon(
                                                                 imageVector = Icons.Default.ScreenRotation,
@@ -3620,8 +4103,19 @@ fun PlayerScreen(
                                         modifier = Modifier.align(if (isLandscape) Alignment.CenterEnd else Alignment.BottomEnd)
                                     ) {
                                         if (!isLandscape) {
+                                            val collapseRotationRightPortrait by animateFloatAsState(
+                                                targetValue = if (isRightPillExpanded) 0f else 180f,
+                                                animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMediumLow),
+                                                label = "RightPillPortraitRotation"
+                                            )
                                             Column(
                                                 modifier = Modifier
+                                                    .animateContentSize(
+                                                        animationSpec = spring(
+                                                            dampingRatio = Spring.DampingRatioLowBouncy,
+                                                            stiffness = Spring.StiffnessMediumLow
+                                                        )
+                                                    )
                                                     .wrapContentSize()
                                                     .clip(RoundedCornerShape(24.dp))
                                                     .background(MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.88f))
@@ -3631,8 +4125,14 @@ fun PlayerScreen(
                                             ) {
                                                 AnimatedVisibility(
                                                     visible = isRightPillExpanded,
-                                                    enter = expandVertically() + fadeIn(),
-                                                    exit = shrinkVertically() + fadeOut()
+                                                    enter = expandVertically(
+                                                        animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessMediumLow),
+                                                        expandFrom = Alignment.Bottom
+                                                    ) + fadeIn(animationSpec = tween(220, easing = FastOutSlowInEasing)),
+                                                    exit = shrinkVertically(
+                                                        animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMedium),
+                                                        shrinkTowards = Alignment.Bottom
+                                                    ) + fadeOut(animationSpec = tween(180, easing = FastOutLinearInEasing))
                                                 ) {
                                                     Column(
                                                         verticalArrangement = Arrangement.spacedBy(4.dp),
@@ -3680,6 +4180,22 @@ fun PlayerScreen(
                                                             )
                                                         }
 
+                                                        // Video Points & Chapters (Quick Jump)
+                                                        IconButton(
+                                                            onClick = {
+                                                                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                                                showVideoPointsBottomSheet = true
+                                                            },
+                                                            modifier = Modifier.size(36.dp).testTag("video_points_pill_button")
+                                                        ) {
+                                                            Icon(
+                                                                imageVector = Icons.Default.Bookmarks,
+                                                                contentDescription = "Video Points & Chapters",
+                                                                tint = MaterialTheme.colorScheme.primary,
+                                                                modifier = Modifier.size(20.dp)
+                                                            )
+                                                        }
+
                                                         // 4. Advanced Settings Gear
                                                         IconButton(
                                                             onClick = {
@@ -3707,16 +4223,29 @@ fun PlayerScreen(
                                                     modifier = Modifier.size(36.dp).testTag("right_pill_collapse_button")
                                                 ) {
                                                     Icon(
-                                                        imageVector = if (isRightPillExpanded) Icons.Default.KeyboardArrowDown else Icons.Default.KeyboardArrowUp,
+                                                        imageVector = Icons.Default.KeyboardArrowDown,
                                                         contentDescription = if (isRightPillExpanded) "Collapse Settings" else "Expand Settings",
                                                         tint = MaterialTheme.colorScheme.primary,
-                                                        modifier = Modifier.size(24.dp)
+                                                        modifier = Modifier
+                                                            .size(24.dp)
+                                                            .graphicsLayer { rotationZ = collapseRotationRightPortrait }
                                                     )
                                                 }
                                             }
                                         } else {
+                                            val collapseRotationRightLandscape by animateFloatAsState(
+                                                targetValue = if (isRightPillExpanded) 0f else 180f,
+                                                animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMediumLow),
+                                                label = "RightPillLandscapeRotation"
+                                            )
                                             Row(
                                                 modifier = Modifier
+                                                    .animateContentSize(
+                                                        animationSpec = spring(
+                                                            dampingRatio = Spring.DampingRatioLowBouncy,
+                                                            stiffness = Spring.StiffnessMediumLow
+                                                        )
+                                                    )
                                                     .wrapContentSize()
                                                     .clip(CircleShape)
                                                     .background(MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.88f))
@@ -3726,8 +4255,14 @@ fun PlayerScreen(
                                             ) {
                                                 AnimatedVisibility(
                                                     visible = isRightPillExpanded,
-                                                    enter = expandHorizontally() + fadeIn(),
-                                                    exit = shrinkHorizontally() + fadeOut()
+                                                    enter = expandHorizontally(
+                                                        animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessMediumLow),
+                                                        expandFrom = Alignment.End
+                                                    ) + fadeIn(animationSpec = tween(220, easing = FastOutSlowInEasing)),
+                                                    exit = shrinkHorizontally(
+                                                        animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMedium),
+                                                        shrinkTowards = Alignment.End
+                                                    ) + fadeOut(animationSpec = tween(180, easing = FastOutLinearInEasing))
                                                 ) {
                                                     Row(
                                                         horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -3775,6 +4310,22 @@ fun PlayerScreen(
                                                             )
                                                         }
 
+                                                        // Video Points & Chapters (Quick Jump)
+                                                        IconButton(
+                                                            onClick = {
+                                                                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                                                showVideoPointsBottomSheet = true
+                                                            },
+                                                            modifier = Modifier.size(36.dp).testTag("video_points_pill_button_landscape")
+                                                        ) {
+                                                            Icon(
+                                                                imageVector = Icons.Default.Bookmarks,
+                                                                contentDescription = "Video Points & Chapters",
+                                                                tint = MaterialTheme.colorScheme.primary,
+                                                                modifier = Modifier.size(20.dp)
+                                                            )
+                                                        }
+
                                                         // 4. Advanced Settings Gear
                                                         IconButton(
                                                             onClick = {
@@ -3802,10 +4353,12 @@ fun PlayerScreen(
                                                     modifier = Modifier.size(36.dp).testTag("right_pill_collapse_button")
                                                 ) {
                                                     Icon(
-                                                        imageVector = if (isRightPillExpanded) Icons.Default.KeyboardArrowRight else Icons.Default.KeyboardArrowLeft,
+                                                        imageVector = Icons.Default.KeyboardArrowRight,
                                                         contentDescription = if (isRightPillExpanded) "Collapse Settings" else "Expand Settings",
                                                         tint = MaterialTheme.colorScheme.primary,
-                                                        modifier = Modifier.size(24.dp)
+                                                        modifier = Modifier
+                                                            .size(24.dp)
+                                                            .graphicsLayer { rotationZ = collapseRotationRightLandscape }
                                                     )
                                                 }
                                             }
@@ -3901,7 +4454,331 @@ fun PlayerScreen(
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f), thickness = 1.dp)
                 Spacer(modifier = Modifier.height(16.dp))
 
+                // SECTION: PLAYBACK DECODING ENGINE (SWITCH CARD)
+                if (!isAudio) {
+                    Text(
+                        text = "PLAYBACK ENGINE",
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.primary,
+                        letterSpacing = 1.5.sp,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
 
+                // Compact Pill-Shaped Card for Engine Switching
+                Surface(
+                    shape = RoundedCornerShape(24.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("engine_switch_card")
+                ) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        // Header row with Icon, Info and Active Indicator Badge
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(28.dp)
+                                        .clip(CircleShape)
+                                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Dns,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(15.dp)
+                                    )
+                                }
+                                Column {
+                                    Text(
+                                        text = "Decoding Engine",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 12.sp,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Text(
+                                        text = if (effectiveEngine == "VLC") "Universal Core (LibVLC)" else "Media3 ExoPlayer Core",
+                                        fontSize = 10.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+
+                            // Quick Compact Pill Badge indicating current active engine
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f),
+                                modifier = Modifier.padding(start = 4.dp)
+                            ) {
+                                Text(
+                                    text = if (effectiveEngine == "VLC") "VLC ACTIVE" else "EXO ACTIVE",
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                )
+                            }
+                        }
+
+                        // Compact Segmented Pill Switch Bar
+                        Surface(
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.65f),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(3.dp),
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                val isExo = effectiveEngine != "VLC"
+                                val isVlc = effectiveEngine == "VLC"
+
+                                // ExoPlayer Pill Option
+                                Surface(
+                                    shape = CircleShape,
+                                    color = if (isExo) MaterialTheme.colorScheme.primary else Color.Transparent,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clip(CircleShape)
+                                        .clickable {
+                                            if (!isExo) {
+                                                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                                activeEngine = "ExoPlayer"
+                                                viewModel.updatePerVideoEngine(activeMediaItem.uriString, "ExoPlayer")
+                                                android.widget.Toast.makeText(context, "Switched to ExoPlayer engine", android.widget.Toast.LENGTH_SHORT).show()
+                                            }
+                                        }
+                                        .testTag("engine_pill_exoplayer")
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(vertical = 7.dp, horizontal = 10.dp),
+                                        horizontalArrangement = Arrangement.Center,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        if (isExo) {
+                                            Icon(
+                                                imageVector = Icons.Default.Check,
+                                                contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.onPrimary,
+                                                modifier = Modifier.size(13.dp).padding(end = 4.dp)
+                                            )
+                                        }
+                                        Text(
+                                            text = "ExoPlayer",
+                                            fontWeight = if (isExo) FontWeight.ExtraBold else FontWeight.Medium,
+                                            fontSize = 11.sp,
+                                            color = if (isExo) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+
+                                // LibVLC Pill Option
+                                Surface(
+                                    shape = CircleShape,
+                                    color = if (isVlc) MaterialTheme.colorScheme.primary else Color.Transparent,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clip(CircleShape)
+                                        .clickable {
+                                            if (!isVlc) {
+                                                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                                activeEngine = "VLC"
+                                                viewModel.updatePerVideoEngine(activeMediaItem.uriString, "VLC")
+                                                android.widget.Toast.makeText(context, "Switched to VLC engine", android.widget.Toast.LENGTH_SHORT).show()
+                                            }
+                                        }
+                                        .testTag("engine_pill_vlc")
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(vertical = 7.dp, horizontal = 10.dp),
+                                        horizontalArrangement = Arrangement.Center,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        if (isVlc) {
+                                            Icon(
+                                                imageVector = Icons.Default.Check,
+                                                contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.onPrimary,
+                                                modifier = Modifier.size(13.dp).padding(end = 4.dp)
+                                            )
+                                        }
+                                        Text(
+                                            text = "VLC Engine",
+                                            fontWeight = if (isVlc) FontWeight.ExtraBold else FontWeight.Medium,
+                                            fontSize = 11.sp,
+                                            color = if (isVlc) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    }
+                    Spacer(modifier = Modifier.height(16.dp))
+                }
+
+                // SECTION: TIMELINE POINTS & CINEMATIC SKIP ZONES
+                if (videoPoints.isNotEmpty() && !isAudio) {
+                    Text(
+                        text = "TIMELINE POINTS & SKIP ZONES",
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.primary,
+                        letterSpacing = 1.5.sp,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier.fillMaxWidth().testTag("drawer_video_points_card")
+                    ) {
+                        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(30.dp)
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Bookmarks,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+                                    Column {
+                                        val hasNative = videoPoints.any { it.isNativeChapter }
+                                        Text(
+                                            text = if (hasNative) "File Chapters (Embedded)" else "Auto-Divided Points",
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 13.sp,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                        Text(
+                                            text = if (hasNative) "${videoPoints.size} native chapters parsed from file" else "${videoPoints.size} cinematic points detected",
+                                            fontSize = 10.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+
+                                val currentPoint = com.example.util.VideoPointDetector.getActivePoint(videoPoints, currentPosition)
+                                if (currentPoint != null) {
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(Color(currentPoint.type.badgeColorHex).copy(alpha = 0.15f))
+                                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                                    ) {
+                                        Text(
+                                            text = currentPoint.title,
+                                            color = Color(currentPoint.type.badgeColorHex),
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 9.sp,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
+                            }
+
+                            // Quick jump buttons for prologue and post-credit if detected
+                            val prologuePoint = videoPoints.firstOrNull { it.type == com.example.util.VideoPointType.PROLOGUE }
+                            val postCreditPoint = videoPoints.firstOrNull { it.type == com.example.util.VideoPointType.POST_CREDIT }
+
+                            if (prologuePoint != null || postCreditPoint != null) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    if (prologuePoint != null) {
+                                        Button(
+                                            onClick = {
+                                                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                                val target = (prologuePoint.skipTargetMs + 100L).coerceAtMost(duration)
+                                                if (effectiveEngine == "VLC") vlcPlayer.seekTo(target) else exoPlayer.seekTo(target)
+                                                currentPosition = target
+                                                showAdvancedControlsSheet = false
+                                                android.widget.Toast.makeText(context, "Skipped Prologue", android.widget.Toast.LENGTH_SHORT).show()
+                                            },
+                                            shape = RoundedCornerShape(10.dp),
+                                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Icon(Icons.Default.FastForward, contentDescription = null, modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onPrimaryContainer)
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text("Skip Intro", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                                        }
+                                    }
+
+                                    if (postCreditPoint != null) {
+                                        Button(
+                                            onClick = {
+                                                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                                val target = postCreditPoint.startMs
+                                                if (effectiveEngine == "VLC") vlcPlayer.seekTo(target) else exoPlayer.seekTo(target)
+                                                currentPosition = target
+                                                showAdvancedControlsSheet = false
+                                                android.widget.Toast.makeText(context, "Jumped to Post-Credit Scene", android.widget.Toast.LENGTH_SHORT).show()
+                                            },
+                                            shape = RoundedCornerShape(10.dp),
+                                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Icon(Icons.Default.SkipNext, contentDescription = null, modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onSecondaryContainer)
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text("Post-Credits", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSecondaryContainer)
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Full Bottom Sheet Opener button
+                            Button(
+                                onClick = {
+                                    showAdvancedControlsSheet = false
+                                    showVideoPointsBottomSheet = true
+                                },
+                                modifier = Modifier.fillMaxWidth().testTag("drawer_open_video_points_sheet_button"),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                            ) {
+                                Icon(Icons.Default.Bookmarks, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Choose From All Points (${videoPoints.size})", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+                }
 
                 if (isAudio) {
                     // SECTION 1: PLAYBACK SPEED (TEMPO CONTROL COCKPIT)
@@ -5384,7 +6261,7 @@ fun PlayerScreen(
                     }
                 }
 
-                if (!isAudio) {
+                if (!isAudio && effectiveEngine != "VLC") {
                     // SECTION 8: SUBTITLE ENGINE & STYLING
                     Spacer(modifier = Modifier.height(16.dp))
                     Text(
@@ -5502,8 +6379,297 @@ fun PlayerScreen(
             }
         }
     }
+
+    // Video Points & Chapters Quick Jump Bottom Sheet
+    if (showVideoPointsBottomSheet) {
+        val pointsSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        val displayPos = if (isScrubbing) scrubPosition else currentPosition
+
+        ModalBottomSheet(
+            onDismissRequest = { showVideoPointsBottomSheet = false },
+            sheetState = pointsSheetState,
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.98f),
+            shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .navigationBarsPadding()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 20.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                // Header
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(36.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Bookmarks,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                        Column {
+                            val hasNativeChapters = videoPoints.any { it.isNativeChapter }
+                            Text(
+                                text = if (hasNativeChapters) "Video Chapters (File Detected)" else "Video Points & Chapters",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 17.sp,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = if (hasNativeChapters) "Detected from media file tags & timeline points" else "Auto-divided timeline & cinematic skip points",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    IconButton(
+                        onClick = { showVideoPointsBottomSheet = false },
+                        modifier = Modifier
+                            .size(32.dp)
+                            .background(MaterialTheme.colorScheme.surfaceVariant, CircleShape)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Close",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+                // Points List
+                if (videoPoints.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 24.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "No timeline segments available for short clips (< 10s)",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 12.sp
+                        )
+                    }
+                } else {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        videoPoints.forEach { point ->
+                            val isCurrent = displayPos in point.startMs until point.endMs
+                            val pointColor = Color(point.type.badgeColorHex)
+
+                            Card(
+                                colors = CardDefaults.cardColors(
+                                    containerColor = if (isCurrent) pointColor.copy(alpha = 0.12f)
+                                    else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                                ),
+                                border = if (isCurrent) BorderStroke(1.5.dp, pointColor)
+                                else BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)),
+                                shape = RoundedCornerShape(16.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                        val seekTarget = point.startMs
+                                        if (effectiveEngine == "VLC") {
+                                            vlcPlayer.seekTo(seekTarget)
+                                        } else {
+                                            exoPlayer.seekTo(seekTarget)
+                                        }
+                                        currentPosition = seekTarget
+                                        showVideoPointsBottomSheet = false
+                                        android.widget.Toast.makeText(context, "Jumped to ${point.title}", android.widget.Toast.LENGTH_SHORT).show()
+                                    }
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(14.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(
+                                        modifier = Modifier.weight(1f),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(40.dp)
+                                                .clip(RoundedCornerShape(10.dp))
+                                                .background(pointColor.copy(alpha = 0.2f)),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            val icon = when (point.type) {
+                                                com.example.util.VideoPointType.PROLOGUE -> Icons.Default.FastForward
+                                                com.example.util.VideoPointType.RECAP -> Icons.Default.FastForward
+                                                com.example.util.VideoPointType.POST_CREDIT -> Icons.Default.Star
+                                                com.example.util.VideoPointType.CREDITS -> Icons.Default.FormatListNumbered
+                                                com.example.util.VideoPointType.CLIMAX -> Icons.Default.Movie
+                                                com.example.util.VideoPointType.INTERMISSION -> Icons.Default.Schedule
+                                                else -> Icons.Default.PlayArrow
+                                            }
+                                            Icon(
+                                                imageVector = icon,
+                                                contentDescription = null,
+                                                tint = pointColor,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        }
+
+                                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                            ) {
+                                                Text(
+                                                    text = point.title,
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 14.sp,
+                                                    color = MaterialTheme.colorScheme.onSurface
+                                                )
+                                                if (isCurrent) {
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .clip(RoundedCornerShape(6.dp))
+                                                            .background(pointColor)
+                                                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                                                    ) {
+                                                        Text(
+                                                            text = "PLAYING",
+                                                            color = Color.White,
+                                                            fontSize = 8.sp,
+                                                            fontWeight = FontWeight.Black
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                            Text(
+                                                text = point.subtitle,
+                                                fontSize = 11.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                            Text(
+                                                text = "${point.formatRange()} • (${point.formatDuration()})",
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = pointColor
+                                            )
+                                        }
+                                    }
+
+                                    Button(
+                                        onClick = {
+                                            hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                            val seekTarget = point.startMs
+                                            if (effectiveEngine == "VLC") {
+                                                vlcPlayer.seekTo(seekTarget)
+                                            } else {
+                                                exoPlayer.seekTo(seekTarget)
+                                            }
+                                            currentPosition = seekTarget
+                                            showVideoPointsBottomSheet = false
+                                            android.widget.Toast.makeText(context, "Jumped to ${point.title}", android.widget.Toast.LENGTH_SHORT).show()
+                                        },
+                                        shape = RoundedCornerShape(10.dp),
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = if (isCurrent) pointColor else MaterialTheme.colorScheme.primaryContainer,
+                                            contentColor = if (isCurrent) Color.White else MaterialTheme.colorScheme.onPrimaryContainer
+                                        ),
+                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                                    ) {
+                                        Text("Jump", fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Custom Timing Configuration Card
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text(
+                            text = "CUSTOM PROLOGUE TIMING",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.primary,
+                            letterSpacing = 1.sp
+                        )
+                        Text(
+                            text = "Fine-tune prologue length or use auto-detected timing:",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            listOf(
+                                null to "Auto",
+                                60 to "60s",
+                                75 to "75s",
+                                90 to "90s (OP)",
+                                120 to "120s"
+                            ).forEach { (sec, label) ->
+                                val isSelected = customPrologueSec == sec
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(
+                                            if (isSelected) MaterialTheme.colorScheme.primary
+                                            else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+                                        )
+                                        .clickable {
+                                            hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                            customPrologueSec = sec
+                                        }
+                                        .padding(vertical = 8.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = label,
+                                        color = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
+                                        fontSize = 10.sp,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+            }
+        }
+    }
+
     // Subtitle Customization Bottom Sheet
-    if (showSubtitleCustomizationSheet) {
+    if (showSubtitleCustomizationSheet && effectiveEngine != "VLC") {
         val subSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
         ModalBottomSheet(
             onDismissRequest = { showSubtitleCustomizationSheet = false },
@@ -6130,14 +7296,12 @@ fun PlayerScreen(
     }
 
     if (showCastControlSheet) {
-        val castScanner = remember { com.example.util.NetworkCastScanner }
-        val discoveredNetworkDevices by castScanner.discoveredDevices.collectAsState()
-        val isNetworkScanning by castScanner.isScanning.collectAsState()
-
         DisposableEffect(Unit) {
-            castScanner.startScan()
+            castManager.startScan()
             onDispose {
-                castScanner.stopScan()
+                if (!castSessionState.isConnected) {
+                    castManager.stopScan()
+                }
             }
         }
 
@@ -6145,7 +7309,7 @@ fun PlayerScreen(
         ModalBottomSheet(
             onDismissRequest = { showCastControlSheet = false },
             sheetState = castSheetState,
-            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f),
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.95f),
             shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
         ) {
             Column(
@@ -6167,48 +7331,123 @@ fun PlayerScreen(
                     ) {
                         Surface(
                             shape = CircleShape,
-                            color = if (isCastingActive) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                            color = if (castSessionState.isStreaming) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
                             modifier = Modifier.size(44.dp)
                         ) {
                             Box(contentAlignment = Alignment.Center) {
                                 Icon(
-                                    imageVector = if (isCastingActive) Icons.Default.CastConnected else Icons.Default.Cast,
+                                    imageVector = if (castSessionState.isStreaming) Icons.Default.CastConnected else Icons.Default.Cast,
                                     contentDescription = null,
-                                    tint = if (isCastingActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                    tint = if (castSessionState.isStreaming) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
                         }
                         Column {
                             Text(
-                                text = "Audio & Network Casting",
+                                text = "Chromecast & Network Stream",
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
-                                text = if (isCastingActive) "Active  -  ${connectedCastDevice ?: prefs.selectedCastDevice}" else "Ready to cast",
+                                text = if (castSessionState.isStreaming) "Streaming: ${castSessionState.device?.name ?: connectedCastDevice ?: prefs.selectedCastDevice}" 
+                                       else if (isCastScanning) "Scanning local Wi-Fi for devices..." 
+                                       else "Ready to stream media to TV / Speakers",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = if (isCastingActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                color = if (castSessionState.isStreaming) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     }
 
                     Button(
                         onClick = {
-                            isCastingActive = !isCastingActive
-                            if (isCastingActive) {
-                                connectedCastDevice = prefs.selectedCastDevice
-                                android.widget.Toast.makeText(context, "Connected to ${prefs.selectedCastDevice}", android.widget.Toast.LENGTH_SHORT).show()
-                            } else {
+                            if (castSessionState.isConnected || isCastingActive) {
+                                castManager.stopCast()
+                                isCastingActive = false
                                 connectedCastDevice = null
                                 android.widget.Toast.makeText(context, "Disconnected from Cast", android.widget.Toast.LENGTH_SHORT).show()
+                            } else {
+                                castManager.startScan()
                             }
                         },
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = if (isCastingActive) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.primary,
-                            contentColor = if (isCastingActive) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onPrimary
+                            containerColor = if (castSessionState.isConnected || isCastingActive) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.primary,
+                            contentColor = if (castSessionState.isConnected || isCastingActive) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onPrimary
                         )
                     ) {
-                        Text(if (isCastingActive) "Disconnect" else "Connect")
+                        Text(if (castSessionState.isConnected || isCastingActive) "Disconnect" else "Scan")
+                    }
+                }
+
+                // Active Stream Details Banner (if streaming)
+                if (castSessionState.isStreaming) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)),
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(Icons.Default.WifiTethering, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                                    Text("LIVE STREAM SERVER ACTIVE", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                                }
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
+                                ) {
+                                    Text(
+                                        text = "206 Partial Content",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
+                            Text(
+                                text = "Stream URL: ${castSessionState.streamUrl}",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                FilledTonalButton(
+                                    onClick = {
+                                        if (castSessionState.isPaused) castManager.resumeCast() else castManager.pauseCast()
+                                    }
+                                ) {
+                                    Icon(
+                                        imageVector = if (castSessionState.isPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(if (castSessionState.isPaused) "Resume" else "Pause Stream")
+                                }
+                                OutlinedButton(
+                                    onClick = {
+                                        castManager.stopCast()
+                                        isCastingActive = false
+                                        connectedCastDevice = null
+                                    }
+                                ) {
+                                    Text("Stop Cast")
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -6220,80 +7459,159 @@ fun PlayerScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        text = "AVAILABLE NETWORK RECEIVERS",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary,
-                        letterSpacing = 1.sp
-                    )
-                    TextButton(
-                        onClick = {
-                            if (isNetworkScanning) castScanner.stopScan() else castScanner.startScan()
-                        }
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        if (isNetworkScanning) {
+                        Text(
+                            text = "AVAILABLE NETWORK RECEIVERS",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary,
+                            letterSpacing = 1.sp
+                        )
+                        if (isCastScanning) {
                             CircularProgressIndicator(
                                 modifier = Modifier.size(12.dp),
                                 strokeWidth = 2.dp,
                                 color = MaterialTheme.colorScheme.primary
                             )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Scanning mDNS...", fontSize = 11.sp)
-                        } else {
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        TextButton(
+                            onClick = {
+                                if (isCastScanning) castManager.stopScan() else castManager.startScan()
+                            }
+                        ) {
                             Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(14.dp))
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("Rescan", fontSize = 11.sp)
+                            Text(if (isCastScanning) "Scanning..." else "Rescan", fontSize = 11.sp)
                         }
                     }
                 }
 
-                val defaultCastDevices = listOf(
-                    "Living Room TV (Chromecast)" to "Smart TV  -  192.168.1.102  -  mDNS",
-                    "Aero Audio Receiver (DLNA)" to "High-Res Speaker  -  192.168.1.115  -  UPnP",
-                    "Bedroom Soundbar (AirPlay)" to "Wireless Soundbar  -  192.168.1.120  -  AirPlay",
-                    "Kitchen Smart Speaker (Local Stream)" to "Smart Speaker  -  192.168.1.134  -  HTTP"
-                )
-
-                val allDevicesToDisplay = mutableListOf<Pair<String, String>>()
-                discoveredNetworkDevices.forEach { dev ->
-                    allDevicesToDisplay.add(dev.name to "Live Discovered  -  ${dev.protocol} (${dev.ipAddress}:${dev.port})")
-                }
-                defaultCastDevices.forEach { defaultDev ->
-                    if (allDevicesToDisplay.none { it.first.contains(defaultDev.first.take(8), ignoreCase = true) }) {
-                        allDevicesToDisplay.add(defaultDev)
-                    }
-                }
-
-                allDevicesToDisplay.forEach { (deviceName, desc) ->
-                    val isSelected = (prefs.selectedCastDevice == deviceName)
+                if (discoveredCastDevices.isEmpty()) {
                     Card(
-                        onClick = {
-                            viewModel.updateCastSettings(selectedCastDevice = deviceName)
-                            if (isCastingActive) {
-                                connectedCastDevice = deviceName
-                                android.widget.Toast.makeText(context, "Switched cast output to $deviceName", android.widget.Toast.LENGTH_SHORT).show()
-                            }
-                        },
                         modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(
-                            containerColor = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
-                        ),
-                        shape = RoundedCornerShape(12.dp)
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)),
+                        shape = RoundedCornerShape(14.dp)
                     ) {
-                        Row(
+                        Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(14.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
+                                .padding(24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Column {
-                                Text(text = deviceName, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-                                Text(text = desc, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            if (isCastScanning) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(28.dp),
+                                    strokeWidth = 2.5.dp,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = "Searching for nearby Cast & DLNA devices...",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    textAlign = TextAlign.Center
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Default.Cast,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                                    modifier = Modifier.size(36.dp)
+                                )
+                                Text(
+                                    text = "No Cast receivers detected",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = "Ensure your Chromecast, Google TV, or DLNA speaker is connected to the same Wi-Fi network and tap Rescan.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    textAlign = TextAlign.Center
+                                )
                             }
-                            if (isSelected) {
-                                Icon(Icons.Default.CheckCircle, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                        }
+                    }
+                } else {
+                    discoveredCastDevices.forEach { dev ->
+                        val isConnectedToThis = (castSessionState.isConnected && castSessionState.device?.id == dev.id) ||
+                                                (isCastingActive && (connectedCastDevice == dev.name || prefs.selectedCastDevice == dev.name))
+                        Card(
+                            onClick = {
+                                viewModel.updateCastSettings(selectedCastDevice = dev.name)
+                                activeMediaItem?.let { media ->
+                                    castManager.startCastStreaming(dev, media, currentPosition)
+                                    isCastingActive = true
+                                    connectedCastDevice = dev.name
+                                    android.widget.Toast.makeText(context, "Streaming to ${dev.name}", android.widget.Toast.LENGTH_SHORT).show()
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (isConnectedToThis) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                            ),
+                            shape = RoundedCornerShape(14.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(14.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = if (isConnectedToThis) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+                                        modifier = Modifier.size(38.dp)
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Icon(
+                                                imageVector = when {
+                                                    dev.protocol.contains("Cast", ignoreCase = true) -> Icons.Default.Tv
+                                                    dev.protocol.contains("AirPlay", ignoreCase = true) -> Icons.Default.Speaker
+                                                    else -> Icons.Default.ConnectedTv
+                                                },
+                                                contentDescription = null,
+                                                tint = if (isConnectedToThis) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        }
+                                    }
+                                    Column {
+                                        Text(text = dev.name, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                                        Text(
+                                            text = "${dev.protocol} • ${if (dev.model.isNotEmpty()) dev.model else "Receiver"} (${dev.ipAddress}:${dev.port})",
+                                            fontSize = 12.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                                if (isConnectedToThis) {
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = MaterialTheme.colorScheme.primary
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            Icon(Icons.Default.CastConnected, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(14.dp))
+                                            Text("Streaming", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimary)
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -6972,22 +8290,24 @@ fun PlayerScreen(
                          Text("Download Online Subtitles", fontSize = 11.sp)
                      }
 
-                     Spacer(modifier = Modifier.height(4.dp))
-                     Button(
-                         onClick = {
-                             showAudioSubtitleSelectorSheet = false
-                             showSubtitleCustomizationSheet = true
-                         },
-                         modifier = Modifier.fillMaxWidth(),
-                         colors = ButtonDefaults.buttonColors(
-                             containerColor = MaterialTheme.colorScheme.primaryContainer,
-                             contentColor = MaterialTheme.colorScheme.onPrimaryContainer
-                         ),
-                         shape = RoundedCornerShape(8.dp)
-                     ) {
-                         Icon(Icons.Default.Tune, contentDescription = null, modifier = Modifier.size(16.dp))
-                         Spacer(modifier = Modifier.width(6.dp))
-                         Text("Subtitle Styling & Customization", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                     if (effectiveEngine != "VLC") {
+                         Spacer(modifier = Modifier.height(4.dp))
+                         Button(
+                             onClick = {
+                                 showAudioSubtitleSelectorSheet = false
+                                 showSubtitleCustomizationSheet = true
+                             },
+                             modifier = Modifier.fillMaxWidth(),
+                             colors = ButtonDefaults.buttonColors(
+                                 containerColor = MaterialTheme.colorScheme.primaryContainer,
+                                 contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                             ),
+                             shape = RoundedCornerShape(8.dp)
+                         ) {
+                             Icon(Icons.Default.Tune, contentDescription = null, modifier = Modifier.size(16.dp))
+                             Spacer(modifier = Modifier.width(6.dp))
+                             Text("Subtitle Styling & Customization", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                         }
                      }
                  }
              }
