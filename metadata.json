@@ -1,0 +1,6 @@
+{
+  "name": "Aero Player",
+  "description": "Dual-engine media player with bonded network streaming, 24h download speed telemetry, battery saver mode, and background download management.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

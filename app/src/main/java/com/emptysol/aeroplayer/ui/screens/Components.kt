@@ -1,0 +1,677 @@
+package com.emptysol.aeroplayer.ui.screens
+
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.media.MediaMetadataRetriever
+import android.net.Uri
+import android.os.Build
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.painter.Painter
+import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.animation.*
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.composed
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.ui.unit.Dp
+import com.emptysol.aeroplayer.data.database.MediaEntity
+import kotlinx.coroutines.CoroutineExceptionHandler
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
+import java.util.Collections
+import java.util.concurrent.ConcurrentHashMap
+
+val globalThumbnailCache = androidx.collection.LruCache<String, Bitmap>(600)
+private val failedThumbnailKeys = Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
+private val thumbnailExtractionSemaphore = kotlinx.coroutines.sync.Semaphore(2)
+private val thumbnailIoScope = CoroutineScope(
+    SupervisorJob() + Dispatchers.IO + CoroutineExceptionHandler { _, _ -> }
+)
+
+object ThumbnailManager {
+    private fun getDiskFile(context: android.content.Context, key: String): java.io.File {
+        val dir = java.io.File(context.cacheDir, "media_thumbs")
+        if (!dir.exists()) dir.mkdirs()
+        return java.io.File(dir, "$key.jpg")
+    }
+
+    private fun getCacheKey(item: MediaEntity): String {
+        val base = if (item.path.isNotBlank()) item.path else item.uriString
+        return Math.abs(base.hashCode()).toString()
+    }
+
+    suspend fun getThumbnail(context: android.content.Context, item: MediaEntity): Bitmap? = withContext(Dispatchers.IO) {
+        val memCached = globalThumbnailCache.get(item.uriString)
+        if (memCached != null) return@withContext memCached
+
+        val cacheKey = getCacheKey(item)
+        if (failedThumbnailKeys.contains(cacheKey) || failedThumbnailKeys.contains(item.uriString)) {
+            return@withContext null
+        }
+
+        // 1. Check fast persistent disk cache (<3ms decode with RGB_565)
+        val diskFile = getDiskFile(context, cacheKey)
+        if (diskFile.exists() && diskFile.length() > 0) {
+            try {
+                val opts = BitmapFactory.Options().apply {
+                    inPreferredConfig = Bitmap.Config.RGB_565
+                }
+                val bitmap = BitmapFactory.decodeFile(diskFile.absolutePath, opts)
+                if (bitmap != null) {
+                    globalThumbnailCache.put(item.uriString, bitmap)
+                    return@withContext bitmap
+                }
+            } catch (e: Throwable) {}
+        }
+
+        // 2. Extract thumbnail using fastest OS-native hardware APIs first
+        val extracted = extractThumbnail(context, item)
+        if (extracted != null) {
+            val scaled = downscaleBitmap(extracted, 200, 200)
+            globalThumbnailCache.put(item.uriString, scaled)
+            // Asynchronously persist to disk without blocking the UI return
+            thumbnailIoScope.launch {
+                try {
+                    saveToDisk(diskFile, scaled)
+                } catch (_: Throwable) {
+                }
+            }
+            return@withContext scaled
+        } else {
+            failedThumbnailKeys.add(cacheKey)
+            failedThumbnailKeys.add(item.uriString)
+        }
+        null
+    }
+
+    suspend fun preloadThumbnails(context: android.content.Context, items: List<MediaEntity>) = withContext(Dispatchers.IO) {
+        val uncached = items.take(30).filter { globalThumbnailCache.get(it.uriString) == null }
+        // Preload in controlled parallel chunks of 2 workers to eliminate frame drops
+        uncached.chunked(2).forEach { chunk ->
+            chunk.map { item ->
+                async {
+                    try {
+                        getThumbnail(context, item)
+                    } catch (e: Throwable) {}
+                }
+            }.awaitAll()
+            kotlinx.coroutines.yield()
+        }
+    }
+
+    private suspend fun extractThumbnail(context: android.content.Context, item: MediaEntity): Bitmap? {
+        // Fast Path A: Direct MediaStore ContentResolver thumbnail (instant OS-level cache)
+        if (item.uriString.startsWith("content://")) {
+            val contentUri = Uri.parse(item.uriString)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                try {
+                    val bmp = context.contentResolver.loadThumbnail(contentUri, android.util.Size(240, 240), null)
+                    if (bmp != null) return bmp
+                } catch (e: Throwable) {}
+            }
+            if (item.isVideo && item.uriString.contains("/video/media/")) {
+                val id = item.uriString.substringAfterLast('/').toLongOrNull()
+                if (id != null) {
+                    try {
+                        val bmp = android.provider.MediaStore.Video.Thumbnails.getThumbnail(
+                            context.contentResolver,
+                            id,
+                            android.provider.MediaStore.Video.Thumbnails.MINI_KIND,
+                            null
+                        )
+                        if (bmp != null) return bmp
+                    } catch (e: Throwable) {}
+                }
+            }
+        }
+
+        // Fast Path B: Direct file on disk using Android Q+ hardware thumbnailer
+        if (item.path.isNotBlank() && item.isVideo) {
+            val file = java.io.File(item.path)
+            if (file.exists() && file.canRead()) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    try {
+                        val bmp = android.media.ThumbnailUtils.createVideoThumbnail(file, android.util.Size(240, 240), null)
+                        if (bmp != null) return bmp
+                    } catch (e: Throwable) {}
+                }
+                try {
+                    @Suppress("DEPRECATION")
+                    val bmp = android.media.ThumbnailUtils.createVideoThumbnail(
+                        item.path,
+                        android.provider.MediaStore.Images.Thumbnails.MINI_KIND
+                    )
+                    if (bmp != null) return bmp
+                } catch (e: Throwable) {}
+            }
+        }
+
+        // Fast Path C: MediaMetadataRetriever throttled by semaphore to prevent CPU saturation
+        val uri = com.emptysol.aeroplayer.util.ContentResolverUtils.resolvePlayableUri(context, item.uriString, item.path)
+        return thumbnailExtractionSemaphore.withPermit {
+            getThumbnailFallback(context, uri, item.path)
+        }
+    }
+
+    private fun saveToDisk(file: java.io.File, bitmap: Bitmap) {
+        try {
+            java.io.FileOutputStream(file).use { out ->
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 80, out)
+            }
+        } catch (e: Throwable) {}
+    }
+
+    private fun downscaleBitmap(src: Bitmap, maxW: Int, maxH: Int): Bitmap {
+        if (src.width <= maxW && src.height <= maxH) return src
+        val ratio = Math.min(maxW.toFloat() / src.width, maxH.toFloat() / src.height)
+        val targetW = (src.width * ratio).toInt().coerceAtLeast(1)
+        val targetH = (src.height * ratio).toInt().coerceAtLeast(1)
+        return Bitmap.createScaledBitmap(src, targetW, targetH, true)
+    }
+}
+
+@Composable
+fun MediaThumbnail(item: MediaEntity, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    var bitmap by remember(item.uriString) { mutableStateOf<Bitmap?>(globalThumbnailCache.get(item.uriString)) }
+
+    if (bitmap == null) {
+        LaunchedEffect(item.uriString) {
+            val loaded = ThumbnailManager.getThumbnail(context, item)
+            if (loaded != null) {
+                bitmap = loaded
+            }
+        }
+    }
+
+    if (bitmap != null) {
+        Image(
+            bitmap = bitmap!!.asImageBitmap(),
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = modifier
+        )
+    } else {
+        Box(
+            modifier = modifier.background(
+                Brush.linearGradient(
+                    colors = listOf(
+                        MaterialTheme.colorScheme.primary.copy(alpha = 0.08f),
+                        MaterialTheme.colorScheme.secondary.copy(alpha = 0.04f)
+                    )
+                )
+            ),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = if (item.isVideo) Icons.Default.Movie else Icons.Default.MusicNote,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.4f),
+                modifier = Modifier.size(20.dp)
+            )
+        }
+    }
+}
+
+private fun getThumbnailFallback(context: android.content.Context, uri: Uri, path: String?): Bitmap? {
+    val retriever = MediaMetadataRetriever()
+    try {
+        if (uri.scheme == "content") {
+            retriever.setDataSource(context, uri)
+        } else if (path != null && path.isNotEmpty()) {
+            retriever.setDataSource(path)
+        } else {
+            return null
+        }
+        val artBytes = retriever.embeddedPicture
+        if (artBytes != null) {
+            val opts = BitmapFactory.Options().apply {
+                inPreferredConfig = Bitmap.Config.RGB_565
+                inSampleSize = 2
+            }
+            return BitmapFactory.decodeByteArray(artBytes, 0, artBytes.size, opts)
+        }
+        // Scaled frame retrieval on Android 8.1+ for fast hardware-level downsampling
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            try {
+                val frame = retriever.getScaledFrameAtTime(1000000, MediaMetadataRetriever.OPTION_CLOSEST_SYNC, 240, 240)
+                if (frame != null) return frame
+            } catch (e: Throwable) {}
+        }
+        return retriever.getFrameAtTime(1000000, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+    } catch (e: Throwable) {
+        return null
+    } finally {
+        try {
+            retriever.release()
+        } catch (e: Throwable) {}
+    }
+}
+
+fun formatMediaDuration(durationMs: Long): String {
+    if (durationMs <= 0) return "00:00"
+    val totalSeconds = durationMs / 1000
+    val seconds = totalSeconds % 60
+    val minutes = (totalSeconds / 60) % 60
+    val hours = totalSeconds / 3600
+    return if (hours > 0) {
+        String.format(java.util.Locale.US, "%d:%02d:%02d", hours, minutes, seconds)
+    } else {
+        String.format(java.util.Locale.US, "%02d:%02d", minutes, seconds)
+    }
+}
+
+fun formatMediaFileSize(bytes: Long): String {
+    if (bytes <= 0) return ""
+    val units = arrayOf("B", "KB", "MB", "GB", "TB")
+    val digitGroups = (Math.log10(bytes.toDouble()) / Math.log10(1024.0)).toInt().coerceIn(0, units.size - 1)
+    if (digitGroups == 0) return "$bytes B"
+    return String.format(java.util.Locale.US, "%.1f %s", bytes / Math.pow(1024.0, digitGroups.toDouble()), units[digitGroups])
+}
+
+fun formatMediaLengthAndSize(durationMs: Long, sizeBytes: Long): String {
+    val durationStr = formatMediaDuration(durationMs)
+    val sizeStr = formatMediaFileSize(sizeBytes)
+    return when {
+        durationStr.isNotEmpty() && durationStr != "00:00" && sizeStr.isNotEmpty() -> "$durationStr • $sizeStr"
+        durationStr.isNotEmpty() && durationStr != "00:00" -> durationStr
+        sizeStr.isNotEmpty() -> sizeStr
+        else -> durationStr
+    }
+}
+
+fun getMediaQualityLabel(path: String?, title: String, isVideo: Boolean, durationMs: Long, sizeBytes: Long, mimeType: String? = null): String {
+    val cleanPath = path ?: ""
+    val titleLower = "$title $cleanPath ${mimeType ?: ""}".lowercase()
+    if (isVideo) {
+        if (titleLower.contains("2160p") || titleLower.contains("4k") || titleLower.contains("uhd")) return "4K UHD"
+        if (titleLower.contains("1080p") || titleLower.contains("fhd")) return "1080p FHD"
+        if (titleLower.contains("720p") || titleLower.contains("hd")) return "720p HD"
+        if (titleLower.contains("480p") || titleLower.contains("sd")) return "480p"
+        if (titleLower.contains("360p")) return "360p"
+        if (titleLower.contains("240p")) return "240p"
+
+        if (sizeBytes > 0 && durationMs > 0) {
+            val durationSecs = durationMs / 1000.0
+            if (durationSecs > 0) {
+                val bitrateKbps = ((sizeBytes * 8.0) / durationSecs) / 1000.0
+                return when {
+                    bitrateKbps >= 12000 -> "4K UHD"
+                    bitrateKbps >= 4000 -> "1080p"
+                    bitrateKbps >= 1800 -> "720p"
+                    bitrateKbps >= 700 -> "480p"
+                    else -> "360p"
+                }
+            }
+        }
+        val ext = cleanPath.substringAfterLast('.', "").uppercase()
+        return if (ext.isNotEmpty() && ext.length <= 4) "HD • $ext" else "HD"
+    } else {
+        val ext = cleanPath.substringAfterLast('.', "").lowercase()
+        if (ext == "flac" || titleLower.contains("flac")) return "FLAC"
+        if (ext == "wav" || titleLower.contains("wav")) return "WAV"
+        if (ext == "alac" || titleLower.contains("alac")) return "ALAC"
+        if (ext == "m4a" || ext == "aac") return "AAC"
+        if (ext == "ogg" || ext == "opus") return "OGG"
+
+        if (sizeBytes > 0 && durationMs > 0) {
+            val durationSecs = durationMs / 1000.0
+            if (durationSecs > 0) {
+                val bitrateKbps = (((sizeBytes * 8.0) / durationSecs) / 1000.0).toInt()
+                if (bitrateKbps >= 280) return "320k"
+                if (bitrateKbps >= 220) return "256k"
+                if (bitrateKbps >= 160) return "192k"
+                if (bitrateKbps >= 100) return "128k"
+            }
+        }
+        return if (ext.isNotEmpty() && ext.length <= 4) ext.uppercase() else "HQ Audio"
+    }
+}
+
+fun getMediaQualityLabel(item: com.emptysol.aeroplayer.data.database.MediaEntity): String {
+    return getMediaQualityLabel(item.path, item.title, item.isVideo, item.duration, item.size, item.mimeType)
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun TooltipIconButton(
+    onClick: () -> Unit,
+    tooltip: String,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    colors: IconButtonColors = IconButtonDefaults.iconButtonColors(),
+    content: @Composable () -> Unit
+) {
+    if (tooltip.isEmpty()) {
+        IconButton(
+            onClick = onClick,
+            modifier = modifier,
+            enabled = enabled,
+            colors = colors,
+            content = content
+        )
+    } else {
+        val state = rememberTooltipState()
+        TooltipBox(
+            positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
+            tooltip = {
+                PlainTooltip {
+                    Text(tooltip)
+                }
+            },
+            state = state,
+            modifier = Modifier
+        ) {
+            IconButton(
+                onClick = onClick,
+                modifier = modifier,
+                enabled = enabled,
+                colors = colors,
+                content = content
+            )
+        }
+    }
+}
+
+@Composable
+fun FrostedGlassBackground(
+    modifier: Modifier = Modifier,
+    content: @Composable BoxScope.() -> Unit
+) {
+    val isDark = MaterialTheme.colorScheme.background.red < 0.5f
+    val ambientGradient = Brush.radialGradient(
+        colors = if (isDark) {
+            listOf(
+                MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                MaterialTheme.colorScheme.tertiary.copy(alpha = 0.08f),
+                MaterialTheme.colorScheme.background
+            )
+        } else {
+            listOf(
+                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
+                MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.25f),
+                MaterialTheme.colorScheme.background
+            )
+        },
+        radius = 1600f
+    )
+
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+            .background(ambientGradient)
+    ) {
+        content()
+    }
+}
+
+@Composable
+fun FrostedGlassCard(
+    modifier: Modifier = Modifier,
+    shape: androidx.compose.ui.graphics.Shape = androidx.compose.foundation.shape.RoundedCornerShape(20.dp),
+    border: androidx.compose.foundation.BorderStroke? = null,
+    containerColor: Color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+    content: @Composable ColumnScope.() -> Unit
+) {
+    Card(
+        modifier = modifier,
+        shape = shape,
+        border = border,
+        colors = CardDefaults.cardColors(containerColor = containerColor)
+    ) {
+        content()
+    }
+}
+
+fun Modifier.bounceClick(
+    onClick: (() -> Unit)? = null,
+    pressedScale: Float = 0.90f
+) = composed {
+    if (onClick != null) {
+        Modifier.clickable(
+            interactionSource = remember { MutableInteractionSource() },
+            indication = ripple(bounded = true),
+            onClick = onClick
+        )
+    } else Modifier
+}
+
+@Composable
+fun BounceIconButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    content: @Composable () -> Unit
+) {
+    androidx.compose.material3.IconButton(
+        onClick = onClick,
+        modifier = modifier,
+        enabled = enabled,
+        content = content
+    )
+}
+
+@Composable
+fun AnimatedPlayPauseButton(
+    isPlaying: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    iconSize: Dp = 28.dp,
+    containerColor: Color = MaterialTheme.colorScheme.primary,
+    contentColor: Color = MaterialTheme.colorScheme.onPrimary
+) {
+    Box(
+        modifier = modifier
+            .clip(CircleShape)
+            .background(containerColor)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = ripple(bounded = true, color = contentColor),
+                onClick = onClick
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+            contentDescription = if (isPlaying) "Pause" else "Play",
+            tint = contentColor,
+            modifier = Modifier.size(iconSize)
+        )
+    }
+}
+
+@Composable
+fun IconButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    colors: IconButtonColors = IconButtonDefaults.iconButtonColors(),
+    interactionSource: MutableInteractionSource = remember { MutableInteractionSource() },
+    content: @Composable () -> Unit
+) {
+    androidx.compose.material3.IconButton(
+        onClick = onClick,
+        modifier = modifier,
+        enabled = enabled,
+        colors = colors,
+        interactionSource = interactionSource,
+        content = content
+    )
+}
+
+@Composable
+fun FilledIconButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    colors: IconButtonColors = IconButtonDefaults.filledIconButtonColors(),
+    interactionSource: MutableInteractionSource = remember { MutableInteractionSource() },
+    content: @Composable () -> Unit
+) {
+    androidx.compose.material3.FilledIconButton(
+        onClick = onClick,
+        modifier = modifier,
+        enabled = enabled,
+        colors = colors,
+        interactionSource = interactionSource,
+        content = content
+    )
+}
+
+@Composable
+fun OutlinedIconButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    colors: IconButtonColors = IconButtonDefaults.outlinedIconButtonColors(),
+    interactionSource: MutableInteractionSource = remember { MutableInteractionSource() },
+    content: @Composable () -> Unit
+) {
+    androidx.compose.material3.OutlinedIconButton(
+        onClick = onClick,
+        modifier = modifier,
+        enabled = enabled,
+        colors = colors,
+        interactionSource = interactionSource,
+        content = content
+    )
+}
+
+@Composable
+fun Button(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    shape: androidx.compose.ui.graphics.Shape = ButtonDefaults.shape,
+    colors: ButtonColors = ButtonDefaults.buttonColors(),
+    elevation: ButtonElevation? = ButtonDefaults.buttonElevation(),
+    border: androidx.compose.foundation.BorderStroke? = null,
+    contentPadding: PaddingValues = ButtonDefaults.ContentPadding,
+    interactionSource: MutableInteractionSource = remember { MutableInteractionSource() },
+    content: @Composable RowScope.() -> Unit
+) {
+    androidx.compose.material3.Button(
+        onClick = onClick,
+        modifier = modifier,
+        enabled = enabled,
+        shape = shape,
+        colors = colors,
+        elevation = elevation,
+        border = border,
+        contentPadding = contentPadding,
+        interactionSource = interactionSource,
+        content = content
+    )
+}
+
+@Composable
+fun OutlinedButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    shape: androidx.compose.ui.graphics.Shape = ButtonDefaults.outlinedShape,
+    colors: ButtonColors = ButtonDefaults.outlinedButtonColors(),
+    elevation: ButtonElevation? = null,
+    border: androidx.compose.foundation.BorderStroke? = ButtonDefaults.outlinedButtonBorder(enabled),
+    contentPadding: PaddingValues = ButtonDefaults.ContentPadding,
+    interactionSource: MutableInteractionSource = remember { MutableInteractionSource() },
+    content: @Composable RowScope.() -> Unit
+) {
+    androidx.compose.material3.OutlinedButton(
+        onClick = onClick,
+        modifier = modifier,
+        enabled = enabled,
+        shape = shape,
+        colors = colors,
+        elevation = elevation,
+        border = border,
+        contentPadding = contentPadding,
+        interactionSource = interactionSource,
+        content = content
+    )
+}
+
+@Composable
+fun TextButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    shape: androidx.compose.ui.graphics.Shape = ButtonDefaults.textShape,
+    colors: ButtonColors = ButtonDefaults.textButtonColors(),
+    elevation: ButtonElevation? = null,
+    border: androidx.compose.foundation.BorderStroke? = null,
+    contentPadding: PaddingValues = ButtonDefaults.TextButtonContentPadding,
+    interactionSource: MutableInteractionSource = remember { MutableInteractionSource() },
+    content: @Composable RowScope.() -> Unit
+) {
+    androidx.compose.material3.TextButton(
+        onClick = onClick,
+        modifier = modifier,
+        enabled = enabled,
+        shape = shape,
+        colors = colors,
+        elevation = elevation,
+        border = border,
+        contentPadding = contentPadding,
+        interactionSource = interactionSource,
+        content = content
+    )
+}
+
+@Composable
+fun FloatingActionButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    shape: androidx.compose.ui.graphics.Shape = FloatingActionButtonDefaults.shape,
+    containerColor: Color = FloatingActionButtonDefaults.containerColor,
+    contentColor: Color = contentColorFor(containerColor),
+    elevation: FloatingActionButtonElevation = FloatingActionButtonDefaults.elevation(),
+    interactionSource: MutableInteractionSource = remember { MutableInteractionSource() },
+    content: @Composable () -> Unit
+) {
+    androidx.compose.material3.FloatingActionButton(
+        onClick = onClick,
+        modifier = modifier,
+        shape = shape,
+        containerColor = containerColor,
+        contentColor = contentColor,
+        elevation = elevation,
+        interactionSource = interactionSource,
+        content = content
+    )
+}
+
+
+
+
+
