@@ -16,8 +16,8 @@ android {
     applicationId = "com.emptysol.aeroplayer"
     minSdk = 24
     targetSdk = 36
-    versionCode = 10406
-    versionName = "1.4.6"
+    versionCode = 10407
+    versionName = "1.4.7"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     ndk {
@@ -81,6 +81,12 @@ android {
   packaging {
     jniLibs {
       useLegacyPackaging = true
+      excludes.add("**/armeabi/**")
+      excludes.add("**/armeabi-v7a/**")
+      excludes.add("**/x86/**")
+      excludes.add("**/x86_64/**")
+      excludes.add("**/mips/**")
+      excludes.add("**/mips64/**")
       pickFirsts.add("**/libc++_shared.so")
       pickFirsts.add("**/libffmpegJNI.so")
       pickFirsts.add("**/libvlc.so")
