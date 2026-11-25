@@ -226,8 +226,9 @@ class MainActivity : ComponentActivity() {
             requestedTorrentTabState.value = "DOWNLOADS"
             requestedScreenState.value = "Torrents"
         } else if (intent.getBooleanExtra(com.emptysol.aeroplayer.service.AeroVpnService.EXTRA_OPEN_TORRENT_VPN, false)) {
-            requestedTorrentTabState.value = "REMOTE_VPN"
-            requestedScreenState.value = "Torrents"
+            requestedScreenState.value = "VpnManager"
+        } else if (intent.getStringExtra("open_tab") == "Downloads") {
+            requestedScreenState.value = "DownloadManager"
         }
     }
 
@@ -480,7 +481,7 @@ fun PermissionAndNavigationContainer(viewModel: MainViewModel) {
     }
 
     // App Navigation Flow
-    var currentScreen by remember { mutableStateOf("Main") } // "Main", "Player", "Settings", "Torrents"
+    var currentScreen by remember { mutableStateOf("Main") } // "Main", "Player", "Settings", "Torrents", "VpnManager", "DownloadManager"
     var previousScreen by remember { mutableStateOf("Main") }
     var torrentHubInitialTab by remember { mutableStateOf("DOWNLOADS") }
     val currentPlayingItem by viewModel.currentPlayingItem.collectAsState()
@@ -488,12 +489,26 @@ fun PermissionAndNavigationContainer(viewModel: MainViewModel) {
     val pendingTorrentTab by MainActivity.requestedTorrentTabState.collectAsState()
 
     LaunchedEffect(pendingExternalScreen) {
-        if (pendingExternalScreen == "Torrents") {
-            torrentHubInitialTab = pendingTorrentTab
-            previousScreen = "Main"
-            currentScreen = "Torrents"
-            isOnboardingCompleted = true
-            MainActivity.requestedScreenState.value = null
+        when (pendingExternalScreen) {
+            "Torrents" -> {
+                torrentHubInitialTab = pendingTorrentTab
+                previousScreen = "Main"
+                currentScreen = "Torrents"
+                isOnboardingCompleted = true
+                MainActivity.requestedScreenState.value = null
+            }
+            "VpnManager" -> {
+                previousScreen = "Main"
+                currentScreen = "VpnManager"
+                isOnboardingCompleted = true
+                MainActivity.requestedScreenState.value = null
+            }
+            "DownloadManager" -> {
+                previousScreen = "Main"
+                currentScreen = "DownloadManager"
+                isOnboardingCompleted = true
+                MainActivity.requestedScreenState.value = null
+            }
         }
     }
 
@@ -505,7 +520,9 @@ fun PermissionAndNavigationContainer(viewModel: MainViewModel) {
         }
     }
 
-    androidx.activity.compose.BackHandler(enabled = currentScreen == "Settings" || currentScreen == "Torrents") {
+    androidx.activity.compose.BackHandler(
+        enabled = currentScreen in setOf("Settings", "Torrents", "VpnManager", "DownloadManager")
+    ) {
         currentScreen = previousScreen.ifBlank { "Main" }
     }
 
@@ -557,9 +574,21 @@ fun PermissionAndNavigationContainer(viewModel: MainViewModel) {
                             currentScreen = "Torrents"
                         },
                         onOpenTorrentVpnHub = { initialTab ->
-                            torrentHubInitialTab = initialTab
                             previousScreen = "Main"
-                            currentScreen = "Torrents"
+                            if (initialTab.equals("REMOTE_VPN", ignoreCase = true) || initialTab.equals("VPN", ignoreCase = true)) {
+                                currentScreen = "VpnManager"
+                            } else {
+                                torrentHubInitialTab = initialTab
+                                currentScreen = "Torrents"
+                            }
+                        },
+                        onOpenVpnManager = {
+                            previousScreen = "Main"
+                            currentScreen = "VpnManager"
+                        },
+                        onOpenDownloadManager = {
+                            previousScreen = "Main"
+                            currentScreen = "DownloadManager"
                         }
                     )
                 }
@@ -596,7 +625,64 @@ fun PermissionAndNavigationContainer(viewModel: MainViewModel) {
                             viewModel.openFolderInBrowser(folderPath)
                             currentScreen = "Main"
                         },
+                        onOpenVpnManager = {
+                            previousScreen = "Torrents"
+                            currentScreen = "VpnManager"
+                        },
+                        onOpenDownloadManager = {
+                            previousScreen = "Torrents"
+                            currentScreen = "DownloadManager"
+                        },
                         initialTabKey = torrentHubInitialTab
+                    )
+                }
+                "VpnManager" -> {
+                    LaunchedEffect(Unit) {
+                        activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                    }
+                    com.emptysol.aeroplayer.ui.screens.VpnManagerScreen(
+                        viewModel = viewModel,
+                        onBack = {
+                            currentScreen = if (previousScreen == "VpnManager") "Main" else previousScreen.ifBlank { "Main" }
+                        },
+                        onOpenTorrentManager = {
+                            previousScreen = "VpnManager"
+                            torrentHubInitialTab = "DOWNLOADS"
+                            currentScreen = "Torrents"
+                        },
+                        onOpenDownloadManager = {
+                            previousScreen = "VpnManager"
+                            currentScreen = "DownloadManager"
+                        }
+                    )
+                }
+                "DownloadManager" -> {
+                    LaunchedEffect(Unit) {
+                        activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                    }
+                    com.emptysol.aeroplayer.ui.screens.DownloadManagerScreen(
+                        viewModel = viewModel,
+                        onBack = {
+                            currentScreen = if (previousScreen == "DownloadManager") "Main" else previousScreen.ifBlank { "Main" }
+                        },
+                        onPlayMedia = { media ->
+                            previousScreen = "DownloadManager"
+                            viewModel.setPlayingItem(media)
+                            currentScreen = "Player"
+                        },
+                        onOpenFolderInApp = { folderPath ->
+                            viewModel.openFolderInBrowser(folderPath)
+                            currentScreen = "Main"
+                        },
+                        onOpenTorrentManager = {
+                            previousScreen = "DownloadManager"
+                            torrentHubInitialTab = "DOWNLOADS"
+                            currentScreen = "Torrents"
+                        },
+                        onOpenVpnManager = {
+                            previousScreen = "DownloadManager"
+                            currentScreen = "VpnManager"
+                        }
                     )
                 }
                 "Settings" -> {
@@ -612,6 +698,14 @@ fun PermissionAndNavigationContainer(viewModel: MainViewModel) {
                         onOpenTorrents = {
                             previousScreen = "Settings"
                             currentScreen = "Torrents"
+                        },
+                        onOpenVpnManager = {
+                            previousScreen = "Settings"
+                            currentScreen = "VpnManager"
+                        },
+                        onOpenDownloadManager = {
+                            previousScreen = "Settings"
+                            currentScreen = "DownloadManager"
                         }
                     )
                 }

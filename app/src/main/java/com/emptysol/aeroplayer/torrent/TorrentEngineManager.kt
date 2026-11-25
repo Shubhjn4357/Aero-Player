@@ -28,12 +28,16 @@ import java.util.concurrent.TimeUnit
 
 data class TorrentEngineStatus(
     val vpnStatus: VpnStatusInfo = VpnStatusInfo(false, "Checking network...", false, null),
-    val networkCondition: NetworkConditionRecommendation = NetworkConditionRecommendation("Checking...", false, 0, 0, 0, 512),
+    val networkCondition: NetworkConditionRecommendation = NetworkConditionRecommendation("Checking...", false, 0, 0, 0, 1024),
     val remoteServerState: RemoteServerState = RemoteServerState(),
     val scheduleDirective: ScheduleDirective = ScheduleDirective.DOWNLOAD_AND_SEED,
     val totalDownloadBps: Long = 0L,
     val totalUploadBps: Long = 0L,
-    val activeCount: Int = 0
+    val peakDownloadBps: Long = 0L,
+    val activeCount: Int = 0,
+    val activePeerCount: Int = 0,
+    val speedBoostEnabled: Boolean = true,
+    val pipelineDepth: Int = 64
 )
 
 /**
@@ -74,8 +78,50 @@ class TorrentEngineManager(
     val rssFeedsFlow: StateFlow<List<RssFeedEntity>> = rssFeedDao.getAllFeedsFlow()
         .stateIn(scope, SharingStarted.Eagerly, emptyList())
 
-    private val _engineStatus = MutableStateFlow(TorrentEngineStatus())
+    private val boostPrefs by lazy {
+        context.getSharedPreferences("aero_torrent_engine_prefs", Context.MODE_PRIVATE)
+    }
+
+    @Volatile
+    private var speedBoostEnabledFlag: Boolean = try {
+        context.getSharedPreferences("aero_torrent_engine_prefs", Context.MODE_PRIVATE)
+            .getBoolean("torrent_speed_boost_enabled", true)
+    } catch (_: Throwable) {
+        true
+    }
+
+    private val _engineStatus = MutableStateFlow(
+        TorrentEngineStatus(
+            speedBoostEnabled = speedBoostEnabledFlag,
+            pipelineDepth = if (speedBoostEnabledFlag) 64 else 32
+        )
+    )
     val engineStatus: StateFlow<TorrentEngineStatus> = _engineStatus.asStateFlow()
+
+    fun isSpeedBoostEnabled(): Boolean = speedBoostEnabledFlag
+
+    suspend fun setSpeedBoostEnabled(enabled: Boolean) = withContext(Dispatchers.IO) {
+        speedBoostEnabledFlag = enabled
+        try {
+            boostPrefs.edit().putBoolean("torrent_speed_boost_enabled", enabled).apply()
+        } catch (_: Throwable) {
+        }
+        _engineStatus.update {
+            it.copy(
+                speedBoostEnabled = enabled,
+                pipelineDepth = if (enabled) 64 else 32
+            )
+        }
+        val prefs = preferenceRepository.getPreferencesDirect()
+        applyPreferences(prefs)
+        // Re-tune any active downloading tasks immediately
+        val activeTasks = torrentDao.getAllTorrentsDirect().filter {
+            it.status in setOf("DOWNLOADING", "METADATA")
+        }
+        activeTasks.forEach { task ->
+            startWorker(task, metainfoCache[task.infoHash])
+        }
+    }
 
     private val _lastRssPreviewItems = MutableStateFlow<Map<Long, List<RssFeedItem>>>(emptyMap())
     val lastRssPreviewItems: StateFlow<Map<Long, List<RssFeedItem>>> = _lastRssPreviewItems.asStateFlow()
@@ -164,11 +210,12 @@ class TorrentEngineManager(
     private suspend fun applyPreferences(prefs: PreferenceEntity) {
         ipFilterManager.loadRules(if (prefs.torrentIpFilterEnabled) prefs.torrentIpFilterRules else "")
         val net = AutoBandwidthOptimizer.evaluate(context)
+        val turbo = speedBoostEnabledFlag
         if (prefs.torrentAutoBandwidth) {
-            val dlCap = if (prefs.torrentGlobalDownloadCapKbps > 0) {
-                minOf(prefs.torrentGlobalDownloadCapKbps, if (net.recommendedDownloadCapKbps > 0) net.recommendedDownloadCapKbps else prefs.torrentGlobalDownloadCapKbps)
-            } else {
-                net.recommendedDownloadCapKbps
+            val dlCap = when {
+                prefs.torrentGlobalDownloadCapKbps > 0 -> prefs.torrentGlobalDownloadCapKbps
+                turbo -> 0 // Turbo Speed Boost: never artificially throttle downloads
+                else -> net.recommendedDownloadCapKbps
             }
             val ulCap = if (prefs.torrentGlobalUploadCapKbps > 0) {
                 minOf(prefs.torrentGlobalUploadCapKbps, net.recommendedUploadCapKbps)
@@ -219,6 +266,7 @@ class TorrentEngineManager(
         val active = list.count { it.status in setOf("DOWNLOADING", "METADATA", "SEEDING", "QUEUED") }
         val totalDl = list.sumOf { it.downloadRateBps }
         val totalUl = list.sumOf { it.uploadRateBps }
+        val totalPeers = list.sumOf { it.peerCount }
         _engineStatus.update {
             it.copy(
                 vpnStatus = vpn,
@@ -226,7 +274,11 @@ class TorrentEngineManager(
                 scheduleDirective = sched,
                 totalDownloadBps = totalDl,
                 totalUploadBps = totalUl,
-                activeCount = active
+                peakDownloadBps = maxOf(it.peakDownloadBps, totalDl),
+                activeCount = active,
+                activePeerCount = totalPeers,
+                speedBoostEnabled = speedBoostEnabledFlag,
+                pipelineDepth = if (speedBoostEnabledFlag) 64 else 32
             )
         }
     }
@@ -449,6 +501,7 @@ class TorrentEngineManager(
             taskUlThrottler = BandwidthThrottler(task.uploadCapKbps),
             ipFilterManager = ipFilterManager,
             trackerClient = trackerClient,
+            speedBoostEnabled = speedBoostEnabledFlag,
             onProgressUpdate = { meta, dlBytes, ulBytes, dlRate, ulRate, peers, seeds, donePieces, playableFile, isCompleted ->
                 if (meta != null) metainfoCache[task.infoHash] = meta
                 val latest = torrentDao.getTorrentByHash(task.infoHash) ?: task

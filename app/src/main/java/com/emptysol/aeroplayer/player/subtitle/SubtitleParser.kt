@@ -251,8 +251,8 @@ object SubtitleParser {
                 val matcher = SRT_TIME_REGEX.matcher(lines[i])
                 if (matcher.find()) {
                     timeLineIndex = i
-                    startMs = parseTimecode(matcher.group(1), matcher.group(2), matcher.group(3), matcher.group(4))
-                    endMs = parseTimecode(matcher.group(5), matcher.group(6), matcher.group(7), matcher.group(8))
+                    startMs = parseTimecode(matcher.group(1) ?: "0", matcher.group(2) ?: "0", matcher.group(3) ?: "0", matcher.group(4) ?: "0")
+                    endMs = parseTimecode(matcher.group(5) ?: "0", matcher.group(6) ?: "0", matcher.group(7) ?: "0", matcher.group(8) ?: "0")
                     break
                 }
             }
@@ -299,13 +299,13 @@ object SubtitleParser {
 
             val matcher = SRT_TIME_REGEX.matcher(line)
             if (matcher.find()) {
-                startMs = parseTimecode(matcher.group(1), matcher.group(2), matcher.group(3), matcher.group(4))
-                endMs = parseTimecode(matcher.group(5), matcher.group(6), matcher.group(7), matcher.group(8))
+                startMs = parseTimecode(matcher.group(1) ?: "0", matcher.group(2) ?: "0", matcher.group(3) ?: "0", matcher.group(4) ?: "0")
+                endMs = parseTimecode(matcher.group(5) ?: "0", matcher.group(6) ?: "0", matcher.group(7) ?: "0", matcher.group(8) ?: "0")
             } else {
                 val shortMatcher = VTT_SHORT_TIME_REGEX.matcher(line)
                 if (shortMatcher.find()) {
-                    startMs = parseShortTimecode(shortMatcher.group(1), shortMatcher.group(2), shortMatcher.group(3))
-                    endMs = parseShortTimecode(shortMatcher.group(4), shortMatcher.group(5), shortMatcher.group(6))
+                    startMs = parseShortTimecode(shortMatcher.group(1) ?: "0", shortMatcher.group(2) ?: "0", shortMatcher.group(3) ?: "0")
+                    endMs = parseShortTimecode(shortMatcher.group(4) ?: "0", shortMatcher.group(5) ?: "0", shortMatcher.group(6) ?: "0")
                 }
             }
 

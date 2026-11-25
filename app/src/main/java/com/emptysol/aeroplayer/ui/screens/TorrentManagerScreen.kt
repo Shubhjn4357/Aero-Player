@@ -22,6 +22,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
+import androidx.compose.material.icons.automirrored.filled.ListAlt
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -45,11 +47,10 @@ import java.io.File
 import java.util.Locale
 
 private enum class TorrentTab(val label: String) {
-    DOWNLOADS("Downloads"),
+    DOWNLOADS("Torrents"),
     RSS("RSS Auto"),
-    SCHEDULER("Limits & Schedule"),
-    REMOTE_VPN("Remote & VPN"),
-    SECURITY("Security & Folder")
+    SCHEDULER("Speed & Schedule"),
+    SECURITY("Storage & Safety")
 }
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
@@ -59,6 +60,8 @@ fun TorrentManagerScreen(
     onBack: () -> Unit,
     onPlayMedia: (MediaEntity) -> Unit,
     onOpenFolderInApp: (String) -> Unit = {},
+    onOpenVpnManager: () -> Unit = {},
+    onOpenDownloadManager: () -> Unit = {},
     initialTabKey: String = "DOWNLOADS"
 ) {
     val context = LocalContext.current
@@ -73,7 +76,6 @@ fun TorrentManagerScreen(
     var selectedTab by rememberSaveable(initialTabKey) {
         mutableStateOf(
             when (initialTabKey.uppercase()) {
-                "VPN", "REMOTE_VPN" -> TorrentTab.REMOTE_VPN
                 "RSS" -> TorrentTab.RSS
                 "SCHEDULER" -> TorrentTab.SCHEDULER
                 "SECURITY" -> TorrentTab.SECURITY
@@ -163,19 +165,13 @@ fun TorrentManagerScreen(
                 actions = {
                     val isVpnOn = engineStatus.vpnStatus.isVpnActive || inbuiltVpnState.isRunning
                     FilterChip(
-                        selected = selectedTab == TorrentTab.REMOTE_VPN || isVpnOn,
-                        onClick = {
-                            selectedTab = if (selectedTab == TorrentTab.REMOTE_VPN) {
-                                TorrentTab.DOWNLOADS
-                            } else {
-                                TorrentTab.REMOTE_VPN
-                            }
-                        },
+                        selected = isVpnOn,
+                        onClick = onOpenVpnManager,
                         label = { Text(if (isVpnOn) "VPN ON" else "VPN", fontSize = 11.sp, fontWeight = FontWeight.Bold) },
                         leadingIcon = {
                             Icon(
                                 imageVector = if (isVpnOn) Icons.Default.VpnLock else Icons.Default.VpnKey,
-                                contentDescription = "VPN Hub",
+                                contentDescription = "Open VPN Manager",
                                 modifier = Modifier.size(15.dp)
                             )
                         },
@@ -183,6 +179,12 @@ fun TorrentManagerScreen(
                             .padding(end = 4.dp)
                             .testTag("torrent_topbar_vpn_pill")
                     )
+                    IconButton(
+                        onClick = onOpenDownloadManager,
+                        modifier = Modifier.testTag("torrent_open_downloads_btn")
+                    ) {
+                        Icon(Icons.Default.Download, contentDescription = "Open Download Manager", tint = MaterialTheme.colorScheme.primary)
+                    }
                     IconButton(
                         onClick = { openTorrentFileLauncher.launch(arrayOf("application/x-bittorrent", "*/*")) },
                         modifier = Modifier.testTag("torrent_open_file_btn")
@@ -236,6 +238,7 @@ fun TorrentManagerScreen(
                 TorrentTab.DOWNLOADS -> {
                     DownloadsDashboardTab(
                         torrents = torrents,
+                        engineStatus = engineStatus,
                         filterChip = filterChip,
                         onSelectFilter = { filterChip = it },
                         onOpenAddDialog = { showAddMagnetDialog = true },
@@ -268,13 +271,6 @@ fun TorrentManagerScreen(
                 }
                 TorrentTab.SCHEDULER -> {
                     SchedulerAndBandwidthTab(
-                        viewModel = viewModel,
-                        prefs = prefs,
-                        engineStatus = engineStatus
-                    )
-                }
-                TorrentTab.REMOTE_VPN -> {
-                    RemoteAndVpnTab(
                         viewModel = viewModel,
                         prefs = prefs,
                         engineStatus = engineStatus
@@ -647,7 +643,7 @@ private fun TorrentLongPressBottomSheet(
                 ListItem(
                     headlineContent = { Text("Files & Priorities", fontWeight = FontWeight.SemiBold) },
                     supportingContent = { Text("Pause, resume, or remove individual files") },
-                    leadingContent = { Icon(Icons.Default.ListAlt, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
+                    leadingContent = { Icon(Icons.AutoMirrored.Filled.ListAlt, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
                     modifier = Modifier
                         .fillMaxWidth()
                         .clickable(onClick = onInspectFiles)
@@ -822,7 +818,7 @@ private fun TorrentFolderViewerDialog(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    Icon(Icons.Default.InsertDriveFile, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+                                    Icon(Icons.AutoMirrored.Filled.InsertDriveFile, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
                                     Column(modifier = Modifier.weight(1f)) {
                                         Text(f.name, fontSize = 12.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                         Text(formatHumanBytes(f.length()), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -868,6 +864,7 @@ private fun TorrentFolderViewerDialog(
 @Composable
 private fun DownloadsDashboardTab(
     torrents: List<TorrentTaskEntity>,
+    engineStatus: com.emptysol.aeroplayer.torrent.TorrentEngineStatus,
     filterChip: String,
     onSelectFilter: (String) -> Unit,
     onOpenAddDialog: () -> Unit,
@@ -890,12 +887,72 @@ private fun DownloadsDashboardTab(
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
+        // Multi-Thread Speed Boost (Turbo) Card
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp)
+                .testTag("torrent_speed_boost_card"),
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = if (engineStatus.speedBoostEnabled) {
+                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
+                } else {
+                    MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.7f)
+                }
+            ),
+            border = BorderStroke(
+                1.dp,
+                if (engineStatus.speedBoostEnabled) MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
+                else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)
+            )
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Bolt,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(26.dp)
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = if (engineStatus.speedBoostEnabled) "Turbo Speed Boost ON" else "Turbo Speed Boost OFF",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.5.sp,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = if (engineStatus.speedBoostEnabled) {
+                            "72 peers • ${engineStatus.pipelineDepth}-block pipeline • 4x NIO disk I/O • Peak ${engineStatus.peakDownloadBps / 1024} KB/s"
+                        } else {
+                            "Balanced 48 peers • 32-block pipeline • Tap to enable full-line Turbo"
+                        },
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Switch(
+                    checked = engineStatus.speedBoostEnabled,
+                    onCheckedChange = { enabled -> viewModel.setTorrentSpeedBoostEnabled(enabled) },
+                    modifier = Modifier.testTag("switch_torrent_speed_boost")
+                )
+            }
+        }
+
         // Bulk controls + filter row
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .horizontalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp, vertical = 10.dp),
+                .padding(horizontal = 16.dp, vertical = 6.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {

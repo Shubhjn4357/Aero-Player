@@ -30,7 +30,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -160,7 +160,9 @@ fun PlayerScreen(
 
     var showResumePrompt by remember { mutableStateOf(false) }
     var isAutoTransitioning by remember { mutableStateOf(false) }
+    var explicitTrackSwitch by remember { mutableStateOf(false) }
     var mediaLoadStartTimeMs by remember { mutableLongStateOf(0L) }
+    var lastKnownValidPositionMs by remember { mutableLongStateOf(0L) }
     var isNewSession by remember { mutableStateOf(true) }
     var resumePosition by remember { mutableStateOf(0L) }
     var isPlaying by remember { mutableStateOf(true) }
@@ -180,6 +182,9 @@ fun PlayerScreen(
     var activePlayerViewRef by remember { mutableStateOf<PlayerView?>(null) }
     val latestEffectiveEngine by rememberUpdatedState(effectiveEngine)
     val latestActiveMediaItem by rememberUpdatedState(activeMediaItem)
+    val latestPrefs by rememberUpdatedState(prefs)
+    val latestIsInPipMode by rememberUpdatedState(isInPipMode)
+    val latestPlayAsAudioOnly by rememberUpdatedState(playAsAudioOnly)
 
     // Session-based screen orientation override (not stored persistently)
     var sessionOrientation by remember {
@@ -252,9 +257,10 @@ fun PlayerScreen(
 
     var wasPlayingBeforePause by remember { mutableStateOf(false) }
 
-    // Listen to Lifecycle Events to pause playback instantly when minimized/locked and auto-resume on return
+    // Listen to Lifecycle Events without re-registering when prefs or transient playback state change
+    // (re-registering on a RESUMED lifecycle synchronously replays ON_RESUME and causes mid-playback glitches/resets)
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner, exoPlayer, vlcPlayer, prefs, isInPipMode, activeMediaItem, effectiveEngine, playAsAudioOnly) {
+    DisposableEffect(lifecycleOwner, exoPlayer, vlcPlayer) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
             val activity = context as? android.app.Activity
             val activityInPip = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
@@ -262,21 +268,24 @@ fun PlayerScreen(
             } else {
                 false
             }
-            val inPip = isInPipMode || activityInPip
+            val inPip = latestIsInPipMode || activityInPip
+            val curMedia = latestActiveMediaItem
+            val curEngine = latestEffectiveEngine
+            val curPrefs = latestPrefs
 
             if (event == androidx.lifecycle.Lifecycle.Event.ON_PAUSE || event == androidx.lifecycle.Lifecycle.Event.ON_STOP) {
-                val isAudio = !activeMediaItem.isVideo || playAsAudioOnly
-                val bgModeNormalized = when (prefs.backgroundMode) {
+                val isAudio = !curMedia.isVideo || latestPlayAsAudioOnly
+                val bgModeNormalized = when (curPrefs.backgroundMode) {
                     "PLAY_BACKGROUND_AUDIO", "Play in Background" -> "PLAY_BACKGROUND_AUDIO"
                     "LAUNCH_PIP_MODE", "PiP" -> "LAUNCH_PIP_MODE"
                     else -> "STOP_PLAYBACK"
                 }
                 val shouldPlayBackground = isAudio || bgModeNormalized == "PLAY_BACKGROUND_AUDIO" ||
-                        (bgModeNormalized == "LAUNCH_PIP_MODE" && activeMediaItem.isVideo && inPip)
+                        (bgModeNormalized == "LAUNCH_PIP_MODE" && curMedia.isVideo && inPip)
 
-                activePlayerViewRef?.onPause()
                 if (!shouldPlayBackground) {
-                    if (effectiveEngine == "VLC") {
+                    activePlayerViewRef?.onPause()
+                    if (curEngine == "VLC") {
                         if (vlcPlayer.isPlaying) wasPlayingBeforePause = true
                         vlcPlayer.pause()
                     } else {
@@ -286,8 +295,6 @@ fun PlayerScreen(
                     isPlaying = false
                     viewModel.setPlayingState(false)
                     com.emptysol.aeroplayer.ui.viewmodel.PlayerControlBridge.onPlayerStateChanged(false)
-                } else if (shouldPlayBackground && activeMediaItem.isVideo && !inPip) {
-                    // Keep surface attached so video can immediately continue rendering upon return without black screen or audio desync
                 }
             } else if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
                 playbackErrorMsg = null
@@ -297,7 +304,7 @@ fun PlayerScreen(
                     }
                     pv.onResume()
                 }
-                if (effectiveEngine == "VLC") {
+                if (curEngine == "VLC") {
                     vlcPlayer.ensureInitializedAsync {
                         vlcPlayer.refreshVideoSurface()
                     }
@@ -312,7 +319,6 @@ fun PlayerScreen(
                     if (exoPlayer.playerError != null || exoPlayer.playbackState == Player.STATE_IDLE) {
                         exoPlayer.prepare()
                     }
-                    val curPos = exoPlayer.currentPosition
                     if (!inPip && wasPlayingBeforePause) {
                         wasPlayingBeforePause = false
                         exoPlayer.play()
@@ -331,6 +337,8 @@ fun PlayerScreen(
 
     // Load Uri Source Configurations & Primary Player Setup
     LaunchedEffect(activeMediaItem.uriString, effectiveEngine, playbackTrigger) {
+        val wasExplicitSwitch = explicitTrackSwitch
+        explicitTrackSwitch = false
         mediaLoadStartTimeMs = System.currentTimeMillis()
         audioFallbackAttempted = false
         isNewSession = false
@@ -342,10 +350,20 @@ fun PlayerScreen(
         val isEngineSwitch = lastLoadedEngine != null && lastLoadedEngine != effectiveEngine && lastLoadedUri == activeMediaItem.uriString
 
         if (isEngineSwitch) {
-            val previousPos = if (lastLoadedEngine == "VLC") vlcPlayer.currentPositionMs else exoPlayer.currentPosition
+            val previousPos = if (lastLoadedEngine == "VLC") {
+                maxOf(vlcPlayer.currentPositionMs, lastKnownValidPositionMs)
+            } else {
+                maxOf(exoPlayer.currentPosition, lastKnownValidPositionMs)
+            }
             if (previousPos > 0L) {
                 startSeekMs = previousPos
             }
+        } else if (wasExplicitSwitch) {
+            // Manual Next/Prev or auto-advance always begins cleanly from 0:00 so stale near-EOF history
+            // never immediately triggers EndReached/STATE_ENDED and skips the next episode.
+            resumePosition = 0L
+            startSeekMs = 0L
+            lastKnownValidPositionMs = 0L
         } else {
             // 1. Fetch history position BEFORE starting playback (instant in-memory cache first, background fallback)
             val history = viewModel.historyState.value.firstOrNull { it.uriString == activeMediaItem.uriString }
@@ -353,14 +371,13 @@ fun PlayerScreen(
             val effectiveHistoryDuration = maxOf(history?.duration ?: 0L, activeMediaItem.duration)
             val nearEndThreshold = if (effectiveHistoryDuration > 0L) {
                 minOf(
-                    (effectiveHistoryDuration - 10_000L).coerceAtLeast(10_000L),
-                    (effectiveHistoryDuration * 0.94f).toLong()
+                    (effectiveHistoryDuration - 12_000L).coerceAtLeast(10_000L),
+                    (effectiveHistoryDuration * 0.90f).toLong()
                 )
             } else {
                 Long.MAX_VALUE
             }
             val isNearEnd = history != null && effectiveHistoryDuration > 0L && history.progressMs >= nearEndThreshold
-            // When transitioning via Next/Prev and history duration is unknown, avoid blindly seeking into EOF
             val skipUnknownDurationResume = isAutoTransitioning && effectiveHistoryDuration <= 0L
             if (history != null && history.progressMs > 1500L && !isNearEnd && !skipUnknownDurationResume) {
                 resumePosition = history.progressMs
@@ -530,15 +547,17 @@ fun PlayerScreen(
 
         // 3. Player Engine Media Loading
         playbackErrorMsg = null
+        var didLoadFreshSource = false
         if (effectiveEngine == "VLC") {
             // Ensure ExoPlayer is paused and unallocated from audio focus when VLC is the active engine
             if (exoPlayer.isPlaying) {
                 exoPlayer.pause()
             }
             val isSameUriAlreadyLoaded = vlcPlayer.currentPlayingUri == activeMediaItem.uriString &&
-                    (vlcPlayer.isPlaying || vlcPlayer.currentPositionMs > 0L) &&
+                    (vlcPlayer.isPlaying || vlcPlayer.isBuffering || vlcPlayer.currentPositionMs > 0L) &&
                     viewModel.lastLoadedEngineType == "VLC"
             if (!isSameUriAlreadyLoaded || isEngineSwitch) {
+                didLoadFreshSource = true
                 try {
                     val useComposeExternalOverlay = externalSubToLoad != null && !isIdxBitmapExternal
                     // Disable LibVLC internal SPU from frame 0 whenever Compose renders external text subs or subs are disabled
@@ -564,10 +583,10 @@ fun PlayerScreen(
                         subtitleFontStyle = if (prefs.subtitleBold) "Bold" else prefs.subtitleFontStyle
                     )
                     // Strict mutual exclusion between LibVLC native SPU and UnifiedSubtitleOverlay to eliminate double subtitles
-                    if (isIdxBitmapExternal && externalSubToLoad != null) {
+                    if (isIdxBitmapExternal) {
                         viewModel.subtitleEngine.clearExternalParsedCues()
                         viewModel.subtitleEngine.setBitmapSubtitleActive(true)
-                        vlcPlayer.loadSubtitle(externalSubToLoad!!)
+                        externalSubToLoad?.let { vlcPlayer.loadSubtitle(it) }
                     } else if (useComposeExternalOverlay || savedSubDisabled) {
                         vlcPlayer.disableInternalSpu()
                     } else {
@@ -581,7 +600,6 @@ fun PlayerScreen(
                     if (savedVlcAudioTrackId != -1) {
                         vlcPlayer.selectAudioTrack(savedVlcAudioTrackId)
                     }
-                    vlcPlayer.play()
                     viewModel.syncEqualizerToActiveEngines()
                     isPlaying = true
                 } catch (e: Throwable) {
@@ -596,12 +614,12 @@ fun PlayerScreen(
                     }
                 }
             } else {
-                if (startSeekMs > 0L && kotlin.math.abs(vlcPlayer.currentPositionMs - startSeekMs) > 2000L) {
-                    vlcPlayer.seekTo(startSeekMs)
+                // Already playing this exact URI on VLC — NEVER seek backwards to stale DB history!
+                if (!vlcPlayer.isPlaying && !vlcPlayer.isBuffering) {
+                    vlcPlayer.play()
                 }
-                vlcPlayer.play()
                 viewModel.syncEqualizerToActiveEngines()
-                isPlaying = true
+                isPlaying = vlcPlayer.isPlaying
             }
         } else {
             // Ensure VLC is paused when ExoPlayer is the active engine
@@ -615,6 +633,7 @@ fun PlayerScreen(
                     (exoPlayer.playbackState == Player.STATE_READY || exoPlayer.playbackState == Player.STATE_BUFFERING || exoPlayer.isPlaying) &&
                     viewModel.lastLoadedEngineType == "ExoPlayer"
             if (!isSameUriAlreadyLoaded || isEngineSwitch) {
+                didLoadFreshSource = true
                 // External text subtitles are rendered cleanly by UnifiedSubtitleEngine; do not double-attach to ExoPlayer MediaItem
                 val newItem = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                     buildMediaItemWithSubtitles(
@@ -635,9 +654,6 @@ fun PlayerScreen(
                         exoPlayer.setMediaItem(newItem)
                     }
                     exoPlayer.prepare()
-                    if (startSeekMs > 0L) {
-                        exoPlayer.seekTo(startSeekMs)
-                    }
                     exoPlayer.playWhenReady = true
                     exoPlayer.play()
                     isPlaying = true
@@ -653,33 +669,32 @@ fun PlayerScreen(
                     }
                 }
             } else {
-                if (startSeekMs > 0L && kotlin.math.abs(exoPlayer.currentPosition - startSeekMs) > 2000L) {
-                    exoPlayer.seekTo(startSeekMs)
-                }
+                // Already playing this exact URI on ExoPlayer — NEVER seek backwards to stale DB history!
                 if (exoPlayer.playbackState == Player.STATE_ENDED) {
                     exoPlayer.seekTo(0L)
                 }
-                exoPlayer.playWhenReady = true
-                exoPlayer.play()
-                isPlaying = true
+                if (!exoPlayer.isPlaying && exoPlayer.playbackState != Player.STATE_BUFFERING) {
+                    exoPlayer.playWhenReady = true
+                    exoPlayer.play()
+                }
+                isPlaying = exoPlayer.playWhenReady
             }
         }
         viewModel.lastLoadedPlayerUri = activeMediaItem.uriString
         viewModel.lastLoadedEngineType = effectiveEngine
 
-        // Auto jump-start guard: If player is stuck or paused right after initial load, nudge it to play
-        // without requiring the user to drag/seek the progress bar
-        kotlinx.coroutines.delay(400)
-        if (effectiveEngine == "VLC") {
-            if (!vlcPlayer.isPlaying && playbackErrorMsg == null) {
-                vlcPlayer.play()
-                isPlaying = true
-            }
-        } else {
-            if (!exoPlayer.isPlaying && playbackErrorMsg == null) {
-                exoPlayer.playWhenReady = true
-                exoPlayer.play()
-                isPlaying = true
+        // Auto jump-start guard ONLY for freshly loaded sources (never nudge an already-running stream)
+        if (didLoadFreshSource) {
+            kotlinx.coroutines.delay(500)
+            if (effectiveEngine == "VLC") {
+                if (!vlcPlayer.isPlaying && !vlcPlayer.isBuffering && playbackErrorMsg == null && isPlaying) {
+                    vlcPlayer.play()
+                }
+            } else {
+                if (!exoPlayer.isPlaying && exoPlayer.playbackState == Player.STATE_READY && playbackErrorMsg == null && isPlaying) {
+                    exoPlayer.playWhenReady = true
+                    exoPlayer.play()
+                }
             }
         }
     }
@@ -767,18 +782,46 @@ fun PlayerScreen(
     var pendingGestureSeekTargetMs by remember { mutableLongStateOf(-1L) }
 
     val performSeek: (Long) -> Unit = { targetMs ->
-        val engineDuration = if (effectiveEngine == "VLC") vlcPlayer.durationMs else exoPlayer.duration
-        val resolvedDur = if (duration > 0L) duration else engineDuration
+        val curEngine = latestEffectiveEngine
+        val engineDuration = if (curEngine == "VLC") vlcPlayer.durationMs else exoPlayer.duration
+        val resolvedDur = when {
+            duration > 0L -> duration
+            engineDuration > 0L -> engineDuration
+            latestActiveMediaItem.duration > 0L -> latestActiveMediaItem.duration
+            else -> 0L
+        }
         val maxDur = if (resolvedDur > 0L) resolvedDur else Long.MAX_VALUE
         val clampedTarget = targetMs.coerceIn(0L, maxDur)
         lastSeekTimeMs = System.currentTimeMillis()
         lastSeekTargetPosition = clampedTarget
+        lastKnownValidPositionMs = clampedTarget
         currentPosition = clampedTarget
         scrubPosition = clampedTarget
-        if (effectiveEngine == "VLC") {
-            vlcPlayer.seekTo(clampedTarget)
+        if (curEngine == "VLC") {
+            vlcPlayer.seekTo(clampedTarget, fast = true)
         } else {
             exoPlayer.seekTo(clampedTarget)
+        }
+    }
+    val latestPerformSeek by rememberUpdatedState(performSeek)
+
+    // Synchronized single-step track switcher: prevents stale native EndReached/STATE_ENDED events
+    // from firing a duplicate step and skipping the next episode to the 3rd track.
+    val triggerTrackStep: (Boolean) -> Unit = { forward ->
+        isAutoTransitioning = true
+        explicitTrackSwitch = true
+        mediaLoadStartTimeMs = System.currentTimeMillis()
+        lastKnownValidPositionMs = 0L
+        lastSeekTargetPosition = -1L
+        if (latestEffectiveEngine == "VLC") {
+            vlcPlayer.markSwitchingMedia()
+        } else {
+            try { exoPlayer.pause() } catch (_: Exception) {}
+        }
+        if (forward) {
+            viewModel.requestNextTrack()
+        } else {
+            viewModel.requestPreviousTrack()
         }
     }
 
@@ -786,7 +829,7 @@ fun PlayerScreen(
         playbackErrorMsg = null
         if (effectiveEngine == "VLC") {
             if (vlcPlayer.isEndedState()) {
-                vlcPlayer.seekTo(0)
+                vlcPlayer.seekTo(0L, fast = true)
             }
             vlcPlayer.play()
         } else {
@@ -827,6 +870,7 @@ fun PlayerScreen(
             resumeOrJumpStartPlayback()
         }
     }
+    val latestTogglePlayPause by rememberUpdatedState(togglePlayPause)
 
     // Keep PlayerControlBridge updated with active player engine reference & controls
     DisposableEffect(effectiveEngine) {
@@ -845,12 +889,10 @@ fun PlayerScreen(
             togglePlayPause()
         }
         com.emptysol.aeroplayer.ui.viewmodel.PlayerControlBridge.onNextListener = {
-            isAutoTransitioning = true
-            viewModel.requestNextTrack()
+            triggerTrackStep(true)
         }
         com.emptysol.aeroplayer.ui.viewmodel.PlayerControlBridge.onPrevListener = {
-            isAutoTransitioning = true
-            viewModel.requestPreviousTrack()
+            triggerTrackStep(false)
         }
         com.emptysol.aeroplayer.ui.viewmodel.PlayerControlBridge.onSeekByListener = { offsetMs ->
             val cur = if (effectiveEngine == "VLC") vlcPlayer.currentPositionMs else exoPlayer.currentPosition
@@ -1362,10 +1404,10 @@ fun PlayerScreen(
     val wifiManager = remember { context.applicationContext.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager }
     val wifiLock = remember {
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-            wifiManager.createWifiLock(android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF, "AeroPlayer::WifiLock")
+            wifiManager.createWifiLock(android.net.wifi.WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "AeroPlayer::WifiLock")
         } else {
             @Suppress("DEPRECATION")
-            wifiManager.createWifiLock(android.net.wifi.WifiManager.WIFI_MODE_FULL, "AeroPlayer::WifiLock")
+            wifiManager.createWifiLock(android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF, "AeroPlayer::WifiLock")
         }
     }
 
@@ -1439,7 +1481,7 @@ fun PlayerScreen(
                     // Guard against spurious/stale STATE_ENDED during manual track switches or right after load
                     val elapsedSinceLoad = System.currentTimeMillis() - mediaLoadStartTimeMs
                     val loadedId = exoPlayer.currentMediaItem?.mediaId
-                    if (isAutoTransitioning || elapsedSinceLoad < 1500L || (loadedId != null && loadedId != latestActiveMediaItem.uriString)) {
+                    if (isAutoTransitioning || elapsedSinceLoad < 2500L || (loadedId != null && loadedId != latestActiveMediaItem.uriString)) {
                         return
                     }
                     if (repeatModeState == 1) { // Repeat One
@@ -1461,8 +1503,7 @@ fun PlayerScreen(
                                 exoPlayer.seekTo(0)
                                 exoPlayer.pause()
                             } else {
-                                isAutoTransitioning = true
-                                viewModel.requestNextTrack()
+                                triggerTrackStep(true)
                             }
                         }
                     }
@@ -1496,11 +1537,11 @@ fun PlayerScreen(
 
                 if (isVideoSurfaceOrSleepGlitch && generalRetryCount < 3) {
                     generalRetryCount++
-                    val recoveryPos = exoPlayer.currentPosition
+                    val recoveryPos = maxOf(exoPlayer.currentPosition, lastKnownValidPositionMs)
                     android.util.Log.w("PlayerScreen", "Auto-recovering from surface/sleep glitch at pos $recoveryPos: $errorMsg")
                     try {
                         exoPlayer.clearVideoSurface()
-                    } catch (e: Exception) {}
+                    } catch (_: Exception) {}
                     activePlayerViewRef?.let { pv ->
                         if (pv.player != exoPlayer) {
                             pv.player = exoPlayer
@@ -1684,29 +1725,28 @@ fun PlayerScreen(
             vlcPlayer.onPlaybackEnded = {
                 val elapsedSinceLoad = System.currentTimeMillis() - mediaLoadStartTimeMs
                 val vlcUri = vlcPlayer.currentPlayingUri
-                if (latestEffectiveEngine != "VLC" || isAutoTransitioning || elapsedSinceLoad < 1500L || (vlcUri != null && vlcUri != latestActiveMediaItem.uriString)) {
+                if (latestEffectiveEngine != "VLC" || isAutoTransitioning || elapsedSinceLoad < 2500L || (vlcUri != null && vlcUri != latestActiveMediaItem.uriString)) {
                     // Ignore stale EndReached events emitted during manual Next/Prev transitions
                 } else if (repeatModeState == 1) { // Repeat One
-                    vlcPlayer.seekTo(0)
+                    vlcPlayer.seekTo(0L, fast = true)
                     vlcPlayer.play()
                 } else {
                     val playQueue = viewModel.playQueue.value
                     val currentIndex = viewModel.currentQueueIndex.value
                     if (playQueue.size <= 1) {
                         if (repeatModeState == 2) {
-                            vlcPlayer.seekTo(0)
+                            vlcPlayer.seekTo(0L, fast = true)
                             vlcPlayer.play()
                         } else {
-                            vlcPlayer.seekTo(0)
+                            vlcPlayer.seekTo(0L, fast = true)
                             vlcPlayer.pause()
                         }
                     } else {
                         if (currentIndex >= playQueue.size - 1 && repeatModeState == 0) {
-                            vlcPlayer.seekTo(0)
+                            vlcPlayer.seekTo(0L, fast = true)
                             vlcPlayer.pause()
                         } else {
-                            isAutoTransitioning = true
-                            viewModel.requestNextTrack()
+                            triggerTrackStep(true)
                         }
                     }
                 }
@@ -1858,7 +1898,7 @@ fun PlayerScreen(
         }
     }
 
-    // Playback loop tracking position with post-seek position buffer filter suppressing stale engine timestamps for 600ms
+    // Playback loop tracking position with post-seek buffer filter suppressing stale engine timestamps for 1200ms
     LaunchedEffect(abRepeatEnabled, pointA, pointB, effectiveEngine) {
         while (true) {
             if (!isScrubbing && gestureSessionType != "seek") {
@@ -1866,19 +1906,22 @@ fun PlayerScreen(
                 val rawDur = if (effectiveEngine == "VLC") vlcPlayer.durationMs.coerceAtLeast(0L) else exoPlayer.duration.coerceAtLeast(0L)
 
                 val now = System.currentTimeMillis()
-                val isPostSeekBufferWindow = (now - lastSeekTimeMs) < 600L && lastSeekTargetPosition >= 0L
+                val isPostSeekBufferWindow = (now - lastSeekTimeMs) < 1200L && lastSeekTargetPosition >= 0L
 
                 if (isPostSeekBufferWindow) {
-                    // Suppress stale pre-seek timestamps reported by player engines for 600ms after seeking
+                    // Suppress stale pre-seek timestamps reported by LibVLC / ExoPlayer after seeking
                     val diff = kotlin.math.abs(rawPos - lastSeekTargetPosition)
-                    if (diff < 1500L) {
+                    if (diff < 1800L) {
                         currentPosition = rawPos
+                        lastSeekTargetPosition = -1L
+                        if (rawPos > 0L) lastKnownValidPositionMs = rawPos
                     } else {
                         currentPosition = lastSeekTargetPosition
                     }
                 } else {
                     if (rawPos >= 0) {
                         currentPosition = rawPos
+                        if (rawPos > 0L) lastKnownValidPositionMs = rawPos
                         if (isPlaying || rawPos > 0L) {
                             if (!isFileRunning) isFileRunning = true
                         }
@@ -2276,8 +2319,8 @@ fun PlayerScreen(
             onSeek = { pos ->
                 performSeek(pos)
             },
-            onPrev = { isAutoTransitioning = true; viewModel.requestPreviousTrack() },
-            onNext = { isAutoTransitioning = true; viewModel.requestNextTrack() },
+            onPrev = { triggerTrackStep(false) },
+            onNext = { triggerTrackStep(true) },
             onToggleShuffle = {
                 isShuffleEnabled = !isShuffleEnabled
                 exoPlayer.shuffleModeEnabled = isShuffleEnabled
@@ -2424,83 +2467,95 @@ fun PlayerScreen(
                                                         audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, systemVol, 0)
                                                         gestureFeedbackValue = "$targetPercent%"
                                                     }
-                                                    "seek" -> {
-                                                        gestureFeedbackType = "seek"
-                                                        val effectiveDuration = if (duration > 0L) duration else (if (effectiveEngine == "VLC") vlcPlayer.durationMs else exoPlayer.duration).coerceAtLeast(0L)
-                                                        val seekRangeMs = if (effectiveDuration > 0L) {
-                                                            if (effectiveDuration <= 60_000L) effectiveDuration
-                                                            else if (effectiveDuration <= 600_000L) (effectiveDuration * 0.5f).toLong()
-                                                            else (effectiveDuration * 0.25f).toLong().coerceIn(120_000L, 600_000L)
-                                                        } else 120_000L
-                                                        val seekDelta = (totalDragX / width * seekRangeMs).toLong()
-                                                        val maxSeekBound = if (effectiveDuration > 0L) effectiveDuration else Long.MAX_VALUE
-                                                        val targetSeek = (initialGesturePosition + seekDelta).coerceIn(0L, maxSeekBound)
-                                                        pendingGestureSeekTargetMs = targetSeek
-                                                        scrubPosition = targetSeek
-                                                        currentPosition = targetSeek
-                                                        val diff = targetSeek - initialGesturePosition
-                                                        val sign = if (diff >= 0) "+" else "-"
-                                                        val diffFormatted = "$sign${formatPlayerDuration(kotlin.math.abs(diff))}"
-                                                        gestureFeedbackValue = "${formatPlayerDuration(targetSeek)} ($diffFormatted)"
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            } while (event.changes.any { it.pressed })
-                            
-                            if (gestureSessionType == "seek") {
-                                val finalTarget = if (pendingGestureSeekTargetMs >= 0L) pendingGestureSeekTargetMs else scrubPosition
-                                if (finalTarget >= 0L) {
-                                    performSeek(finalTarget)
-                                }
-                                isScrubbing = false
-                            }
-                            pendingGestureSeekTargetMs = -1L
-                            gestureSessionType = "none"
-                            activeDragBrightness = null
-                            activeDragVolume = null
-                            totalDragX = 0f
-                            totalDragY = 0f
-                            coroutineScope.launch {
-                                delay(800)
-                                if (gestureFeedbackType == "brightness" || gestureFeedbackType == "volume" || gestureFeedbackType == "seek") {
-                                    gestureFeedbackType = ""
-                                }
-                            }
-                        }
-                    }
-                    .pointerInput(isLocked, effectiveEngine) {
-                        detectTapGestures(
-                            onDoubleTap = { offset ->
-                                if (!isLocked) {
-                                    val width = size.width
-                                    val seekAmountMs = (prefs.doubleTapSeekSeconds * 1000L)
-                                    val effectiveDuration = if (duration > 0L) duration else (if (effectiveEngine == "VLC") vlcPlayer.durationMs else exoPlayer.duration).coerceAtLeast(0L)
-                                    val maxSeekBound = if (effectiveDuration > 0L) effectiveDuration else Long.MAX_VALUE
-                                    hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
-                                    if (offset.x > width * 0.30f && offset.x < width * 0.70f) {
-                                        centerDoubleTapOffset = offset
-                                        centerRippleTrigger++
-                                        togglePlayPause()
-                                    } else if (offset.x <= width * 0.30f) {
-                                        val curPos = if (effectiveEngine == "VLC") vlcPlayer.currentPositionMs else exoPlayer.currentPosition
-                                        val targetSeek = (curPos - seekAmountMs).coerceAtLeast(0L)
-                                        performSeek(targetSeek)
-                                        gestureFeedbackType = "seek_back"
-                                        gestureFeedbackValue = "-${prefs.doubleTapSeekSeconds}s"
-                                        leftDoubleTapOffset = offset
-                                        leftRippleTrigger++
-                                    } else {
-                                        val curPos = if (effectiveEngine == "VLC") vlcPlayer.currentPositionMs else exoPlayer.currentPosition
-                                        val targetSeek = (curPos + seekAmountMs).coerceAtMost(maxSeekBound)
-                                        performSeek(targetSeek)
-                                        gestureFeedbackType = "seek_forward"
-                                        gestureFeedbackValue = "+${prefs.doubleTapSeekSeconds}s"
-                                        rightDoubleTapOffset = offset
-                                        rightRippleTrigger++
-                                    }
+                                                     "seek" -> {
+                                                         gestureFeedbackType = "seek"
+                                                         val engineDur = if (effectiveEngine == "VLC") vlcPlayer.durationMs else exoPlayer.duration
+                                                         val effectiveDuration = when {
+                                                             duration > 0L -> duration
+                                                             engineDur > 0L -> engineDur
+                                                             latestActiveMediaItem.duration > 0L -> latestActiveMediaItem.duration
+                                                             else -> 0L
+                                                         }
+                                                         val seekRangeMs = if (effectiveDuration > 0L) {
+                                                             if (effectiveDuration <= 60_000L) effectiveDuration
+                                                             else if (effectiveDuration <= 600_000L) (effectiveDuration * 0.5f).toLong()
+                                                             else (effectiveDuration * 0.25f).toLong().coerceIn(120_000L, 600_000L)
+                                                         } else 120_000L
+                                                         val seekDelta = (totalDragX / width * seekRangeMs).toLong()
+                                                         val maxSeekBound = if (effectiveDuration > 0L) effectiveDuration else Long.MAX_VALUE
+                                                         val targetSeek = (initialGesturePosition + seekDelta).coerceIn(0L, maxSeekBound)
+                                                         pendingGestureSeekTargetMs = targetSeek
+                                                         scrubPosition = targetSeek
+                                                         currentPosition = targetSeek
+                                                         val diff = targetSeek - initialGesturePosition
+                                                         val sign = if (diff >= 0) "+" else "-"
+                                                         val diffFormatted = "$sign${formatPlayerDuration(kotlin.math.abs(diff))}"
+                                                         gestureFeedbackValue = "${formatPlayerDuration(targetSeek)} ($diffFormatted)"
+                                                     }
+                                                 }
+                                             }
+                                         }
+                                     }
+                                 }
+                             } while (event.changes.any { it.pressed })
+                             
+                             if (gestureSessionType == "seek") {
+                                 val finalTarget = if (pendingGestureSeekTargetMs >= 0L) pendingGestureSeekTargetMs else scrubPosition
+                                 if (finalTarget >= 0L) {
+                                     latestPerformSeek(finalTarget)
+                                 }
+                                 isScrubbing = false
+                             }
+                             pendingGestureSeekTargetMs = -1L
+                             gestureSessionType = "none"
+                             activeDragBrightness = null
+                             activeDragVolume = null
+                             totalDragX = 0f
+                             totalDragY = 0f
+                             coroutineScope.launch {
+                                 delay(800)
+                                 if (gestureFeedbackType == "brightness" || gestureFeedbackType == "volume" || gestureFeedbackType == "seek") {
+                                     gestureFeedbackType = ""
+                                 }
+                             }
+                         }
+                     }
+                     .pointerInput(isLocked, effectiveEngine) {
+                         detectTapGestures(
+                             onDoubleTap = { offset ->
+                                 if (!isLocked) {
+                                     val width = size.width
+                                     val seekAmountMs = (latestPrefs.doubleTapSeekSeconds * 1000L)
+                                     val engineDur = if (effectiveEngine == "VLC") vlcPlayer.durationMs else exoPlayer.duration
+                                     val effectiveDuration = when {
+                                         duration > 0L -> duration
+                                         engineDur > 0L -> engineDur
+                                         latestActiveMediaItem.duration > 0L -> latestActiveMediaItem.duration
+                                         else -> 0L
+                                     }
+                                     val maxSeekBound = if (effectiveDuration > 0L) effectiveDuration else Long.MAX_VALUE
+                                     hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                                     if (offset.x > width * 0.30f && offset.x < width * 0.70f) {
+                                         centerDoubleTapOffset = offset
+                                         centerRippleTrigger++
+                                         latestTogglePlayPause()
+                                     } else if (offset.x <= width * 0.30f) {
+                                         val curPos = if (effectiveEngine == "VLC") vlcPlayer.currentPositionMs else exoPlayer.currentPosition
+                                         val targetSeek = (curPos - seekAmountMs).coerceAtLeast(0L)
+                                         latestPerformSeek(targetSeek)
+                                         gestureFeedbackType = "seek_back"
+                                         gestureFeedbackValue = "-${latestPrefs.doubleTapSeekSeconds}s"
+                                         leftDoubleTapOffset = offset
+                                         leftRippleTrigger++
+                                     } else {
+                                         val curPos = if (effectiveEngine == "VLC") vlcPlayer.currentPositionMs else exoPlayer.currentPosition
+                                         val targetSeek = (curPos + seekAmountMs).coerceAtMost(maxSeekBound)
+                                         latestPerformSeek(targetSeek)
+                                         gestureFeedbackType = "seek_forward"
+                                         gestureFeedbackValue = "+${latestPrefs.doubleTapSeekSeconds}s"
+                                         rightDoubleTapOffset = offset
+                                         rightRippleTrigger++
+                                     }
                                     coroutineScope.launch {
                                         delay(1000)
                                         if (gestureFeedbackType == "seek_back" || gestureFeedbackType == "seek_forward") {
@@ -2976,7 +3031,7 @@ fun PlayerScreen(
                     ) {
                         Icon(
                             imageVector = when (gestureFeedbackType) {
-                                "volume" -> Icons.Default.VolumeUp
+                                "volume" -> Icons.AutoMirrored.Filled.VolumeUp
                                 "brightness" -> Icons.Default.BrightnessMedium
                                 "seek_back" -> Icons.Default.Replay10
                                 "seek_forward" -> Icons.Default.Forward10
@@ -3022,7 +3077,7 @@ fun PlayerScreen(
                                 horizontalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
                                 Icon(
-                                    imageVector = if (percent == 0f) Icons.Default.VolumeMute else if (percent < 50f) Icons.Default.VolumeDown else Icons.Default.VolumeUp,
+                                    imageVector = if (percent == 0f) Icons.AutoMirrored.Filled.VolumeMute else if (percent < 50f) Icons.AutoMirrored.Filled.VolumeDown else Icons.AutoMirrored.Filled.VolumeUp,
                                     contentDescription = "Volume",
                                     tint = MaterialTheme.colorScheme.primary,
                                     modifier = Modifier.size(28.dp)
@@ -3513,47 +3568,45 @@ fun PlayerScreen(
                                             .size(if (isMini) 48.dp else 52.dp)
                                             .clip(CircleShape)
                                             .background(Color.Black.copy(alpha = 0.45f), CircleShape)
-                                            .clickable {
-                                                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
-                                                isAutoTransitioning = true
-                                                viewModel.requestPreviousTrack()
-                                            },
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.SkipPrevious,
-                                            contentDescription = "Previous Track",
-                                            tint = Color.White,
-                                            modifier = Modifier.size(if (isMini) 22.dp else 30.dp)
-                                        )
-                                    }
+                                             .clickable {
+                                                 hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                                 triggerTrackStep(false)
+                                             },
+                                         contentAlignment = Alignment.Center
+                                     ) {
+                                         Icon(
+                                             imageVector = Icons.Default.SkipPrevious,
+                                             contentDescription = "Previous Track",
+                                             tint = Color.White,
+                                             modifier = Modifier.size(if (isMini) 22.dp else 30.dp)
+                                         )
+                                     }
 
-                                    // Play / Pause Button (Large Prominent White Icon)
-                                    AnimatedPlayPauseButton(
-                                        isPlaying = isPlaying,
-                                        onClick = {
-                                            hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
-                                            togglePlayPause()
-                                        },
-                                        modifier = Modifier
-                                            .size(if (isMini) 52.dp else 76.dp),
-                                        iconSize = if (isMini) 28.dp else 42.dp,
-                                        containerColor = Color.White.copy(alpha = 0.95f),
-                                        contentColor = Color.Black
-                                    )
+                                     // Play / Pause Button (Large Prominent White Icon)
+                                     AnimatedPlayPauseButton(
+                                         isPlaying = isPlaying,
+                                         onClick = {
+                                             hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                             togglePlayPause()
+                                         },
+                                         modifier = Modifier
+                                             .size(if (isMini) 52.dp else 76.dp),
+                                         iconSize = if (isMini) 28.dp else 42.dp,
+                                         containerColor = Color.White.copy(alpha = 0.95f),
+                                         contentColor = Color.Black
+                                     )
 
-                                    // Skip Forward (Instant single-click Next Track to avoid double-tap 300ms delay skips)
-                                    Box(
-                                        modifier = Modifier
-                                            .testTag("player_next_button")
-                                            .size(if (isMini) 48.dp else 52.dp)
-                                            .clip(CircleShape)
-                                            .background(Color.Black.copy(alpha = 0.45f), CircleShape)
-                                            .clickable {
-                                                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
-                                                isAutoTransitioning = true
-                                                viewModel.requestNextTrack()
-                                            },
+                                     // Skip Forward (Instant single-click Next Track to avoid double-tap 300ms delay skips)
+                                     Box(
+                                         modifier = Modifier
+                                             .testTag("player_next_button")
+                                             .size(if (isMini) 48.dp else 52.dp)
+                                             .clip(CircleShape)
+                                             .background(Color.Black.copy(alpha = 0.45f), CircleShape)
+                                             .clickable {
+                                                 hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                                 triggerTrackStep(true)
+                                             },
                                         contentAlignment = Alignment.Center
                                     ) {
                                         Icon(
@@ -3966,7 +4019,7 @@ fun PlayerScreen(
                                                             modifier = Modifier.size(36.dp)
                                                         ) {
                                                             Icon(
-                                                                imageVector = Icons.Default.QueueMusic,
+                                                                imageVector = Icons.AutoMirrored.Filled.QueueMusic,
                                                                 contentDescription = "View Queue",
                                                                 tint = MaterialTheme.colorScheme.onSurface,
                                                                 modifier = Modifier.size(20.dp)
@@ -4056,7 +4109,7 @@ fun PlayerScreen(
                                                     modifier = Modifier.size(36.dp).testTag("left_pill_collapse_button")
                                                 ) {
                                                     Icon(
-                                                        imageVector = Icons.Default.KeyboardArrowLeft,
+                                                        imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
                                                         contentDescription = if (isLeftPillExpanded) "Collapse Tools" else "Expand Tools",
                                                         tint = MaterialTheme.colorScheme.primary,
                                                         modifier = Modifier
@@ -4144,7 +4197,7 @@ fun PlayerScreen(
                                                             modifier = Modifier.size(36.dp)
                                                         ) {
                                                             Icon(
-                                                                imageVector = Icons.Default.QueueMusic,
+                                                                imageVector = Icons.AutoMirrored.Filled.QueueMusic,
                                                                 contentDescription = "View Queue",
                                                                 tint = MaterialTheme.colorScheme.onSurface,
                                                                 modifier = Modifier.size(20.dp)
@@ -4444,7 +4497,7 @@ fun PlayerScreen(
                                                     modifier = Modifier.size(36.dp).testTag("right_pill_collapse_button")
                                                 ) {
                                                     Icon(
-                                                        imageVector = Icons.Default.KeyboardArrowRight,
+                                                        imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
                                                         contentDescription = if (isRightPillExpanded) "Collapse Settings" else "Expand Settings",
                                                         tint = MaterialTheme.colorScheme.primary,
                                                         modifier = Modifier
@@ -5946,7 +5999,7 @@ fun PlayerScreen(
              // 1. Helper functions for detailed track names
              fun getFullAudioTrackName(format: androidx.media3.common.Format, index: Int): String {
                  val langName = format.language?.let { langCode ->
-                     val locale = java.util.Locale(langCode)
+                     val locale = java.util.Locale.forLanguageTag(langCode)
                      locale.getDisplayLanguage(locale).takeIf { it.isNotBlank() && it != langCode }
                          ?: locale.displayLanguage.takeIf { it.isNotBlank() && it != langCode }
                          ?: langCode.uppercase()
@@ -5989,7 +6042,7 @@ fun PlayerScreen(
 
              fun getFullSubtitleTrackName(format: androidx.media3.common.Format, index: Int): String {
                  val langName = format.language?.let { langCode ->
-                     val locale = java.util.Locale(langCode)
+                     val locale = java.util.Locale.forLanguageTag(langCode)
                      locale.getDisplayLanguage(locale).takeIf { it.isNotBlank() && it != langCode }
                          ?: locale.displayLanguage.takeIf { it.isNotBlank() && it != langCode }
                          ?: langCode.uppercase()
@@ -7013,7 +7066,7 @@ Subtitle for ${activeMediaItem.title} ($selectedLanguage)
                         shape = RoundedCornerShape(10.dp),
                         contentPadding = PaddingValues(vertical = 4.dp, horizontal = 6.dp)
                     ) {
-                        Icon(Icons.Default.PlaylistAddCheck, contentDescription = null, modifier = Modifier.size(14.dp))
+                        Icon(Icons.AutoMirrored.Filled.PlaylistAddCheck, contentDescription = null, modifier = Modifier.size(14.dp))
                         Spacer(modifier = Modifier.width(4.dp))
                         Text("Auto-Load All", fontSize = 11.sp, maxLines = 1)
                     }
@@ -7033,7 +7086,7 @@ Subtitle for ${activeMediaItem.title} ($selectedLanguage)
                         selected = queueGroupingMode == "All",
                         onClick = { queueGroupingMode = "All" },
                         label = { Text("All Queue Items", fontSize = 12.sp, fontWeight = FontWeight.Bold) },
-                        leadingIcon = { Icon(Icons.Default.List, contentDescription = null, modifier = Modifier.size(14.dp)) },
+                        leadingIcon = { Icon(Icons.AutoMirrored.Filled.List, contentDescription = null, modifier = Modifier.size(14.dp)) },
                         modifier = Modifier.weight(1f),
                         colors = FilterChipDefaults.filterChipColors(
                             selectedContainerColor = MaterialTheme.colorScheme.primary,
@@ -7060,7 +7113,7 @@ Subtitle for ${activeMediaItem.title} ($selectedLanguage)
                 if (playQueue.isEmpty()) {
                     Box(modifier = Modifier.fillMaxWidth().height(200.dp), contentAlignment = Alignment.Center) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(Icons.Default.QueueMusic, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f), modifier = Modifier.size(48.dp))
+                            Icon(Icons.AutoMirrored.Filled.QueueMusic, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f), modifier = Modifier.size(48.dp))
                             Spacer(modifier = Modifier.height(8.dp))
                             Text("Queue is empty", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
                             Spacer(modifier = Modifier.height(8.dp))
@@ -7431,7 +7484,7 @@ Subtitle for ${activeMediaItem.title} ($selectedLanguage)
                         }
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.VolumeUp, contentDescription = null, tint = MaterialTheme.colorScheme.secondary)
+                        Icon(Icons.AutoMirrored.Filled.VolumeUp, contentDescription = null, tint = MaterialTheme.colorScheme.secondary)
                         Column {
                             Text("Right Screen Swipe Vertical", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                             Text("Adjust media volume smoothly.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -8032,7 +8085,7 @@ fun CustomAudioPlayerScreen(
                             }
                         ) {
                             Icon(
-                                imageVector = Icons.Default.PlaylistPlay,
+                                imageVector = Icons.AutoMirrored.Filled.PlaylistPlay,
                                 contentDescription = "Play Queue",
                                 tint = MaterialTheme.colorScheme.primary,
                                 modifier = Modifier.size(22.dp)

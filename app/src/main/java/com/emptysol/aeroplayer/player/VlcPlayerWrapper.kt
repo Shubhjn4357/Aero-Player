@@ -112,6 +112,9 @@ class VlcPlayerWrapper(private val context: Context) {
     private var pendingInitialSeekMs: Long = 0L
     @Volatile
     private var isSwitchingMedia: Boolean = false
+    private val mediaSessionToken = java.util.concurrent.atomic.AtomicLong(0L)
+    @Volatile
+    private var activeEventSessionToken: Long = 0L
     @Volatile
     private var lastSeekTimestampMs: Long = 0L
     @Volatile
@@ -120,6 +123,16 @@ class VlcPlayerWrapper(private val context: Context) {
     private var lastWindowHeight: Int = -1
     private var currentAspectRatio: String? = null
     private var currentScale: Float = 0f
+
+    /**
+     * Synchronously marks an outgoing track switch so any queued native LibVLC
+     * EndReached/TimeChanged events from the previous track are dropped immediately.
+     */
+    fun markSwitchingMedia() {
+        isSwitchingMedia = true
+        isEnded = false
+        mediaSessionToken.incrementAndGet()
+    }
 
     private var currentSubtitleSizeSp: Float = 18f
     private var currentSubtitleTextColor: String = "#FFFFFFFF"
@@ -393,6 +406,9 @@ class VlcPlayerWrapper(private val context: Context) {
             player.setEventListener { event ->
                 when (event.type) {
                     MediaPlayer.Event.Playing -> {
+                        if (isSwitchingMedia || activeEventSessionToken != mediaSessionToken.get()) {
+                            return@setEventListener
+                        }
                         android.util.Log.d("VLC_LOG", "LibVLC successfully started playing tracks")
                         isPlaying = true
                         isBuffering = false
@@ -404,26 +420,33 @@ class VlcPlayerWrapper(private val context: Context) {
                             onPositionUpdated?.invoke(currentPositionMs, dur)
                         }
                         try {
-                            if (targetPlaybackSpeed != 1.0f) {
+                            if (targetPlaybackSpeed != 1.0f && kotlin.math.abs(player.rate - targetPlaybackSpeed) > 0.01f) {
                                 player.rate = targetPlaybackSpeed
                             }
-                            if (targetAudioTrackId >= 0) {
+                            if (targetAudioTrackId >= 0 && player.audioTrack != targetAudioTrackId) {
                                 player.audioTrack = targetAudioTrackId
                             }
-                            if (targetSubtitleTrackId >= -1) {
+                            if (targetSubtitleTrackId >= -1 && player.spuTrack != targetSubtitleTrackId) {
                                 player.spuTrack = targetSubtitleTrackId
                             }
                             if (currentAspectRatio != null) {
                                 player.aspectRatio = currentAspectRatio
                             }
-                            player.scale = currentScale
+                            if (currentScale > 0f) {
+                                player.scale = currentScale
+                            }
                             if (pendingInitialSeekMs > 0L) {
                                 val seekTarget = pendingInitialSeekMs
                                 pendingInitialSeekMs = 0L
-                                player.time = seekTarget
+                                val livePos = player.time
+                                if (livePos < 0L || kotlin.math.abs(livePos - seekTarget) > 2500L) {
+                                    lastSeekTargetMs = seekTarget
+                                    lastSeekTimestampMs = android.os.SystemClock.elapsedRealtime()
+                                    currentPositionMs = seekTarget
+                                    player.setTime(seekTarget, true)
+                                }
                             }
-                            player.updateVideoSurfaces()
-                        } catch (e: Exception) {}
+                        } catch (_: Exception) {}
                         onIsPlayingChanged?.invoke(true)
                         onBufferingChanged?.invoke(false)
                         onPlaybackStateChanged?.invoke(true, false)
@@ -432,7 +455,7 @@ class VlcPlayerWrapper(private val context: Context) {
                             if (chapters.isNotEmpty()) {
                                 onChaptersDiscovered?.invoke(chapters)
                             }
-                        } catch (e: Exception) {}
+                        } catch (_: Exception) {}
                     }
                     MediaPlayer.Event.Paused -> {
                         isPlaying = false
@@ -456,10 +479,13 @@ class VlcPlayerWrapper(private val context: Context) {
                         onPlaybackStateChanged?.invoke(isPlaying, isBuffering)
                     }
                     MediaPlayer.Event.TimeChanged -> {
+                        if (isSwitchingMedia || activeEventSessionToken != mediaSessionToken.get()) {
+                            return@setEventListener
+                        }
                         val reportedPos = event.timeChanged
                         val nowMs = android.os.SystemClock.elapsedRealtime()
-                        val inSeekWindow = lastSeekTargetMs >= 0L && (nowMs - lastSeekTimestampMs) < 650L
-                        val effectivePos = if (inSeekWindow && kotlin.math.abs(reportedPos - lastSeekTargetMs) > 1500L) {
+                        val inSeekWindow = lastSeekTargetMs >= 0L && (nowMs - lastSeekTimestampMs) < 1200L
+                        val effectivePos = if (inSeekWindow && kotlin.math.abs(reportedPos - lastSeekTargetMs) > 1800L) {
                             lastSeekTargetMs
                         } else {
                             if (inSeekWindow) lastSeekTargetMs = -1L
@@ -475,6 +501,9 @@ class VlcPlayerWrapper(private val context: Context) {
                         onPositionUpdated?.invoke(currentPositionMs, durationMs)
                     }
                     MediaPlayer.Event.PositionChanged -> {
+                        if (isSwitchingMedia || activeEventSessionToken != mediaSessionToken.get()) {
+                            return@setEventListener
+                        }
                         val dur = player.length
                         if (dur > 0L) {
                             if (durationMs <= 0L || durationMs != dur) {
@@ -483,7 +512,7 @@ class VlcPlayerWrapper(private val context: Context) {
                             }
                             val computedPos = (event.positionChanged * dur).toLong()
                             val nowMs = android.os.SystemClock.elapsedRealtime()
-                            val inSeekWindow = lastSeekTargetMs >= 0L && (nowMs - lastSeekTimestampMs) < 650L
+                            val inSeekWindow = lastSeekTargetMs >= 0L && (nowMs - lastSeekTimestampMs) < 1200L
                             if (!inSeekWindow && kotlin.math.abs(computedPos - currentPositionMs) >= 180L) {
                                 currentPositionMs = computedPos
                                 onPositionChanged?.invoke(currentPositionMs)
@@ -502,12 +531,12 @@ class VlcPlayerWrapper(private val context: Context) {
                     MediaPlayer.Event.Vout -> {
                         try {
                             player.updateVideoSurfaces()
-                        } catch (e: Exception) {}
+                        } catch (_: Exception) {}
                     }
                     MediaPlayer.Event.EndReached -> {
                         isPlaying = false
                         isBuffering = false
-                        if (isSwitchingMedia) {
+                        if (isSwitchingMedia || activeEventSessionToken != mediaSessionToken.get()) {
                             return@setEventListener
                         }
                         isEnded = true
@@ -870,12 +899,14 @@ class VlcPlayerWrapper(private val context: Context) {
         }
 
         try {
+            val newToken = mediaSessionToken.incrementAndGet()
+            activeEventSessionToken = newToken
             isSwitchingMedia = true
             isEnded = false
             currentPositionMs = initialSeekMs.coerceAtLeast(0L)
             durationMs = 0L
-            lastSeekTargetMs = -1L
-            lastSeekTimestampMs = 0L
+            lastSeekTargetMs = if (initialSeekMs > 0L) initialSeekMs else -1L
+            lastSeekTimestampMs = if (initialSeekMs > 0L) android.os.SystemClock.elapsedRealtime() else 0L
             currentPlayingUri = uriString
             pendingInitialSeekMs = initialSeekMs
             targetAudioTrackId = initialAudioTrackId
@@ -1136,14 +1167,14 @@ class VlcPlayerWrapper(private val context: Context) {
         }
     }
 
-    fun isEndedState(): Boolean = isEnded || (durationMs > 0L && currentPositionMs >= durationMs - 500L)
+    fun isEndedState(): Boolean = isEnded
 
     fun play() {
         try {
             requestAudioFocus()
             registerNoisyReceiver()
-            if (isEndedState()) {
-                seekTo(0)
+            if (isEnded) {
+                seekTo(0L, fast = true)
                 isEnded = false
             }
             mediaPlayer?.play()
@@ -1169,8 +1200,10 @@ class VlcPlayerWrapper(private val context: Context) {
 
     fun stop() {
         try {
+            markSwitchingMedia()
             mediaPlayer?.stop()
             isPlaying = false
+            isBuffering = false
             abandonAudioFocus()
             unregisterNoisyReceiver()
             onIsPlayingChanged?.invoke(false)
@@ -1180,23 +1213,33 @@ class VlcPlayerWrapper(private val context: Context) {
         }
     }
 
-    fun seekTo(positionMs: Long) {
+    fun seekTo(positionMs: Long, fast: Boolean = true) {
         try {
             val dur = durationMs.takeIf { it > 0L } ?: (mediaPlayer?.length?.takeIf { it > 0L } ?: 0L)
-            val clamped = if (dur > 0L) positionMs.coerceIn(0L, (dur - 200L).coerceAtLeast(0L)) else positionMs.coerceAtLeast(0L)
+            val clamped = if (dur > 0L) positionMs.coerceIn(0L, (dur - 250L).coerceAtLeast(0L)) else positionMs.coerceAtLeast(0L)
             lastSeekTargetMs = clamped
             lastSeekTimestampMs = android.os.SystemClock.elapsedRealtime()
             currentPositionMs = clamped
             isEnded = false
             val player = mediaPlayer ?: return
-            player.setTime(clamped, false)
-            if (dur > 0L && !player.isPlaying) {
-                // Force frame update smoothly when scrubbing while paused
-                val frac = (clamped.toFloat() / dur.toFloat()).coerceIn(0f, 0.999f)
-                try {
-                    player.position = frac
-                } catch (_: Exception) {}
+            val appliedTime = try {
+                player.setTime(clamped, fast)
+            } catch (_: Exception) {
+                -1L
             }
+            // Fallback to fractional position seek whenever setTime fails, while paused, or on content-FD/MKV streams
+            if (dur > 0L && (appliedTime < 0L || !player.isPlaying)) {
+                val frac = (clamped.toFloat() / dur.toFloat()).coerceIn(0f, 0.998f)
+                try {
+                    player.setPosition(frac, fast)
+                } catch (_: Exception) {
+                    try {
+                        player.position = frac
+                    } catch (_: Exception) {}
+                }
+            }
+            onPositionChanged?.invoke(clamped)
+            onPositionUpdated?.invoke(clamped, dur)
         } catch (e: Exception) {
             Log.e(TAG, "Error seeking in LibVLC", e)
         }

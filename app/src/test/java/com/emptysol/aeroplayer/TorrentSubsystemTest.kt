@@ -258,28 +258,62 @@ class TorrentSubsystemTest {
     }
 
     @Test
-    fun torrentManagerScreen_rendersTabsAndOpensMagnetDialog() {
+    fun torrentManagerScreen_rendersCleanTabsTurboBoostAndOpensMagnetDialog() {
         val app = RuntimeEnvironment.getApplication()
         val vm = MainViewModel(app)
+        var vpnOpened = false
+        var downloadsOpened = false
 
         composeRule.setContent {
             MyApplicationTheme(themeMode = "Dark", useDynamicColor = false) {
                 TorrentManagerScreen(
                     viewModel = vm,
                     onBack = {},
-                    onPlayMedia = {}
+                    onPlayMedia = {},
+                    onOpenVpnManager = { vpnOpened = true },
+                    onOpenDownloadManager = { downloadsOpened = true }
                 )
             }
         }
 
         composeRule.onNodeWithText("P2P Torrent Manager").assertIsDisplayed()
+        composeRule.onNodeWithTag("torrent_speed_boost_card").assertIsDisplayed()
         composeRule.onNodeWithTag("torrent_tab_rss").performClick()
         composeRule.onNodeWithText("RSS Auto-Downloader").assertIsDisplayed()
-        composeRule.onNodeWithTag("torrent_tab_remote_vpn").performScrollTo().performClick()
-        composeRule.onNodeWithText("CyberGhost VPN").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithTag("torrent_tab_downloads").performScrollTo().performClick()
         composeRule.onNodeWithTag("fab_add_torrent").performClick()
         composeRule.onNodeWithTag("magnet_input_field").assertIsDisplayed()
+        assertFalse(vpnOpened)
+        assertFalse(downloadsOpened)
+    }
+
+    @Test
+    fun torrentSpeedBoost_persistsSettingAndUpdatesPipelineDepth() = runBlocking {
+        val app = RuntimeEnvironment.getApplication()
+        val db = com.emptysol.aeroplayer.data.database.AppDatabase.getDatabase(app)
+        val engine = TorrentEngineManager(
+            context = app,
+            database = db,
+            mediaRepository = com.emptysol.aeroplayer.data.repository.MediaRepository(db.mediaDao()),
+            preferenceRepository = com.emptysol.aeroplayer.data.repository.PreferenceRepository(db.preferenceDao()),
+            scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO)
+        )
+
+        engine.setSpeedBoostEnabled(true)
+        assertTrue(engine.isSpeedBoostEnabled())
+        assertTrue(engine.engineStatus.value.speedBoostEnabled)
+        assertEquals(64, engine.engineStatus.value.pipelineDepth)
+
+        engine.setSpeedBoostEnabled(false)
+        assertFalse(engine.isSpeedBoostEnabled())
+        assertFalse(engine.engineStatus.value.speedBoostEnabled)
+        assertEquals(32, engine.engineStatus.value.pipelineDepth)
+
+        // Restore default Turbo ON and verify expanded peer discovery lists
+        engine.setSpeedBoostEnabled(true)
+        val trackerClient = TrackerAndDhtClient()
+        assertTrue(trackerClient.publicFallbackTrackers.size >= 6)
+        assertTrue(trackerClient.publicBootstrapDhtNodes.size >= 5)
     }
 
     @Test

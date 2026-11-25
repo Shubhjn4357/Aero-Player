@@ -33,19 +33,19 @@ class BandwidthThrottler(
     suspend fun acquire(requestedBytes: Int) {
         if (requestedBytes <= 0) return
         val limit = bytesPerSec
-        if (limit <= 0L) return // unlimited
+        if (limit <= 0L) return // unlimited fast-path, zero lock contention
 
         var sleepMs = 0L
         synchronized(lock) {
             val now = System.nanoTime()
             val elapsedSec = (now - lastRefillNs).coerceAtLeast(0L) / 1_000_000_000.0
             lastRefillNs = now
-            val maxBurst = maxOf(limit.toDouble(), requestedBytes.toDouble() * 2.0)
+            val maxBurst = maxOf(limit.toDouble(), requestedBytes.toDouble() * 4.0)
             availableTokens = min(maxBurst, availableTokens + elapsedSec * limit)
             availableTokens -= requestedBytes.toDouble()
             if (availableTokens < 0.0) {
                 val deficit = -availableTokens
-                sleepMs = ((deficit / limit) * 1000.0).toLong().coerceIn(5L, 1500L)
+                sleepMs = ((deficit / limit) * 1000.0).toLong().coerceIn(2L, 1000L)
             }
         }
         if (sleepMs > 0L) {
@@ -61,24 +61,24 @@ data class NetworkConditionRecommendation(
     val isMetered: Boolean,
     val linkDownstreamKbps: Int,
     val linkUpstreamKbps: Int,
-    val recommendedDownloadCapKbps: Int, // 0 = full speed
+    val recommendedDownloadCapKbps: Int, // 0 = full line speed
     val recommendedUploadCapKbps: Int
 )
 
 /**
  * Inspects real ConnectivityManager active network link capabilities to dynamically scale
- * upload/download budgets and protect connection responsiveness.
+ * upload/download budgets without artificially throttling high-speed unmetered links.
  */
 object AutoBandwidthOptimizer {
 
     fun evaluate(context: Context): NetworkConditionRecommendation {
         return try {
             val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
-                ?: return NetworkConditionRecommendation("Offline", false, 0, 0, 512, 128)
+                ?: return NetworkConditionRecommendation("Offline", false, 0, 0, 0, 512)
             val network = cm.activeNetwork
                 ?: return NetworkConditionRecommendation("Offline", false, 0, 0, 0, 0)
             val caps = cm.getNetworkCapabilities(network)
-                ?: return NetworkConditionRecommendation("Unknown", false, 0, 0, 1024, 256)
+                ?: return NetworkConditionRecommendation("Unknown", false, 0, 0, 0, 512)
 
             val isWifi = caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
             val isEthernet = caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
@@ -100,16 +100,17 @@ object AutoBandwidthOptimizer {
                 if (isMetered) append(" (Metered)")
             }
 
-            // Convert link kbps (bits/s) to KB/s caps leaving ~20% headroom for foreground streaming/UI
+            // Never choke unmetered Wi-Fi / Ethernet links with conservative Android link estimates.
+            // Only apply gentle protection on metered cellular links when link bandwidth is reported.
             val recDownKBps = when {
-                isMetered && isCellular -> minOf(2048, ((downKbps / 8.0) * 0.65).toInt().coerceAtLeast(512))
-                downKbps > 0 -> ((downKbps / 8.0) * 0.85).toInt().coerceAtLeast(1024)
-                else -> 0 // uncapped
+                isEthernet || isWifi || !isMetered -> 0 // uncapped full line speed
+                isMetered && isCellular && downKbps > 0 -> ((downKbps / 8.0) * 0.90).toInt().coerceAtLeast(4096)
+                else -> 0
             }
             val recUpKBps = when {
-                isMetered && isCellular -> minOf(256, ((upKbps / 8.0) * 0.35).toInt().coerceIn(64, 256))
-                upKbps > 0 -> ((upKbps / 8.0) * 0.60).toInt().coerceIn(128, 4096)
-                else -> 512
+                isMetered && isCellular -> ((upKbps / 8.0) * 0.45).toInt().coerceIn(128, 1024)
+                upKbps > 0 -> ((upKbps / 8.0) * 0.75).toInt().coerceIn(512, 8192)
+                else -> 1024
             }
 
             NetworkConditionRecommendation(
@@ -121,7 +122,7 @@ object AutoBandwidthOptimizer {
                 recommendedUploadCapKbps = recUpKBps
             )
         } catch (_: Throwable) {
-            NetworkConditionRecommendation("Network", false, 0, 0, 0, 512)
+            NetworkConditionRecommendation("Network", false, 0, 0, 0, 1024)
         }
     }
 }

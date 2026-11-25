@@ -177,30 +177,18 @@ fun FolderListComponent(
                         isGenreMode -> "No genres found"
                         else -> "No media folders found"
                     }
-                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Icon(
-                                imageVector = groupIcon,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
-                                modifier = Modifier.size(56.dp)
-                            )
-                            Text(
-                                text = emptyLabel,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.Medium
-                            )
-                        }
-                    }
+                    AeroExplorerEmptyState(
+                        icon = groupIcon,
+                        title = emptyLabel,
+                        subtitle = "Pull to refresh or scan storage to index media"
+                    )
                 } else {
                     if (prefs.useGroupWiseFolderStyle) {
-                        // Compact Condensed Grid Layout for Folders
                         LazyVerticalGrid(
-                            columns = GridCells.Adaptive(minSize = 92.dp),
+                            columns = GridCells.Adaptive(minSize = 112.dp),
                             contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 8.dp, bottom = 120.dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
                             modifier = Modifier
                                 .fillMaxSize()
                                 .testTag("folder_grid_view")
@@ -210,108 +198,45 @@ fun FolderListComponent(
                                 val isFolderSelected = folderVideos.isNotEmpty() && folderVideos.all { file ->
                                     selectedMediaSet.any { it.uriString == file.uriString }
                                 }
+                                val totalSize = folderVideos.sumOf { it.size }
+                                val sizeStr = formatMediaFileSize(totalSize)
+                                val subtext = if (sizeStr.isNotEmpty()) "${folderVideos.size} files • $sizeStr" else "${folderVideos.size} files"
 
-                                Card(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .combinedClickable(
-                                            onClick = {
-                                                if (isSelectModeActive) {
-                                                    if (isFolderSelected) {
-                                                        selectedMediaSet.removeAll(folderVideos.toSet())
-                                                        if (selectedMediaSet.isEmpty()) onToggleSelectMode(false)
-                                                    } else {
-                                                        selectedMediaSet.addAll(folderVideos)
-                                                    }
-                                                } else {
-                                                    onFolderSelect(folderName)
-                                                }
-                                            },
-                                            onLongClick = {
-                                                onToggleSelectMode(true)
-                                                if (isFolderSelected) {
-                                                    selectedMediaSet.removeAll(folderVideos.toSet())
-                                                } else {
-                                                    selectedMediaSet.addAll(folderVideos)
-                                                }
+                                AeroExplorerFolderGridCard(
+                                    title = folderName,
+                                    subtitle = subtext,
+                                    icon = groupIcon,
+                                    badgeText = folderVideos.size.toString(),
+                                    iconTint = accentColor,
+                                    isSelected = isFolderSelected,
+                                    onClick = {
+                                        if (isSelectModeActive) {
+                                            if (isFolderSelected) {
+                                                selectedMediaSet.removeAll(folderVideos.toSet())
+                                                if (selectedMediaSet.isEmpty()) onToggleSelectMode(false)
+                                            } else {
+                                                selectedMediaSet.addAll(folderVideos)
                                             }
-                                        )
-                                        .testTag("folder_card_$folderName"),
-                                    shape = RoundedCornerShape(14.dp),
-                                    colors = CardDefaults.cardColors(
-                                        containerColor = if (isFolderSelected) accentColor.copy(alpha = 0.14f) else MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.65f)
-                                    ),
-                                    border = null
-                                ) {
-                                    Box(modifier = Modifier.fillMaxWidth().padding(8.dp)) {
-                                        Column(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalAlignment = Alignment.CenterHorizontally,
-                                            verticalArrangement = Arrangement.Center
-                                        ) {
-                                            Box(
-                                                modifier = Modifier
-                                                    .size(42.dp)
-                                                    .clip(RoundedCornerShape(11.dp))
-                                                    .background(accentColor.copy(alpha = 0.12f)),
-                                                contentAlignment = Alignment.Center
-                                            ) {
-                                                Icon(
-                                                    imageVector = groupIcon,
-                                                    contentDescription = null,
-                                                    tint = accentColor,
-                                                    modifier = Modifier.size(24.dp)
-                                                )
-                                            }
-                                            Spacer(modifier = Modifier.height(6.dp))
-                                            Text(
-                                                text = folderName,
-                                                fontSize = 11.5.sp,
-                                                fontWeight = FontWeight.SemiBold,
-                                                color = MaterialTheme.colorScheme.onSurface,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis,
-                                                textAlign = TextAlign.Center
-                                            )
-                                            val totalSize = folderVideos.sumOf { it.size }
-                                            val sizeStr = formatMediaFileSize(totalSize)
-                                            val subtext = if (sizeStr.isNotEmpty()) "${folderVideos.size} files • $sizeStr" else "${folderVideos.size} files"
-                                            Text(
-                                                text = subtext,
-                                                fontSize = 9.5.sp,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
-                                                textAlign = TextAlign.Center,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
+                                        } else {
+                                            onFolderSelect(folderName)
                                         }
-
+                                    },
+                                    onLongClick = {
+                                        onToggleSelectMode(true)
                                         if (isFolderSelected) {
-                                            Box(
-                                                modifier = Modifier
-                                                    .align(Alignment.TopEnd)
-                                                    .size(18.dp)
-                                                    .clip(CircleShape)
-                                                    .background(accentColor),
-                                                contentAlignment = Alignment.Center
-                                            ) {
-                                                Icon(
-                                                    imageVector = Icons.Default.Check,
-                                                    contentDescription = "Selected",
-                                                    tint = MaterialTheme.colorScheme.onPrimary,
-                                                    modifier = Modifier.size(12.dp)
-                                                )
-                                            }
+                                            selectedMediaSet.removeAll(folderVideos.toSet())
+                                        } else {
+                                            selectedMediaSet.addAll(folderVideos)
                                         }
-                                    }
-                                }
+                                    },
+                                    modifier = Modifier.testTag("folder_card_$folderName")
+                                )
                             }
                         }
                     } else {
-                        // Compact Condensed List Layout for Folders
                         LazyColumn(
                             contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 8.dp, bottom = 120.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
                             modifier = Modifier
                                 .fillMaxSize()
                                 .testTag("folder_list_view")
@@ -321,103 +246,38 @@ fun FolderListComponent(
                                 val isFolderSelected = folderVideos.isNotEmpty() && folderVideos.all { file ->
                                     selectedMediaSet.any { it.uriString == file.uriString }
                                 }
+                                val totalSize = folderVideos.sumOf { it.size }
+                                val sizeStr = formatMediaFileSize(totalSize)
+                                val subtext = if (sizeStr.isNotEmpty()) "${folderVideos.size} items • $sizeStr" else "${folderVideos.size} items"
 
-                                Card(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .combinedClickable(
-                                            onClick = {
-                                                if (isSelectModeActive) {
-                                                    if (isFolderSelected) {
-                                                        selectedMediaSet.removeAll(folderVideos.toSet())
-                                                        if (selectedMediaSet.isEmpty()) onToggleSelectMode(false)
-                                                    } else {
-                                                        selectedMediaSet.addAll(folderVideos)
-                                                    }
-                                                } else {
-                                                    onFolderSelect(folderName)
-                                                }
-                                            },
-                                            onLongClick = {
-                                                onToggleSelectMode(true)
-                                                if (isFolderSelected) {
-                                                    selectedMediaSet.removeAll(folderVideos.toSet())
-                                                } else {
-                                                    selectedMediaSet.addAll(folderVideos)
-                                                }
-                                            }
-                                        )
-                                        .testTag("folder_row_$folderName"),
-                                    shape = RoundedCornerShape(12.dp),
-                                    colors = CardDefaults.cardColors(
-                                        containerColor = if (isFolderSelected) accentColor.copy(alpha = 0.14f) else MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.45f)
-                                    ),
-                                    border = null
-                                ) {
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(horizontal = 12.dp, vertical = 7.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                                    ) {
-                                        Box(
-                                            modifier = Modifier
-                                                .size(38.dp)
-                                                .clip(RoundedCornerShape(10.dp))
-                                                .background(accentColor.copy(alpha = 0.12f)),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Icon(
-                                                imageVector = groupIcon,
-                                                contentDescription = null,
-                                                tint = accentColor,
-                                                modifier = Modifier.size(20.dp)
-                                            )
-                                        }
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Text(
-                                                text = folderName,
-                                                fontWeight = FontWeight.SemiBold,
-                                                fontSize = 13.5.sp,
-                                                color = MaterialTheme.colorScheme.onSurface,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                            val totalSize = folderVideos.sumOf { it.size }
-                                            val sizeStr = formatMediaFileSize(totalSize)
-                                            val subtext = if (sizeStr.isNotEmpty()) "${folderVideos.size} items • $sizeStr" else "${folderVideos.size} items"
-                                            Text(
-                                                text = subtext,
-                                                fontSize = 11.sp,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f)
-                                            )
-                                        }
-                                        if (isFolderSelected) {
-                                            Box(
-                                                modifier = Modifier
-                                                    .size(20.dp)
-                                                    .clip(CircleShape)
-                                                    .background(accentColor),
-                                                contentAlignment = Alignment.Center
-                                            ) {
-                                                Icon(
-                                                    imageVector = Icons.Default.Check,
-                                                    contentDescription = "Selected",
-                                                    tint = MaterialTheme.colorScheme.onPrimary,
-                                                    modifier = Modifier.size(13.dp)
-                                                )
+                                AeroExplorerFolderListRow(
+                                    title = folderName,
+                                    subtitle = subtext,
+                                    icon = groupIcon,
+                                    iconTint = accentColor,
+                                    isSelected = isFolderSelected,
+                                    onClick = {
+                                        if (isSelectModeActive) {
+                                            if (isFolderSelected) {
+                                                selectedMediaSet.removeAll(folderVideos.toSet())
+                                                if (selectedMediaSet.isEmpty()) onToggleSelectMode(false)
+                                            } else {
+                                                selectedMediaSet.addAll(folderVideos)
                                             }
                                         } else {
-                                            Icon(
-                                                imageVector = Icons.Default.KeyboardArrowRight,
-                                                contentDescription = null,
-                                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f),
-                                                modifier = Modifier.size(18.dp)
-                                            )
+                                            onFolderSelect(folderName)
                                         }
-                                    }
-                                }
+                                    },
+                                    onLongClick = {
+                                        onToggleSelectMode(true)
+                                        if (isFolderSelected) {
+                                            selectedMediaSet.removeAll(folderVideos.toSet())
+                                        } else {
+                                            selectedMediaSet.addAll(folderVideos)
+                                        }
+                                    },
+                                    modifier = Modifier.testTag("folder_row_$folderName")
+                                )
                             }
                         }
                     }

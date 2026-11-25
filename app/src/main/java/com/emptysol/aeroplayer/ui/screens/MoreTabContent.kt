@@ -45,7 +45,9 @@ fun MoreTabContent(
     onOpenAddStream: () -> Unit,
     onPlayItem: (MediaEntity) -> Unit,
     onDeleteStream: (MediaEntity) -> Unit,
-    onOpenTorrents: () -> Unit = {}
+    onOpenTorrents: () -> Unit = {},
+    onOpenVpnManager: () -> Unit = {},
+    onOpenDownloadManager: () -> Unit = {}
 ) {
     var showEqDialog by remember { mutableStateOf(false) }
     var showFormatSupportDialog by remember { mutableStateOf(false) }
@@ -61,6 +63,7 @@ fun MoreTabContent(
     val prefs by viewModel.preferencesState.collectAsState()
     val torrents by viewModel.torrentsFlow.collectAsState()
     val engineStatus by viewModel.torrentEngineStatus.collectAsState()
+    val inbuiltVpnState by viewModel.inbuiltVpnState.collectAsState()
     val context = LocalContext.current
 
     val bannedFolders = remember(prefs.bannedFoldersJson) {
@@ -143,20 +146,59 @@ fun MoreTabContent(
             )
         }
 
+        Text(
+            text = "Dedicated Managers",
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.primary
+        )
+
         com.emptysol.aeroplayer.ui.components.AeroUtilityCard(
             modifier = Modifier.fillMaxWidth(),
-            title = "P2P Torrent Client & RSS",
+            title = "Torrent Manager",
             subtitle = if (engineStatus.activeCount > 0) {
-                "↓ ${engineStatus.totalDownloadBps / 1024} KB/s • ${engineStatus.activeCount} active"
+                "↓ ${engineStatus.totalDownloadBps / 1024} KB/s • ${engineStatus.activeCount} active • ${if (engineStatus.speedBoostEnabled) "Turbo ON" else "Standard"}"
             } else {
-                "Magnets, .torrent files, RSS, Scheduler & Web UI"
+                "Multi-threaded P2P, Turbo Speed Boost, RSS & Scheduler"
             },
             icon = Icons.Default.CloudDownload,
             accentColor = MaterialTheme.colorScheme.primary,
-            badgeText = if (torrents.isNotEmpty()) "${torrents.size} tasks" else null,
+            badgeText = if (torrents.isNotEmpty()) "${torrents.size} tasks" else if (engineStatus.speedBoostEnabled) "Turbo" else null,
             onClick = onOpenTorrents,
             testTag = "quick_tool_torrents"
         )
+
+        val isVpnActive = engineStatus.vpnStatus.isVpnActive || inbuiltVpnState.isRunning
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            UtilityCard(
+                modifier = Modifier.weight(1f),
+                title = "VPN Manager",
+                subtitle = if (inbuiltVpnState.isRunning) {
+                    "Active • ${inbuiltVpnState.activeProfileName}"
+                } else if (isVpnActive) {
+                    "External VPN Active"
+                } else {
+                    "Inbuilt DNS VPN & Kill-Switch"
+                },
+                icon = if (isVpnActive) Icons.Default.VpnLock else Icons.Default.VpnKey,
+                accentColor = MaterialTheme.colorScheme.secondary,
+                onClick = onOpenVpnManager,
+                testTag = "quick_tool_vpn_manager"
+            )
+
+            UtilityCard(
+                modifier = Modifier.weight(1f),
+                title = "Download Manager",
+                subtitle = "Direct HTTP/HTTPS files",
+                icon = Icons.Default.Download,
+                accentColor = MaterialTheme.colorScheme.tertiary,
+                onClick = onOpenDownloadManager,
+                testTag = "quick_tool_download_manager"
+            )
+        }
 
         // 3. Saved Streams Section
         Row(

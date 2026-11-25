@@ -451,22 +451,21 @@ class RedesignAndOptimizationTest {
     }
 
     @Test
-    fun `TorrentManagerScreen supports opening directly to Inbuilt and Add-On VPN tab`() {
+    fun `VpnManagerScreen exposes Inbuilt DNS VPN profiles and Add-On VPN mode`() {
         val app = ApplicationProvider.getApplicationContext<Application>()
         val vm = MainViewModel(app)
         vm.updateVpnConfig { it.copy(selectedMode = "INBUILT", inbuiltProfileId = "cloudflare") }
 
         composeRule.setContent {
             MaterialTheme {
-                com.emptysol.aeroplayer.ui.screens.TorrentManagerScreen(
+                com.emptysol.aeroplayer.ui.screens.VpnManagerScreen(
                     viewModel = vm,
-                    onBack = {},
-                    onPlayMedia = {},
-                    initialTabKey = "REMOTE_VPN"
+                    onBack = {}
                 )
             }
         }
 
+        composeRule.onNodeWithText("VPN Manager").assertIsDisplayed()
         composeRule.onNodeWithTag("vpn_mode_inbuilt").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithTag("btn_toggle_inbuilt_vpn").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithTag("vpn_profile_adguard").performScrollTo().performClick()
@@ -478,10 +477,37 @@ class RedesignAndOptimizationTest {
     }
 
     @Test
-    fun `MainScreen side drawer exposes dedicated Torrent & VPN Hub and Inbuilt VPN entries`() {
+    fun `DownloadManagerScreen renders URL card and routes to Torrent and VPN managers`() {
         val app = ApplicationProvider.getApplicationContext<Application>()
         val vm = MainViewModel(app)
-        val requestedTabs = mutableListOf<String>()
+        var openedTorrents = false
+        var openedVpn = false
+
+        composeRule.setContent {
+            MaterialTheme {
+                com.emptysol.aeroplayer.ui.screens.DownloadManagerScreen(
+                    viewModel = vm,
+                    onBack = {},
+                    onPlayMedia = {},
+                    onOpenTorrentManager = { openedTorrents = true },
+                    onOpenVpnManager = { openedVpn = true }
+                )
+            }
+        }
+
+        composeRule.onNodeWithText("Download Manager").assertIsDisplayed()
+        composeRule.onNodeWithTag("download_url_card").assertIsDisplayed()
+        composeRule.onNodeWithTag("download_open_torrents_btn").performClick()
+        composeRule.onNodeWithTag("download_open_vpn_btn").performClick()
+        assertTrue(openedTorrents)
+        assertTrue(openedVpn)
+    }
+
+    @Test
+    fun `MainScreen side drawer exposes dedicated Torrent, VPN, and Download Manager entries`() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val vm = MainViewModel(app)
+        val openedManagers = mutableListOf<String>()
 
         composeRule.setContent {
             MaterialTheme {
@@ -490,8 +516,9 @@ class RedesignAndOptimizationTest {
                     onPlayItem = {},
                     onNavigateToSettings = {},
                     onOpenPlayer = {},
-                    onOpenTorrents = {},
-                    onOpenTorrentVpnHub = { tabKey -> requestedTabs.add(tabKey) }
+                    onOpenTorrents = { openedManagers.add("TORRENT") },
+                    onOpenVpnManager = { openedManagers.add("VPN") },
+                    onOpenDownloadManager = { openedManagers.add("DOWNLOAD") }
                 )
             }
         }
@@ -506,7 +533,12 @@ class RedesignAndOptimizationTest {
         composeRule.onNodeWithTag("drawer_inbuilt_vpn_item").performScrollTo().assertIsDisplayed().performClick()
         composeRule.waitForIdle()
 
-        assertEquals(listOf("DOWNLOADS", "REMOTE_VPN"), requestedTabs)
+        composeRule.onNodeWithContentDescription("Open side drawer").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("drawer_download_manager_item").performScrollTo().assertIsDisplayed().performClick()
+        composeRule.waitForIdle()
+
+        assertEquals(listOf("TORRENT", "VPN", "DOWNLOAD"), openedManagers)
     }
 }
 

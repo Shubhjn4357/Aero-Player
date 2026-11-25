@@ -47,11 +47,22 @@ class TrackerAndDhtClient(
     val publicBootstrapDhtNodes = listOf(
         "router.bittorrent.com" to 6881,
         "dht.transmissionbt.com" to 6881,
-        "router.utorrent.com" to 6881
+        "router.utorrent.com" to 6881,
+        "dht.aelitis.com" to 6881,
+        "dht.libtorrent.org" to 25401
+    )
+
+    val publicFallbackTrackers = listOf(
+        "udp://tracker.opentrackr.org:1337/announce",
+        "udp://open.stealth.si:80/announce",
+        "udp://tracker.torrent.eu.org:451/announce",
+        "udp://exodus.desync.com:6969/announce",
+        "udp://tracker.tiny-vps.com:6969/announce",
+        "https://tracker.tamersunion.org:443/announce"
     )
 
     fun generatePeerId(): ByteArray {
-        val prefix = "-AP1460-".toByteArray(StandardCharsets.US_ASCII)
+        val prefix = "-AP1480-".toByteArray(StandardCharsets.US_ASCII)
         val tail = ByteArray(12)
         random.nextBytes(tail)
         return prefix + tail
@@ -107,7 +118,7 @@ class TrackerAndDhtClient(
             append("&downloaded=").append(downloaded)
             append("&left=").append(left.coerceAtLeast(0L))
             append("&compact=1")
-            append("&numwant=60")
+            append("&numwant=200")
             if (!event.isNullOrBlank()) {
                 append("&event=").append(URLEncoder.encode(event, "UTF-8"))
             }
@@ -115,7 +126,7 @@ class TrackerAndDhtClient(
 
         val req = Request.Builder()
             .url(url)
-            .header("User-Agent", "AeroPlayer/1.4.6")
+            .header("User-Agent", "AeroPlayer/1.4.8")
             .get()
             .build()
 
@@ -169,7 +180,7 @@ class TrackerAndDhtClient(
         val addr = InetAddress.getByName(host)
 
         DatagramSocket().use { socket ->
-            socket.soTimeout = 4500
+            socket.soTimeout = 2500
             val txId = random.nextInt()
 
             // Step 1: Connect Request (BEP-15)
@@ -214,7 +225,7 @@ class TrackerAndDhtClient(
                 putInt(eventCode)
                 putInt(0) // IP address default
                 putInt(random.nextInt()) // key
-                putInt(60) // num_want
+                putInt(200) // num_want
                 putShort(listenPort.toShort())
             }.array()
             socket.send(DatagramPacket(annReq, annReq.size, addr, port))
@@ -260,8 +271,8 @@ class TrackerAndDhtClient(
 
         try {
             DatagramSocket().use { socket ->
-                socket.soTimeout = 2000
-                while (nodesQueue.isNotEmpty() && queriesSent < 10 && discoveredPeers.size < 40) {
+                socket.soTimeout = 1200
+                while (nodesQueue.isNotEmpty() && queriesSent < 28 && discoveredPeers.size < 150) {
                     val (host, port) = nodesQueue.removeFirst()
                     val nodeKey = "$host:$port"
                     if (!visitedNodes.add(nodeKey)) continue

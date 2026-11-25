@@ -71,7 +71,9 @@ enum class SettingsSubScreen {
 fun SettingsScreen(
     viewModel: MainViewModel,
     onBack: () -> Unit,
-    onOpenTorrents: () -> Unit = {}
+    onOpenTorrents: () -> Unit = {},
+    onOpenVpnManager: () -> Unit = {},
+    onOpenDownloadManager: () -> Unit = {}
 ) {
     val prefs by viewModel.preferencesState.collectAsState()
     val context = LocalContext.current
@@ -227,7 +229,9 @@ fun SettingsScreen(
                                 onOpenPermissionsDialog = { showPermissionsDialog = true },
                                 onNavigateTo = { currentSubScreen = it },
                                 onOpenAbout = { showAboutDialog = true },
-                                onOpenTorrents = onOpenTorrents
+                                onOpenTorrents = onOpenTorrents,
+                                onOpenVpnManager = onOpenVpnManager,
+                                onOpenDownloadManager = onOpenDownloadManager
                             )
                         }
                         SettingsSubScreen.VIDEO -> {
@@ -670,7 +674,9 @@ private fun MainSettingsContent(
     onOpenPermissionsDialog: () -> Unit,
     onNavigateTo: (SettingsSubScreen) -> Unit,
     onOpenAbout: () -> Unit,
-    onOpenTorrents: () -> Unit
+    onOpenTorrents: () -> Unit,
+    onOpenVpnManager: () -> Unit = {},
+    onOpenDownloadManager: () -> Unit = {}
 ) {
     val context = LocalContext.current
     var showEngineDialog by remember { mutableStateOf(false) }
@@ -769,11 +775,27 @@ private fun MainSettingsContent(
         )
 
         com.emptysol.aeroplayer.ui.components.AeroNavigationItem(
-            title = "Torrent, RSS, Scheduler & Remote Web UI",
-            subtitle = "Manage P2P speeds, IP filters, safety scans & CyberGhost VPN",
+            title = "Torrent Manager",
+            subtitle = "Multi-threaded P2P, Turbo Speed Boost, RSS & Scheduler",
             icon = Icons.Default.CloudDownload,
             onClick = onOpenTorrents,
             testTag = "settings_open_torrents"
+        )
+
+        com.emptysol.aeroplayer.ui.components.AeroNavigationItem(
+            title = "VPN Manager",
+            subtitle = "Inbuilt Privacy DNS VPN, Add-On VPNs, Kill-Switch & Remote LAN",
+            icon = Icons.Default.VpnLock,
+            onClick = onOpenVpnManager,
+            testTag = "settings_open_vpn_manager"
+        )
+
+        com.emptysol.aeroplayer.ui.components.AeroNavigationItem(
+            title = "Download Manager",
+            subtitle = "Manage direct HTTP/HTTPS downloads & 1-tap playback",
+            icon = Icons.Default.Download,
+            onClick = onOpenDownloadManager,
+            testTag = "settings_open_download_manager"
         )
 
         com.emptysol.aeroplayer.ui.components.AeroSwitchItem(

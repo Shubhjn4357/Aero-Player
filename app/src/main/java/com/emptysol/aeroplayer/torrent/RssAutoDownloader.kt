@@ -34,7 +34,7 @@ class RssAutoDownloader(
         return try {
             val req = Request.Builder()
                 .url(feedUrl.trim())
-                .header("User-Agent", "AeroPlayer-RSS/1.4.6")
+                .header("User-Agent", "AeroPlayer-RSS/1.4.8")
                 .get()
                 .build()
             val xml = okHttpClient.newCall(req).execute().use { resp ->

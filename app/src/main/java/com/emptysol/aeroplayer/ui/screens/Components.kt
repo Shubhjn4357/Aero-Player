@@ -134,14 +134,13 @@ object ThumbnailManager {
             val contentUri = Uri.parse(item.uriString)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 try {
-                    val bmp = context.contentResolver.loadThumbnail(contentUri, android.util.Size(240, 240), null)
-                    if (bmp != null) return bmp
-                } catch (e: Throwable) {}
-            }
-            if (item.isVideo && item.uriString.contains("/video/media/")) {
+                    return context.contentResolver.loadThumbnail(contentUri, android.util.Size(240, 240), null)
+                } catch (_: Throwable) {}
+            } else if (item.isVideo && item.uriString.contains("/video/media/")) {
                 val id = item.uriString.substringAfterLast('/').toLongOrNull()
                 if (id != null) {
                     try {
+                        @Suppress("DEPRECATION")
                         val bmp = android.provider.MediaStore.Video.Thumbnails.getThumbnail(
                             context.contentResolver,
                             id,
@@ -149,7 +148,7 @@ object ThumbnailManager {
                             null
                         )
                         if (bmp != null) return bmp
-                    } catch (e: Throwable) {}
+                    } catch (_: Throwable) {}
                 }
             }
         }
@@ -160,9 +159,8 @@ object ThumbnailManager {
             if (file.exists() && file.canRead()) {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     try {
-                        val bmp = android.media.ThumbnailUtils.createVideoThumbnail(file, android.util.Size(240, 240), null)
-                        if (bmp != null) return bmp
-                    } catch (e: Throwable) {}
+                        return android.media.ThumbnailUtils.createVideoThumbnail(file, android.util.Size(240, 240), null)
+                    } catch (_: Throwable) {}
                 }
                 try {
                     @Suppress("DEPRECATION")
@@ -171,7 +169,7 @@ object ThumbnailManager {
                         android.provider.MediaStore.Images.Thumbnails.MINI_KIND
                     )
                     if (bmp != null) return bmp
-                } catch (e: Throwable) {}
+                } catch (_: Throwable) {}
             }
         }
 

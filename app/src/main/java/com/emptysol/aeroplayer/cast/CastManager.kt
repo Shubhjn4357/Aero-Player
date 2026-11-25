@@ -247,59 +247,93 @@ class CastManager private constructor(private val context: Context) {
         val next = resolveQueue.poll() ?: return
         isResolving = true
 
-        try {
-            nsdManager.resolveService(next, object : NsdManager.ResolveListener {
-                override fun onResolveFailed(serviceInfo: NsdServiceInfo?, errorCode: Int) {
-                    Log.w(TAG, "Resolve failed for ${serviceInfo?.serviceName}: code $errorCode")
-                    isResolving = false
-                    processNextResolve()
+        val handleResolved: (NsdServiceInfo, String?) -> Unit = { resolved, resolvedHost ->
+            try {
+                if (resolvedHost != null) {
+                    val port = resolved.port
+                    val serviceName = resolved.serviceName
+
+                    // Extract friendly name and model name from TXT records (Google Cast uses 'fn' and 'md')
+                    var friendlyName = serviceName
+                    var model = "Google Cast"
+                    val attrs = resolved.attributes
+                    val fnBytes = attrs["fn"]
+                    if (fnBytes != null && fnBytes.isNotEmpty()) {
+                        friendlyName = String(fnBytes, Charsets.UTF_8)
+                    }
+                    val mdBytes = attrs["md"]
+                    if (mdBytes != null && mdBytes.isNotEmpty()) {
+                        model = String(mdBytes, Charsets.UTF_8)
+                    }
+
+                    val id = "cast_${resolvedHost}_$port"
+                    val device = CastDevice(
+                        id = id,
+                        name = friendlyName,
+                        ipAddress = resolvedHost,
+                        port = port,
+                        protocol = "Google Cast",
+                        model = model,
+                        serviceType = resolved.serviceType ?: GOOGLE_CAST_SERVICE_TYPE
+                    )
+
+                    devicesMap[id] = device
+                    updateDeviceState()
+                    Log.i(TAG, "Successfully resolved Cast device: $friendlyName at $resolvedHost:$port ($model)")
                 }
+            } catch (e: Exception) {
+                Log.w(TAG, "Error handling resolved NSD service: ${e.message}")
+            }
+        }
 
-                override fun onServiceResolved(resolved: NsdServiceInfo) {
-                    try {
-                        val host = resolved.host?.hostAddress ?: return
-                        val port = resolved.port
-                        val serviceName = resolved.serviceName
-
-                        // Extract friendly name and model name from TXT records (Google Cast uses 'fn' and 'md')
-                        var friendlyName = serviceName
-                        var model = "Google Cast"
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                            val attrs = resolved.attributes
-                            val fnBytes = attrs["fn"]
-                            if (fnBytes != null && fnBytes.isNotEmpty()) {
-                                friendlyName = String(fnBytes, Charsets.UTF_8)
-                            }
-                            val mdBytes = attrs["md"]
-                            if (mdBytes != null && mdBytes.isNotEmpty()) {
-                                model = String(mdBytes, Charsets.UTF_8)
-                            }
-                        }
-
-                        val id = "cast_${host}_$port"
-                        val device = CastDevice(
-                            id = id,
-                            name = friendlyName,
-                            ipAddress = host,
-                            port = port,
-                            protocol = "Google Cast",
-                            model = model,
-                            serviceType = resolved.serviceType ?: GOOGLE_CAST_SERVICE_TYPE
-                        )
-
-                        devicesMap[id] = device
-                        updateDeviceState()
-                        Log.i(TAG, "Successfully resolved Cast device: $friendlyName at $host:$port ($model)")
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Error processing resolved service: ${e.message}")
-                    } finally {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                var callbackRef: NsdManager.ServiceInfoCallback? = null
+                val callback = object : NsdManager.ServiceInfoCallback {
+                    override fun onServiceInfoCallbackRegistrationFailed(errorCode: Int) {
                         isResolving = false
                         processNextResolve()
                     }
+
+                    override fun onServiceUpdated(resolved: NsdServiceInfo) {
+                        val hostAddr = resolved.hostAddresses.firstOrNull()?.hostAddress
+                        handleResolved(resolved, hostAddr)
+                        try {
+                            callbackRef?.let { nsdManager.unregisterServiceInfoCallback(it) }
+                        } catch (_: Exception) {}
+                        isResolving = false
+                        processNextResolve()
+                    }
+
+                    override fun onServiceLost() {
+                        isResolving = false
+                        processNextResolve()
+                    }
+
+                    override fun onServiceInfoCallbackUnregistered() {}
                 }
-            })
+                callbackRef = callback
+                nsdManager.registerServiceInfoCallback(next, { runnable -> runnable.run() }, callback)
+            } else {
+                @Suppress("DEPRECATION")
+                nsdManager.resolveService(next, object : NsdManager.ResolveListener {
+                    override fun onResolveFailed(serviceInfo: NsdServiceInfo?, errorCode: Int) {
+                        Log.w(TAG, "Resolve failed for ${serviceInfo?.serviceName}: code $errorCode")
+                        isResolving = false
+                        processNextResolve()
+                    }
+
+                    override fun onServiceResolved(resolved: NsdServiceInfo) {
+                        @Suppress("DEPRECATION")
+                        val hostAddr = resolved.host?.hostAddress
+                        handleResolved(resolved, hostAddr)
+                        isResolving = false
+                        processNextResolve()
+                    }
+                })
+            }
         } catch (e: Exception) {
-            Log.w(TAG, "Exception during resolveService: ${e.message}")
+            Log.w(TAG, "Exception starting NSD resolve: ${e.message}")
             isResolving = false
             processNextResolve()
         }

@@ -91,7 +91,9 @@ fun MainScreen(
     onNavigateToSettings: () -> Unit,
     onOpenPlayer: () -> Unit = {},
     onOpenTorrents: () -> Unit = {},
-    onOpenTorrentVpnHub: (String) -> Unit = { onOpenTorrents() }
+    onOpenTorrentVpnHub: (String) -> Unit = { onOpenTorrents() },
+    onOpenVpnManager: () -> Unit = { onOpenTorrentVpnHub("REMOTE_VPN") },
+    onOpenDownloadManager: () -> Unit = {}
 ) {
     val selectedTab by viewModel.selectedTab.collectAsState()
     val playSubTab by viewModel.playSubTab.collectAsState()
@@ -469,7 +471,7 @@ fun MainScreen(
                             drawerState.close()
                         }
                     },
-                    icon = { Icon(Icons.Default.QueueMusic, contentDescription = null) },
+                    icon = { Icon(Icons.AutoMirrored.Filled.QueueMusic, contentDescription = null) },
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
                     colors = NavigationDrawerItemDefaults.colors(
                         selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
@@ -500,7 +502,7 @@ fun MainScreen(
                 HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp, horizontal = 16.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f))
 
                 Text(
-                    text = "Downloads & Privacy VPN",
+                    text = "Managers & Privacy",
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f),
@@ -509,21 +511,21 @@ fun MainScreen(
 
                 val isDrawerVpnActive = torrentEngineStatus.vpnStatus.isVpnActive || inbuiltVpnState.isRunning
                 NavigationDrawerItem(
-                    label = { Text("Torrent & VPN Hub", fontWeight = FontWeight.SemiBold) },
+                    label = { Text("Torrent Manager", fontWeight = FontWeight.SemiBold) },
                     selected = false,
                     onClick = {
                         scope.launch {
                             drawerState.close()
-                            onOpenTorrentVpnHub("DOWNLOADS")
+                            onOpenTorrents()
                         }
                     },
-                    icon = { Icon(Icons.Default.DownloadForOffline, contentDescription = "Torrent & VPN Hub") },
+                    icon = { Icon(Icons.Default.CloudDownload, contentDescription = "Torrent Manager") },
                     badge = {
                         Text(
-                            text = if (isDrawerVpnActive) "VPN ON" else "Torrents",
+                            text = if (torrentEngineStatus.activeCount > 0) "${torrentEngineStatus.activeCount} active" else if (torrentEngineStatus.speedBoostEnabled) "Turbo" else "P2P",
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold,
-                            color = if (isDrawerVpnActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                            color = if (torrentEngineStatus.activeCount > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     },
                     modifier = Modifier
@@ -532,18 +534,18 @@ fun MainScreen(
                 )
 
                 NavigationDrawerItem(
-                    label = { Text("Inbuilt & Add-On VPN", fontWeight = FontWeight.SemiBold) },
+                    label = { Text("VPN Manager", fontWeight = FontWeight.SemiBold) },
                     selected = false,
                     onClick = {
                         scope.launch {
                             drawerState.close()
-                            onOpenTorrentVpnHub("REMOTE_VPN")
+                            onOpenVpnManager()
                         }
                     },
                     icon = {
                         Icon(
                             imageVector = if (isDrawerVpnActive) Icons.Default.VpnLock else Icons.Default.VpnKey,
-                            contentDescription = "Inbuilt and Add-On VPN",
+                            contentDescription = "VPN Manager",
                             tint = if (isDrawerVpnActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     },
@@ -558,6 +560,29 @@ fun MainScreen(
                     modifier = Modifier
                         .padding(horizontal = 12.dp, vertical = 4.dp)
                         .testTag("drawer_inbuilt_vpn_item")
+                )
+
+                NavigationDrawerItem(
+                    label = { Text("Download Manager", fontWeight = FontWeight.SemiBold) },
+                    selected = false,
+                    onClick = {
+                        scope.launch {
+                            drawerState.close()
+                            onOpenDownloadManager()
+                        }
+                    },
+                    icon = { Icon(Icons.Default.Download, contentDescription = "Download Manager") },
+                    badge = {
+                        Text(
+                            text = "HTTP",
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    },
+                    modifier = Modifier
+                        .padding(horizontal = 12.dp, vertical = 4.dp)
+                        .testTag("drawer_download_manager_item")
                 )
 
                 HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp, horizontal = 16.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f))
@@ -723,7 +748,7 @@ fun MainScreen(
                                                 isSelectModeActive = false
                                                 selectedMediaSet.clear()
                                             }) {
-                                                Icon(Icons.Default.PlaylistAdd, contentDescription = "Add to Queue", tint = accentOrange)
+                                                Icon(Icons.AutoMirrored.Filled.PlaylistAdd, contentDescription = "Add to Queue", tint = accentOrange)
                                             }
                                             IconButton(onClick = {
                                                 mediaToDelete = selectedItem
@@ -746,7 +771,7 @@ fun MainScreen(
                                                 isSelectModeActive = false
                                                 selectedMediaSet.clear()
                                             }) {
-                                                Icon(Icons.Default.PlaylistAdd, contentDescription = "Queue Selected", tint = accentOrange)
+                                                Icon(Icons.AutoMirrored.Filled.PlaylistAdd, contentDescription = "Queue Selected", tint = accentOrange)
                                             }
                                             IconButton(onClick = {
                                                 multiMediaToDelete = selectedMediaSet.toList()
@@ -781,7 +806,7 @@ fun MainScreen(
                                             }
                                             viewModel.clearSelection()
                                         }, enabled = allMedia.isNotEmpty()) {
-                                            Icon(Icons.Default.PlaylistAdd, contentDescription = "Queue Selected", tint = if (allMedia.isNotEmpty()) accentOrange else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f))
+                                            Icon(Icons.AutoMirrored.Filled.PlaylistAdd, contentDescription = "Queue Selected", tint = if (allMedia.isNotEmpty()) accentOrange else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f))
                                         }
                                         IconButton(onClick = {
                                             if (allMedia.isNotEmpty()) {
@@ -852,7 +877,7 @@ fun MainScreen(
                                             )
                                             DropdownMenuItem(
                                                 text = { Text("Add to Playlist") },
-                                                leadingIcon = { Icon(Icons.Default.PlaylistAdd, contentDescription = null) },
+                                                leadingIcon = { Icon(Icons.AutoMirrored.Filled.PlaylistAdd, contentDescription = null) },
                                                 onClick = {
                                                     showSelectionMoreMenu = false
                                                     val items = if (isSelectModeActive) selectedMediaSet.toList() else {
@@ -1064,7 +1089,7 @@ fun MainScreen(
                                         ) {
                                             DropdownMenuItem(
                                                 text = { Text(if (prefs.listStyle == "Grid") "List View" else "Grid View") },
-                                                leadingIcon = { Icon(if (prefs.listStyle == "Grid") Icons.Default.List else Icons.Default.GridView, contentDescription = null) },
+                                                leadingIcon = { Icon(if (prefs.listStyle == "Grid") Icons.AutoMirrored.Filled.List else Icons.Default.GridView, contentDescription = null) },
                                                 onClick = {
                                                     val newStyle = if (prefs.listStyle == "Grid") "List" else "Grid"
                                                     viewModel.updateListStyle(newStyle)
@@ -1073,7 +1098,7 @@ fun MainScreen(
                                             )
                                             DropdownMenuItem(
                                                 text = { Text("Queue All") },
-                                                leadingIcon = { Icon(Icons.Default.PlaylistAdd, contentDescription = null) },
+                                                leadingIcon = { Icon(Icons.AutoMirrored.Filled.PlaylistAdd, contentDescription = null) },
                                                 onClick = {
                                                     showFolderMenu = false
                                                     viewModel.addToQueue(activeFolderFiles)
@@ -1101,7 +1126,7 @@ fun MainScreen(
                                             )
                                             DropdownMenuItem(
                                                 text = { Text("Add to Playlist") },
-                                                leadingIcon = { Icon(Icons.Default.PlaylistAdd, contentDescription = null) },
+                                                leadingIcon = { Icon(Icons.AutoMirrored.Filled.PlaylistAdd, contentDescription = null) },
                                                 onClick = {
                                                     showFolderMenu = false
                                                     if (activeFolderFiles.isNotEmpty()) {
@@ -1264,7 +1289,7 @@ fun MainScreen(
                                         DropdownMenu(expanded = showBrowseMoreMenu, onDismissRequest = { showBrowseMoreMenu = false }) {
                                             DropdownMenuItem(
                                                 text = { Text(if (prefs.listStyle == "Grid") "List View" else "Grid View") },
-                                                leadingIcon = { Icon(if (prefs.listStyle == "Grid") Icons.Default.List else Icons.Default.GridView, contentDescription = null) },
+                                                leadingIcon = { Icon(if (prefs.listStyle == "Grid") Icons.AutoMirrored.Filled.List else Icons.Default.GridView, contentDescription = null) },
                                                 onClick = {
                                                     val newStyle = if (prefs.listStyle == "Grid") "List" else "Grid"
                                                     viewModel.updateListStyle(newStyle)
@@ -1274,7 +1299,7 @@ fun MainScreen(
                                             if (activeBrowseMediaFiles.isNotEmpty()) {
                                                 DropdownMenuItem(
                                                     text = { Text("Queue All") },
-                                                    leadingIcon = { Icon(Icons.Default.PlaylistAdd, contentDescription = null) },
+                                                    leadingIcon = { Icon(Icons.AutoMirrored.Filled.PlaylistAdd, contentDescription = null) },
                                                     onClick = {
                                                         showBrowseMoreMenu = false
                                                         viewModel.addToQueue(activeBrowseMediaFiles)
@@ -1363,7 +1388,7 @@ fun MainScreen(
                                         modifier = Modifier.testTag("root_header_layout_toggle")
                                     ) {
                                         Icon(
-                                            imageVector = if (prefs.listStyle == "Grid") Icons.Default.List else Icons.Default.GridView,
+                                            imageVector = if (prefs.listStyle == "Grid") Icons.AutoMirrored.Filled.List else Icons.Default.GridView,
                                             contentDescription = "Toggle Grid/List View",
                                             tint = MaterialTheme.colorScheme.primary
                                         )
@@ -1387,7 +1412,7 @@ fun MainScreen(
                                         ) {
                                             DropdownMenuItem(
                                                 text = { Text("Sort & View") },
-                                                leadingIcon = { Icon(Icons.Default.Sort, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
+                                                leadingIcon = { Icon(Icons.AutoMirrored.Filled.Sort, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
                                                 onClick = {
                                                     showRootMoreMenu = false
                                                     showDisplaySettingsBottomSheet = true
@@ -2134,7 +2159,9 @@ fun MainScreen(
                                 onOpenAddStream = { showAddStreamDrawer = true },
                                 onPlayItem = { onPlayItem(it) },
                                 onDeleteStream = { mediaToDelete = it },
-                                onOpenTorrents = onOpenTorrents
+                                onOpenTorrents = onOpenTorrents,
+                                onOpenVpnManager = onOpenVpnManager,
+                                onOpenDownloadManager = onOpenDownloadManager
                             )
                         }
                     }
@@ -2332,7 +2359,7 @@ fun MainScreen(
                         border = BorderStroke(1.dp, if (!prefs.useGroupWiseFolderStyle) MaterialTheme.colorScheme.primary else Color.Transparent)
                     ) {
                         Row(modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Icon(Icons.Default.List, contentDescription = null, modifier = Modifier.size(16.dp), tint = if (!prefs.useGroupWiseFolderStyle) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                            Icon(Icons.AutoMirrored.Filled.List, contentDescription = null, modifier = Modifier.size(16.dp), tint = if (!prefs.useGroupWiseFolderStyle) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
                             Text("List Folders", color = MaterialTheme.colorScheme.onSurface, fontSize = 12.sp, fontWeight = FontWeight.Medium)
                         }
                     }
@@ -2375,7 +2402,7 @@ fun MainScreen(
                         border = BorderStroke(1.dp, if (prefs.listStyle != "Grid") MaterialTheme.colorScheme.primary else Color.Transparent)
                     ) {
                         Row(modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Icon(Icons.Default.List, contentDescription = null, modifier = Modifier.size(16.dp), tint = if (prefs.listStyle != "Grid") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                            Icon(Icons.AutoMirrored.Filled.List, contentDescription = null, modifier = Modifier.size(16.dp), tint = if (prefs.listStyle != "Grid") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
                             Text("List Files", color = MaterialTheme.colorScheme.onSurface, fontSize = 12.sp, fontWeight = FontWeight.Medium)
                         }
                     }
@@ -2726,7 +2753,7 @@ fun MainScreen(
                         selectedMediaForOptions = null
                     }))
                     
-                    list.add(Triple("Add to Play Queue", Icons.Default.PlaylistAdd, {
+                    list.add(Triple("Add to Play Queue", Icons.AutoMirrored.Filled.PlaylistAdd, {
                         viewModel.addToQueue(listOf(media))
                         selectedMediaForOptions = null
                     }))
@@ -2743,7 +2770,7 @@ fun MainScreen(
                         selectedMediaForOptions = null
                     }))
                     
-                    list.add(Triple("Add to Playlist...", Icons.Default.QueueMusic, {
+                    list.add(Triple("Add to Playlist...", Icons.AutoMirrored.Filled.QueueMusic, {
                         showPlaylistPickerForMedia = media
                         selectedMediaForOptions = null
                     }))
@@ -2783,7 +2810,7 @@ fun MainScreen(
                         }))
                     }
                     
-                    list.add(Triple("Add Home Shortcut", Icons.Default.Shortcut, {
+                    list.add(Triple("Add Home Shortcut", Icons.AutoMirrored.Filled.Shortcut, {
                         try {
                             val shortcutSupported = androidx.core.content.pm.ShortcutManagerCompat.isRequestPinShortcutSupported(context)
                             if (shortcutSupported) {
@@ -3064,7 +3091,7 @@ fun MainScreen(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.Center
                         ) {
-                            Icon(Icons.Default.PlaylistAdd, contentDescription = null, tint = MaterialTheme.colorScheme.onSecondaryContainer, modifier = Modifier.size(20.dp))
+                            Icon(Icons.AutoMirrored.Filled.PlaylistAdd, contentDescription = null, tint = MaterialTheme.colorScheme.onSecondaryContainer, modifier = Modifier.size(20.dp))
                             Spacer(modifier = Modifier.width(8.dp))
                             Text("Queue All", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSecondaryContainer)
                         }
@@ -3083,7 +3110,7 @@ fun MainScreen(
                     item {
                         FolderOptionRow(
                             label = "Add to Playlist...",
-                            icon = Icons.Default.QueueMusic,
+                            icon = Icons.AutoMirrored.Filled.QueueMusic,
                             description = "Add all files in this folder to a new or existing playlist.",
                             onClick = {
                                 showPlaylistPickerForFolder = items
@@ -3212,7 +3239,7 @@ fun MainScreen(
                                             horizontalArrangement = Arrangement.SpaceBetween
                                         ) {
                                             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                                Icon(Icons.Default.QueueMusic, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                                                Icon(Icons.AutoMirrored.Filled.QueueMusic, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
                                                 Text(name, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
                                             }
                                             Text("${tracks.size} items", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f))
@@ -3317,7 +3344,7 @@ fun MainScreen(
                                             horizontalArrangement = Arrangement.SpaceBetween
                                         ) {
                                             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                                Icon(Icons.Default.QueueMusic, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                                                Icon(Icons.AutoMirrored.Filled.QueueMusic, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
                                                 Text(name, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
                                             }
                                             Text("${tracks.size} items", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f))
@@ -5165,7 +5192,7 @@ fun GroupHeaderRow(
                 animationSpec = spring(stiffness = Spring.StiffnessLow)
             )
             Icon(
-                imageVector = Icons.Default.KeyboardArrowRight,
+                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
                 contentDescription = if (isExpanded) "Collapse" else "Expand",
                 tint = MaterialTheme.colorScheme.primary,
                 modifier = Modifier
@@ -5216,7 +5243,7 @@ fun GroupHeaderRow(
                 modifier = Modifier.size(36.dp)
             ) {
                 Icon(
-                    imageVector = Icons.Default.PlaylistAdd,
+                    imageVector = Icons.AutoMirrored.Filled.PlaylistAdd,
                     contentDescription = "Queue All",
                     tint = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.size(20.dp)
@@ -5239,145 +5266,51 @@ fun BrowseFileCard(
     onItemClick: () -> Unit,
     onItemLongClick: () -> Unit
 ) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .combinedClickable(
-                onClick = onItemClick,
-                onLongClick = onItemLongClick
-            ),
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = if (isItemSelected) accentOrange.copy(alpha = 0.25f) else if (isDir) {
-                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (isGrid) 0.25f else 0.2f)
-            } else {
-                MaterialTheme.colorScheme.surface.copy(alpha = 0.7f)
-            }
-        ),
-        border = BorderStroke(
-            if (isItemSelected) 2.dp else 1.dp,
-            if (isItemSelected) accentOrange else MaterialTheme.colorScheme.outline.copy(alpha = 0.12f)
-        )
-    ) {
-        if (isGrid) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(12.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.TopEnd) {
-                    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                        Icon(
-                            imageVector = when {
-                                isDir -> Icons.Default.Folder
-                                isVideo -> Icons.Default.Movie
-                                else -> Icons.Default.MusicNote
-                            },
-                            contentDescription = null,
-                            tint = when {
-                                isDir -> MaterialTheme.colorScheme.primary
-                                isVideo -> MaterialTheme.colorScheme.secondary
-                                else -> MaterialTheme.colorScheme.tertiary
-                            },
-                            modifier = Modifier.size(36.dp)
-                        )
-                    }
-                    if (isItemSelected) {
-                        Box(
-                            modifier = Modifier
-                                .size(20.dp)
-                                .clip(CircleShape)
-                                .background(accentOrange),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(Icons.Default.Check, contentDescription = "Selected", tint = Color.White, modifier = Modifier.size(12.dp))
-                        }
-                    }
-                }
-                Text(
-                    text = file.name,
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 12.sp,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                )
-                val detailsText = if (isDir) {
-                    val count = try { file.list()?.size ?: 0 } catch (e: Exception) { 0 }
-                    "$count items"
-                } else {
-                    val sizeMb = file.length().toFloat() / (1024 * 1024)
-                    String.format("%.1f MB", sizeMb)
-                }
-                Text(
-                    text = detailsText,
-                    fontSize = 10.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-                )
-            }
+    val itemIcon = when {
+        isDir -> Icons.Default.Folder
+        isVideo -> Icons.Default.Movie
+        isAudio -> Icons.Default.MusicNote
+        else -> Icons.AutoMirrored.Filled.InsertDriveFile
+    }
+    val itemTint = when {
+        isDir -> accentOrange
+        isVideo -> MaterialTheme.colorScheme.secondary
+        isAudio -> MaterialTheme.colorScheme.tertiary
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    val detailsText = remember(file.absolutePath, isDir) {
+        if (isDir) {
+            val count = try { file.list()?.size ?: 0 } catch (_: Exception) { 0 }
+            "$count items"
         } else {
-            Row(
-                modifier = Modifier.padding(12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Icon(
-                    imageVector = when {
-                        isDir -> Icons.Default.Folder
-                        isVideo -> Icons.Default.Movie
-                        else -> Icons.Default.MusicNote
-                    },
-                    contentDescription = null,
-                    tint = when {
-                        isDir -> MaterialTheme.colorScheme.primary
-                        isVideo -> MaterialTheme.colorScheme.secondary
-                        else -> MaterialTheme.colorScheme.tertiary
-                    },
-                    modifier = Modifier.size(28.dp)
-                )
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = file.name,
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 13.sp,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    val detailsText = if (isDir) {
-                        val count = try { file.list()?.size ?: 0 } catch(e:Exception) { 0 }
-                        "$count items"
-                    } else {
-                        val sizeMb = file.length().toFloat() / (1024 * 1024)
-                        String.format("%.1f MB", sizeMb)
-                    }
-                    Text(
-                        text = detailsText,
-                        fontSize = 10.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-                    )
-                }
-                if (isItemSelected) {
-                    Box(
-                        modifier = Modifier
-                            .size(22.dp)
-                            .clip(CircleShape)
-                            .background(accentOrange),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(Icons.Default.Check, contentDescription = "Selected", tint = Color.White, modifier = Modifier.size(14.dp))
-                    }
-                } else if (isDir) {
-                    Icon(
-                        imageVector = Icons.Default.KeyboardArrowRight,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-            }
+            val sizeStr = formatMediaFileSize(file.length())
+            val ext = file.extension.uppercase()
+            if (ext.isNotEmpty() && sizeStr.isNotEmpty()) "$ext • $sizeStr" else sizeStr.ifEmpty { ext }
         }
+    }
+
+    if (isGrid) {
+        com.emptysol.aeroplayer.ui.components.AeroExplorerFolderGridCard(
+            title = file.name,
+            subtitle = detailsText,
+            icon = itemIcon,
+            badgeText = if (!isDir) file.extension.uppercase().takeIf { it.isNotEmpty() } else null,
+            iconTint = itemTint,
+            isSelected = isItemSelected,
+            onClick = onItemClick,
+            onLongClick = onItemLongClick
+        )
+    } else {
+        com.emptysol.aeroplayer.ui.components.AeroExplorerFolderListRow(
+            title = file.name,
+            subtitle = detailsText,
+            icon = itemIcon,
+            iconTint = itemTint,
+            isSelected = isItemSelected,
+            showChevron = isDir,
+            onClick = onItemClick,
+            onLongClick = onItemLongClick
+        )
     }
 }
 
@@ -5548,7 +5481,7 @@ fun BrowseTabContent(
                                 },
                                 colors = IconButtonDefaults.iconButtonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
                             ) {
-                                Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                             }
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
@@ -5686,7 +5619,7 @@ fun BrowseTabContent(
                                 },
                                 colors = IconButtonDefaults.iconButtonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
                             ) {
-                                Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                             }
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
@@ -6341,7 +6274,7 @@ fun StreamOnlyTabContent(
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Icon(
-                                        imageVector = if (com.emptysol.aeroplayer.util.StreamPlaylistParser.isPlaylistUrl(streamItem.uriString, streamItem.mimeType)) Icons.Default.PlaylistPlay else Icons.Default.Tv,
+                                        imageVector = if (com.emptysol.aeroplayer.util.StreamPlaylistParser.isPlaylistUrl(streamItem.uriString, streamItem.mimeType)) Icons.AutoMirrored.Filled.PlaylistPlay else Icons.Default.Tv,
                                         contentDescription = null,
                                         tint = MaterialTheme.colorScheme.primary,
                                         modifier = Modifier.size(20.dp)
@@ -6370,7 +6303,7 @@ fun StreamOnlyTabContent(
                                     onClick = { playlistSheetStream = streamItem }
                                 ) {
                                     Icon(
-                                        imageVector = Icons.Default.FormatListBulleted,
+                                        imageVector = Icons.AutoMirrored.Filled.FormatListBulleted,
                                         contentDescription = "View Playlist Channels",
                                         tint = MaterialTheme.colorScheme.primary,
                                         modifier = Modifier.size(20.dp)
@@ -6485,7 +6418,7 @@ fun PlaylistTabContent(
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (selectedPlaylistName != null) {
                     IconButton(onClick = { selectedPlaylistName = null }) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Back to Playlists")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to Playlists")
                     }
                 } else {
                     Button(
@@ -6517,7 +6450,7 @@ fun PlaylistTabContent(
                         modifier = Modifier.padding(24.dp)
                     ) {
                         Icon(
-                            imageVector = Icons.Default.QueueMusic,
+                            imageVector = Icons.AutoMirrored.Filled.QueueMusic,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.3f),
                             modifier = Modifier.size(72.dp)
@@ -6617,7 +6550,7 @@ fun PlaylistTabContent(
                         modifier = Modifier.padding(24.dp)
                     ) {
                         Icon(
-                            imageVector = Icons.Default.PlaylistAdd,
+                            imageVector = Icons.AutoMirrored.Filled.PlaylistAdd,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.3f),
                             modifier = Modifier.size(72.dp)
@@ -6677,7 +6610,7 @@ fun PlaylistTabContent(
                                         contentAlignment = Alignment.Center
                                     ) {
                                         Icon(
-                                            imageVector = Icons.Default.QueueMusic,
+                                            imageVector = Icons.AutoMirrored.Filled.QueueMusic,
                                             contentDescription = null,
                                             tint = MaterialTheme.colorScheme.onPrimaryContainer,
                                             modifier = Modifier.size(24.dp)

@@ -742,7 +742,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * Debounced queue step for UI taps, hardware buttons, and playback completion events.
      * Prevents duplicate/rapid triggers from skipping an episode (e.g., jumping from 1st directly to 3rd).
      */
-    fun requestNextTrack(minIntervalMs: Long = 450L): MediaEntity? {
+    fun requestNextTrack(minIntervalMs: Long = 650L): MediaEntity? {
         val now = android.os.SystemClock.elapsedRealtime()
         val prev = lastQueueStepTimeMs.get()
         if ((now - prev) in 0L until minIntervalMs) {
@@ -754,7 +754,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return playNextInQueue()
     }
 
-    fun requestPreviousTrack(minIntervalMs: Long = 450L): MediaEntity? {
+    fun requestPreviousTrack(minIntervalMs: Long = 650L): MediaEntity? {
         val now = android.os.SystemClock.elapsedRealtime()
         val prev = lastQueueStepTimeMs.get()
         if ((now - prev) in 0L until minIntervalMs) {
@@ -1557,6 +1557,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             val current = preferenceRepository.getPreferencesDirect()
             preferenceRepository.updatePreferences(transform(current))
+        }
+    }
+
+    fun setTorrentSpeedBoostEnabled(enabled: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) {
+            torrentEngineManager.setSpeedBoostEnabled(enabled)
         }
     }
 
