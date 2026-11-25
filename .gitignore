@@ -9,11 +9,14 @@ local.properties
 **/build/
 .build/
 /.build-outputs/
+/output/
 /captures/
 .externalNativeBuild/
 .cxx/
 .env
 debug.keystore
+*.apk
+*.aab
 *.ap_
 *.dex
 *.hprof
