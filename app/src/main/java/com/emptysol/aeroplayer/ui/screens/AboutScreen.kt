@@ -1,36 +1,34 @@
 package com.emptysol.aeroplayer.ui.screens
 
-import android.content.Context
-import android.os.Build
-import androidx.compose.animation.*
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.emptysol.aeroplayer.BuildConfig
+import com.emptysol.aeroplayer.ui.components.AeroTonalCard
+import com.emptysol.aeroplayer.ui.components.AppScreenScaffold
+
+private enum class AboutSheetType {
+    NONE,
+    LICENSES,
+    PRIVACY,
+    TERMS,
+    CHANGELOG
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -40,127 +38,39 @@ fun AboutScreen(
     showTerms: (() -> Unit)? = null,
     showChangelog: (() -> Unit)? = null
 ) {
-    val context = LocalContext.current
-    var showLicensesDialog by remember { mutableStateOf(false) }
-    var internalShowPrivacy by remember { mutableStateOf(false) }
-    var internalShowTerms by remember { mutableStateOf(false) }
-    var internalShowChangelog by remember { mutableStateOf(false) }
+    var activeSheet by remember { mutableStateOf(AboutSheetType.NONE) }
 
-    val onPrivacyClick = { internalShowPrivacy = true }
-    val onTermsClick = { internalShowTerms = true }
-    val onChangelogClick = { internalShowChangelog = true }
-
-    FrostedGlassBackground {
-    Scaffold(
-        containerColor = Color.Transparent,
-        topBar = {
-            TopAppBar(
-                title = {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(38.dp)
-                                .clip(CircleShape)
-                                .background(
-                                    Brush.linearGradient(
-                                        colors = listOf(
-                                            MaterialTheme.colorScheme.primary,
-                                            MaterialTheme.colorScheme.tertiary
-                                        )
-                                    )
-                                ),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.PlayArrow,
-                                contentDescription = "Aero Player Logo",
-                                tint = MaterialTheme.colorScheme.onPrimary,
-                                modifier = Modifier.size(22.dp)
-                            )
-                        }
-
-                        Column {
-                            Text(
-                                text = "About Aero Player",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 18.sp,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            Text(
-                                text = "v${BuildConfig.VERSION_NAME}  ·  Build ${BuildConfig.VERSION_CODE}",
-                                fontSize = 11.sp,
-                                fontFamily = FontFamily.Monospace,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                        }
-                    }
-                },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.background,
-                    titleContentColor = MaterialTheme.colorScheme.onBackground
-                )
-            )
-        }
-    ) { innerPadding ->
+    AppScreenScaffold(
+        title = "About Aero Player",
+        subtitle = "v${BuildConfig.VERSION_NAME} • Build ${BuildConfig.VERSION_CODE}",
+        onNavigateBack = onBack
+    ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(innerPadding)
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp, vertical = 8.dp),
+                .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // Overview Description Card
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(20.dp)),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.65f)
-                ),
-                border = BorderStroke(
-                    1.dp,
-                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.40f)
-                )
-            ) {
+            AeroTonalCard(modifier = Modifier.fillMaxWidth()) {
                 Text(
-                    text = "Android audio and video player built on Media3, Jellyfin FFmpeg audio decoders, and LibVLC.",
+                    text = "Android audio and video player built on Media3, Jellyfin FFmpeg audio decoders, LibVLC, and high-speed P2P streaming.",
                     fontSize = 13.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    lineHeight = 18.sp,
+                    lineHeight = 19.sp,
                     modifier = Modifier.padding(16.dp)
                 )
             }
 
-            // Core Capabilities
             Text(
                 text = "Features",
                 fontSize = 13.sp,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.primary
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
 
-            Card(
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.65f)
-                ),
-                border = BorderStroke(
-                    1.dp,
-                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.40f)
-                ),
-                shape = RoundedCornerShape(20.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            AeroTonalCard(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     FeatureRow(
                         icon = Icons.Default.Equalizer,
                         title = "Sound Equalizer",
@@ -189,64 +99,45 @@ fun AboutScreen(
                 }
             }
 
-            // Support & Legal
             Text(
                 text = "Support & Legal",
                 fontSize = 13.sp,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.primary
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
 
-            Card(
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.65f)
-                ),
-                border = BorderStroke(
-                    1.dp,
-                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.40f)
-                ),
-                shape = RoundedCornerShape(20.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
+            AeroTonalCard(modifier = Modifier.fillMaxWidth()) {
                 Column {
-                    ListItem(
-                        headlineContent = { Text("What's New in v${BuildConfig.VERSION_NAME}", fontWeight = FontWeight.SemiBold) },
-                        supportingContent = { Text("Recent fixes and performance improvements") },
-                        leadingContent = { Icon(Icons.Default.NewReleases, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
-                        trailingContent = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null) },
-                        modifier = Modifier.clickable { onChangelogClick() }
+                    AboutActionItem(
+                        icon = Icons.Default.NewReleases,
+                        title = "What's New in v${BuildConfig.VERSION_NAME}",
+                        subtitle = "Recent fixes and performance improvements",
+                        onClick = { activeSheet = AboutSheetType.CHANGELOG }
                     )
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
-
-                    ListItem(
-                        headlineContent = { Text("Privacy Policy", fontWeight = FontWeight.SemiBold) },
-                        supportingContent = { Text("Learn how local permissions and data are handled") },
-                        leadingContent = { Icon(Icons.Default.PrivacyTip, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
-                        trailingContent = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null) },
-                        modifier = Modifier.clickable { onPrivacyClick() }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f))
+                    AboutActionItem(
+                        icon = Icons.Default.PrivacyTip,
+                        title = "Privacy Policy",
+                        subtitle = "How local permissions and data are handled",
+                        onClick = { activeSheet = AboutSheetType.PRIVACY }
                     )
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
-
-                    ListItem(
-                        headlineContent = { Text("Terms of Service (EULA)", fontWeight = FontWeight.SemiBold) },
-                        supportingContent = { Text("End-User License Agreement and system boundaries") },
-                        leadingContent = { Icon(Icons.Default.Gavel, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
-                        trailingContent = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null) },
-                        modifier = Modifier.clickable { onTermsClick() }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f))
+                    AboutActionItem(
+                        icon = Icons.Default.Gavel,
+                        title = "Terms of Service (EULA)",
+                        subtitle = "End-User License Agreement and system boundaries",
+                        onClick = { activeSheet = AboutSheetType.TERMS }
                     )
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
-
-                    ListItem(
-                        headlineContent = { Text("Open Source Licenses", fontWeight = FontWeight.SemiBold) },
-                        supportingContent = { Text("ExoPlayer, Media3, Jellyfin FFmpeg, Jetpack Compose") },
-                        leadingContent = { Icon(Icons.Default.Code, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
-                        trailingContent = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null) },
-                        modifier = Modifier.clickable { showLicensesDialog = true }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f))
+                    AboutActionItem(
+                        icon = Icons.Default.Code,
+                        title = "Open Source Licenses",
+                        subtitle = "ExoPlayer, Media3, Jellyfin FFmpeg, Jetpack Compose",
+                        onClick = { activeSheet = AboutSheetType.LICENSES }
                     )
                 }
             }
 
-            // Footer
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -270,194 +161,151 @@ fun AboutScreen(
             }
         }
     }
-    }
 
-    // Open Source Licenses Dialog
-    if (showLicensesDialog) {
-        AlertDialog(
-            onDismissRequest = { showLicensesDialog = false },
-            title = {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Icon(Icons.Default.Code, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                    Text("Open Source Licenses", fontWeight = FontWeight.Bold)
+    if (activeSheet != AboutSheetType.NONE) {
+        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        ModalBottomSheet(
+            onDismissRequest = { activeSheet = AboutSheetType.NONE },
+            sheetState = sheetState,
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+            shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .navigationBarsPadding()
+                    .padding(horizontal = 20.dp)
+                    .padding(bottom = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                when (activeSheet) {
+                    AboutSheetType.LICENSES -> {
+                        SheetTitleRow(Icons.Default.Code, "Open Source Licenses")
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 320.dp)
+                                .verticalScroll(rememberScrollState())
+                        ) {
+                            LicenseItem("AndroidX Media3 (ExoPlayer)", "Apache License 2.0", "Google LLC")
+                            LicenseItem("Jellyfin Media3 FFmpeg Extension", "LGPL v2.1 / GPL v2+", "Jellyfin Project & FFmpeg Team")
+                            LicenseItem("Jetpack Compose & Material 3", "Apache License 2.0", "Google LLC")
+                            LicenseItem("Kotlin Coroutines & Flow", "Apache License 2.0", "JetBrains s.r.o.")
+                            LicenseItem("Room Persistence Library", "Apache License 2.0", "Google LLC")
+                        }
+                    }
+                    AboutSheetType.PRIVACY -> {
+                        SheetTitleRow(Icons.Default.PrivacyTip, "Privacy & Permission Policy")
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 340.dp)
+                                .verticalScroll(rememberScrollState())
+                        ) {
+                            Text("Last updated: November 2026", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                            Text(
+                                "Aero Player is a local-first media application. Your files, playlists, and playback history stay on your device.",
+                                fontSize = 13.sp
+                            )
+                            Text(
+                                "1. Local Storage Access:\nMedia permissions are used exclusively to locate and play local video and audio files.",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                "2. Playback Resume:\nElapsed positions are stored locally in Room so playback resumes where you left off.",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                "3. Zero Telemetry:\nAero Player does not transmit analytics or watch history to external cloud servers.",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    AboutSheetType.TERMS -> {
+                        SheetTitleRow(Icons.Default.Gavel, "Terms of Use")
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 340.dp)
+                                .verticalScroll(rememberScrollState())
+                        ) {
+                            Text("End-User License Agreement (EULA)", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                            Text(
+                                "1. License Scope:\nPersonal, non-transferable, non-exclusive license to play standard multimedia files for personal use.",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                "2. Codec Capabilities:\nDecoding is powered by Android MediaCodec drivers, Media3/ExoPlayer, LibVLC, and bundled FFmpeg extensions.",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    AboutSheetType.CHANGELOG -> {
+                        SheetTitleRow(Icons.Default.NewReleases, "What's New in v${BuildConfig.VERSION_NAME}")
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 340.dp)
+                                .verticalScroll(rememberScrollState())
+                        ) {
+                            Text(
+                                "• Streaming disk-backed BitTorrent engine eliminating OutOfMemory crashes.\n" +
+                                "• Reliable background torrent downloads with WakeLock, Wi-Fi lock, and seamless resume.\n" +
+                                "• Material 3 semantic surfaces, uncrowded headers, and native bottom sheets.\n" +
+                                "• Dedicated Torrent, VPN, and Direct Download Managers.",
+                                fontSize = 13.sp,
+                                lineHeight = 20.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    AboutSheetType.NONE -> Unit
                 }
-            },
-            text = {
-                Column(
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 280.dp)
-                        .verticalScroll(rememberScrollState())
+
+                Button(
+                    onClick = { activeSheet = AboutSheetType.NONE },
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    LicenseItem("AndroidX Media3 (ExoPlayer)", "Apache License 2.0", "Google LLC")
-                    LicenseItem("Jellyfin Media3 FFmpeg Extension", "LGPL v2.1 / GPL v2+", "Jellyfin Project & FFmpeg Team")
-                    LicenseItem("Jetpack Compose & Material 3", "Apache License 2.0", "Google LLC")
-                    LicenseItem("Kotlin Coroutines & Flow", "Apache License 2.0", "JetBrains s.r.o.")
-                    LicenseItem("Room Persistence Library", "Apache License 2.0", "Google LLC")
-                }
-            },
-            confirmButton = {
-                Button(onClick = { showLicensesDialog = false }) {
-                    Text("Close")
+                    Text("Done", fontWeight = FontWeight.SemiBold)
                 }
             }
-        )
-    }
-
-    if (internalShowPrivacy) {
-        AlertDialog(
-            onDismissRequest = { internalShowPrivacy = false },
-            title = {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Icon(Icons.Default.PrivacyTip, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                    Text("Privacy & Permission Policy", fontWeight = FontWeight.Bold)
-                }
-            },
-            text = {
-                Column(
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 300.dp)
-                        .verticalScroll(rememberScrollState())
-                ) {
-                    Text("Last updated: July 2026", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                    Text(
-                        "Welcome to Aero Player, a local-first offline media application. This policy details how our system processes files and data:",
-                        fontSize = 12.sp
-                    )
-                    Text(
-                        "1. Local Storage Access:\nAero Player requests READ_EXTERNAL_STORAGE or media-specific storage permissions exclusively to locate and build indices of local video/audio files. File scan profiles never leave your physical device.",
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Text(
-                        "2. Media Metrics Tracking:\nIf 'Playback History Tracker' is active, playback elapsed seconds are logged locally to help with resuming media.",
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Text(
-                        "3. Zero Network Interception:\nAero Player runs in sandboxed spaces and does not transmit tracking coordinates or play history to external cloud networks.",
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            },
-            confirmButton = {
-                Button(onClick = { internalShowPrivacy = false }) {
-                    Text("I Understand")
-                }
-            }
-        )
-    }
-
-    if (internalShowTerms) {
-        AlertDialog(
-            onDismissRequest = { internalShowTerms = false },
-            title = {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Icon(Icons.Default.Gavel, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                    Text("Terms of Use", fontWeight = FontWeight.Bold)
-                }
-            },
-            text = {
-                Column(
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 300.dp)
-                        .verticalScroll(rememberScrollState())
-                ) {
-                    Text("End-User License Agreement (EULA)", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                    Text(
-                        "By running this software package, you accept the following licensing clauses and system boundaries:",
-                        fontSize = 12.sp
-                    )
-                    Text(
-                        "1. License Scope:\nWe grant you a personal, non-transferable, non-exclusive license to use the Aero Player application to play standard multimedia file formats for personal convenience.",
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Text(
-                        "2. Codec Capabilities:\nDecoding capabilities are powered by Android MediaCodec drivers and standard Media3/ExoPlayer configurations with bundled FFmpeg extensions.",
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            },
-            confirmButton = {
-                Button(onClick = { internalShowTerms = false }) {
-                    Text("Accept Terms")
-                }
-            }
-        )
-    }
-
-    if (internalShowChangelog) {
-        AlertDialog(
-            onDismissRequest = { internalShowChangelog = false },
-            title = {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Icon(Icons.Default.NewReleases, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                    Text("Aero Player Changelog", fontWeight = FontWeight.Bold)
-                }
-            },
-            text = {
-                Column(
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 300.dp)
-                        .verticalScroll(rememberScrollState())
-                ) {
-                    Text("Version ${BuildConfig.VERSION_NAME}", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
-                    Text(
-                        "- Faster startup with on-demand player engines.\n" +
-                        "- Draggable full-screen sheets and updated bottom navigation.\n" +
-                        "- Preserved folder browsing state when returning from the player.\n" +
-                        "- Accurate chapter detection from embedded file markers only.\n" +
-                        "- Redesigned right-side playback panel with plain labels.",
-                        fontSize = 12.sp
-                    )
-                }
-            },
-            confirmButton = {
-                Button(onClick = { internalShowChangelog = false }) {
-                    Text("Close")
-                }
-            }
-        )
+        }
     }
 }
 
 @Composable
-private fun DiagnosticItem(
+private fun AboutActionItem(
     icon: ImageVector,
     title: String,
-    value: String,
-    subtitle: String
+    subtitle: String,
+    onClick: () -> Unit
 ) {
     ListItem(
-        headlineContent = { Text(title, fontWeight = FontWeight.SemiBold, fontSize = 14.sp) },
-        supportingContent = {
-            Column {
-                Text(value, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary, fontSize = 13.sp)
-                Text(subtitle, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-        },
-        leadingContent = {
-            Surface(
-                shape = CircleShape,
-                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f),
-                modifier = Modifier.size(36.dp)
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimaryContainer, modifier = Modifier.size(20.dp))
-                }
-            }
-        }
+        headlineContent = { Text(title, fontWeight = FontWeight.Medium) },
+        supportingContent = { Text(subtitle) },
+        leadingContent = { Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant) },
+        trailingContent = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant) },
+        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+        modifier = Modifier.clickable(onClick = onClick)
     )
+}
+
+@Composable
+private fun SheetTitleRow(icon: ImageVector, title: String) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+        Text(title, fontWeight = FontWeight.SemiBold, fontSize = 17.sp)
+    }
 }
 
 @Composable
@@ -469,22 +317,22 @@ private fun FeatureRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 4.dp),
+            .padding(vertical = 2.dp),
         verticalAlignment = Alignment.Top,
         horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Surface(
-            shape = RoundedCornerShape(8.dp),
-            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f),
-            modifier = Modifier.size(32.dp)
+            shape = RoundedCornerShape(10.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            modifier = Modifier.size(34.dp)
         ) {
             Box(contentAlignment = Alignment.Center) {
-                Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.onSecondaryContainer, modifier = Modifier.size(18.dp))
+                Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
             }
         }
         Column {
-            Text(title, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface)
-            Text(desc, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 15.sp)
+            Text(title, fontWeight = FontWeight.SemiBold, fontSize = 13.5.sp, color = MaterialTheme.colorScheme.onSurface)
+            Text(desc, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 16.sp)
         }
     }
 }
@@ -495,13 +343,9 @@ private fun LicenseItem(
     license: String,
     author: String
 ) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp)
-    ) {
-        Text(name, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-        Text("License: $license", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
-        Text("Copyright: $author", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+        Text(name, fontWeight = FontWeight.SemiBold, fontSize = 13.5.sp)
+        Text("License: $license", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
+        Text("Copyright: $author", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }

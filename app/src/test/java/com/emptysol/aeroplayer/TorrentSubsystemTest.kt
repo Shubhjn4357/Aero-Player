@@ -378,7 +378,7 @@ class TorrentSubsystemTest {
     }
 
     @Test
-    fun torrentCard_longPressOpensBottomSheetWithTwoDeleteOptions() {
+    fun torrentCard_longPressOpensBottomSheetWithSingleDeleteAndDataSwitch() {
         val app = RuntimeEnvironment.getApplication()
         val vm = MainViewModel(app)
         val db = com.emptysol.aeroplayer.data.database.AppDatabase.getDatabase(app)
@@ -410,16 +410,74 @@ class TorrentSubsystemTest {
         composeRule.onNodeWithTag("torrent_card_$hash").performScrollTo().performTouchInput { longClick() }
         composeRule.waitForIdle()
         composeRule.onNodeWithTag("torrent_long_press_sheet").assertIsDisplayed()
-        composeRule.onNodeWithTag("torrent_long_press_sheet").performTouchInput { swipeUp() }
-        composeRule.waitForIdle()
         composeRule.onNodeWithTag("sheet_view_folder_btn").assertIsDisplayed()
-        composeRule.onNodeWithTag("sheet_delete_name_only_btn").performScrollTo().assertIsDisplayed()
-        composeRule.onNodeWithTag("sheet_delete_with_data_btn").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("sheet_delete_data_switch").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("sheet_confirm_delete_btn").performScrollTo().assertIsDisplayed()
 
-        composeRule.onNodeWithTag("sheet_delete_name_only_btn").performClick()
+        composeRule.onNodeWithTag("sheet_confirm_delete_btn").performClick()
         composeRule.waitForIdle()
         runBlocking {
             assertNull(db.torrentDao().getTorrentByHash(hash))
+        }
+    }
+
+    @Test
+    fun peerWireCoordinator_verifiesLargePieceFromDiskWithoutRamBuffer() {
+        val app = RuntimeEnvironment.getApplication()
+        val tempDir = kotlin.io.path.createTempDirectory("aero_large_piece_test").toFile()
+        try {
+            // 1 MB piece (> 512 KB disk-streaming threshold)
+            val pieceLen = 1024 * 1024
+            val pieceData = ByteArray(pieceLen) { (it * 31 and 0xFF).toByte() }
+            val expectedHash = BencodeCodec.sha1(pieceData)
+            val infoHashBytes = ByteArray(20) { 0x11 }
+            val meta = TorrentMetainfo(
+                infoHashHex = BencodeCodec.toHex(infoHashBytes),
+                infoHashBytes = infoHashBytes,
+                name = "LargePieceMovie",
+                pieceLength = pieceLen.toLong(),
+                pieceHashes = listOf(expectedHash),
+                totalLength = pieceLen.toLong(),
+                files = listOf(TorrentFileEntry(0, "movie.mkv", pieceLen.toLong(), "NORMAL", 0L)),
+                trackers = emptyList()
+            )
+
+            val coordinator = TorrentDownloadCoordinator(
+                context = app,
+                infoHashHex = meta.infoHashHex,
+                infoHashBytes = infoHashBytes,
+                peerId = ByteArray(20) { 0x22 },
+                initialMetainfo = meta,
+                initialTrackers = emptyList(),
+                stagingDir = tempDir,
+                safTreeUriString = "",
+                filePriorities = emptyMap(),
+                isSequential = true,
+                encryptionMode = "PREFER",
+                dhtEnabled = false,
+                pexEnabled = false,
+                seedOnlyMode = false,
+                globalDlThrottler = BandwidthThrottler(0),
+                globalUlThrottler = BandwidthThrottler(0),
+                taskDlThrottler = BandwidthThrottler(0),
+                taskUlThrottler = BandwidthThrottler(0),
+                ipFilterManager = IpFilterManager(),
+                trackerClient = TrackerAndDhtClient(),
+                speedBoostEnabled = true,
+                onProgressUpdate = { _, _, _, _, _, _, _, _, _, _ -> }
+            )
+
+            // Stream 16 KB blocks directly to disk and verify SHA-1 from disk
+            var offset = 0
+            while (offset < pieceLen) {
+                val chunk = minOf(16384, pieceLen - offset)
+                coordinator.writeBytesRangeToDiskPooled(meta, offset.toLong(), pieceData, offset, chunk)
+                offset += chunk
+            }
+
+            assertTrue(coordinator.verifyPieceHashFromDisk(meta, pieceIdx = 0, pieceSize = pieceLen))
+        } finally {
+            tempDir.deleteRecursively()
         }
     }
 

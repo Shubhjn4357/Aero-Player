@@ -4950,7 +4950,7 @@ fun PlayerScreen(
                         .fillMaxWidth()
                         .height(110.dp)
                         .clip(RoundedCornerShape(12.dp))
-                        .background(Color(0xFF1A1C22)),
+                        .background(MaterialTheme.colorScheme.surfaceContainerLowest),
                     contentAlignment = Alignment.BottomCenter
                 ) {
                     // Background simulated gradient
@@ -4959,7 +4959,10 @@ fun PlayerScreen(
                             .fillMaxSize()
                             .background(
                                 Brush.verticalGradient(
-                                    listOf(Color(0xFF101216), Color(0xFF232730))
+                                    listOf(
+                                        MaterialTheme.colorScheme.surfaceContainerLowest,
+                                        MaterialTheme.colorScheme.surfaceContainerHigh
+                                    )
                                 )
                             )
                     )
@@ -7538,8 +7541,8 @@ fun AudioVinylPlayer(
             modifier = Modifier
                 .size(260.dp)
                 .rotate(currentAngle)
-                .background(Color(0xFF16181E), CircleShape)
-                .border(6.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.05f), CircleShape)
+                .background(MaterialTheme.colorScheme.surfaceContainerLowest, CircleShape)
+                .border(6.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.08f), CircleShape)
                 .padding(20.dp),
             contentAlignment = Alignment.Center
         ) {

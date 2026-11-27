@@ -1351,16 +1351,16 @@ fun MainScreen(
                                         Icon(
                                             imageVector = Icons.Default.Menu,
                                             contentDescription = "Open side drawer",
-                                            tint = MaterialTheme.colorScheme.primary
+                                            tint = MaterialTheme.colorScheme.onSurface
                                         )
                                     }
                                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                         Text(
                                             text = rootTitle,
                                             fontSize = 22.sp,
-                                            fontWeight = FontWeight.Black,
-                                            color = MaterialTheme.colorScheme.primary,
-                                            letterSpacing = (-0.5).sp
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.onSurface,
+                                            letterSpacing = (-0.4).sp
                                         )
                                     }
                                 }
@@ -1376,7 +1376,7 @@ fun MainScreen(
                                         Icon(
                                             imageVector = Icons.Default.Search,
                                             contentDescription = "Search",
-                                            tint = MaterialTheme.colorScheme.primary
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
                                     }
 
@@ -1390,7 +1390,7 @@ fun MainScreen(
                                         Icon(
                                             imageVector = if (prefs.listStyle == "Grid") Icons.AutoMirrored.Filled.List else Icons.Default.GridView,
                                             contentDescription = "Toggle Grid/List View",
-                                            tint = MaterialTheme.colorScheme.primary
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
                                     }
 
@@ -1403,7 +1403,7 @@ fun MainScreen(
                                             Icon(
                                                 imageVector = Icons.Default.MoreVert,
                                                 contentDescription = "More options",
-                                                tint = MaterialTheme.colorScheme.primary
+                                                tint = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
                                         }
                                         DropdownMenu(

@@ -8,8 +8,10 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import com.emptysol.aeroplayer.MainActivity
 import com.emptysol.aeroplayer.R
@@ -19,7 +21,8 @@ import kotlinx.coroutines.*
 
 /**
  * Android 14+ compliant `dataSync` Foreground Service that runs P2P BitTorrent transfers
- * reliably in the background with live progress, speed, folder info, and Pause/Resume/Stop controls.
+ * reliably in the background with CPU WakeLock, low-latency Wi-Fi lock, live progress/speed
+ * notifications, and Pause/Resume/Stop controls.
  */
 class TorrentDownloadService : Service() {
 
@@ -29,6 +32,9 @@ class TorrentDownloadService : Service() {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob() + scopeExceptionHandler)
     private var monitorJob: Job? = null
     private var lastCompletedAnnouncedCount = 0
+    private var isForegroundActive = false
+    private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -36,35 +42,95 @@ class TorrentDownloadService : Service() {
         super.onCreate()
         ensureChannel(this)
         TorrentEngineHolder.getOrCreate(applicationContext)
-        promoteForeground(
+        promoteForegroundIfNeeded(
             buildActiveNotification(
                 activeCount = 1,
-                title = "Starting background downloader...",
+                title = "Background Downloader Active",
                 folderLabel = "AeroTorrents",
                 progressPct = 0,
                 dlKbps = 0,
                 ulKbps = 0
             )
         )
+        acquireTransferLocks()
         startMonitorLoop()
     }
 
-    private fun promoteForeground(notification: Notification): Boolean {
+    private fun promoteForegroundIfNeeded(notification: Notification): Boolean {
         return try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
             } else {
                 startForeground(NOTIFICATION_ID, notification)
             }
+            isForegroundActive = true
             true
         } catch (t: Throwable) {
             android.util.Log.w("TorrentDownloadService", "Foreground promotion skipped: ${t.message}")
-            stopSelf()
+            isForegroundActive = false
             false
         }
     }
 
+    @Suppress("DEPRECATION")
+    private fun acquireTransferLocks() {
+        try {
+            if (wakeLock == null) {
+                val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager
+                wakeLock = pm?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "AeroPlayer:TorrentTransferWakeLock")?.apply {
+                    setReferenceCounted(false)
+                }
+            }
+            if (wakeLock?.isHeld == false) {
+                wakeLock?.acquire(4L * 60L * 60L * 1000L) // Up to 4 hours safety timeout
+            }
+        } catch (_: Throwable) {
+        }
+
+        try {
+            if (wifiLock == null) {
+                val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+                val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+                } else {
+                    WifiManager.WIFI_MODE_FULL_HIGH_PERF
+                }
+                wifiLock = wm?.createWifiLock(mode, "AeroPlayer:TorrentWifiLock")?.apply {
+                    setReferenceCounted(false)
+                }
+            }
+            if (wifiLock?.isHeld == false) {
+                wifiLock?.acquire()
+            }
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun releaseTransferLocks() {
+        try {
+            if (wakeLock?.isHeld == true) wakeLock?.release()
+        } catch (_: Throwable) {
+        }
+        try {
+            if (wifiLock?.isHeld == true) wifiLock?.release()
+        } catch (_: Throwable) {
+        }
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (!isForegroundActive && intent?.action != ACTION_STOP) {
+            promoteForegroundIfNeeded(
+                buildActiveNotification(
+                    activeCount = 1,
+                    title = "Background Downloader Active",
+                    folderLabel = "AeroTorrents",
+                    progressPct = 0,
+                    dlKbps = 0,
+                    ulKbps = 0
+                )
+            )
+        }
+
         when (intent?.action) {
             ACTION_STOP -> {
                 scope.launch {
@@ -75,7 +141,9 @@ class TorrentDownloadService : Service() {
                     } catch (_: Throwable) {
                     }
                     withContext(Dispatchers.Main) {
+                        releaseTransferLocks()
                         stopForeground(STOP_FOREGROUND_REMOVE)
+                        isForegroundActive = false
                         stopSelf()
                     }
                 }
@@ -85,6 +153,7 @@ class TorrentDownloadService : Service() {
                 scope.launch {
                     try {
                         TorrentEngineHolder.getOrCreate(applicationContext).pauseAllTorrents()
+                        releaseTransferLocks()
                         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                         val tasks = AppDatabase.getDatabase(applicationContext).torrentDao().getAllTorrentsDirect()
                         val pausedCount = tasks.count { it.status in setOf("PAUSED", "VPN_PAUSED", "SCHEDULE_PAUSED") }
@@ -101,6 +170,7 @@ class TorrentDownloadService : Service() {
                 }
             }
             ACTION_RESUME_ALL -> {
+                acquireTransferLocks()
                 scope.launch {
                     try {
                         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -112,6 +182,21 @@ class TorrentDownloadService : Service() {
                     }
                 }
             }
+            else -> {
+                // Default / START_STICKY restart: make sure active torrents keep downloading in background
+                acquireTransferLocks()
+                scope.launch {
+                    try {
+                        TorrentEngineHolder.getOrCreate(applicationContext).ensureActiveTorrentsRunning()
+                    } catch (ce: CancellationException) {
+                        throw ce
+                    } catch (_: Throwable) {
+                    }
+                }
+            }
+        }
+        if (monitorJob?.isActive != true) {
+            startMonitorLoop()
         }
         return START_STICKY
     }
@@ -142,30 +227,41 @@ class TorrentDownloadService : Service() {
                         }
                     }
 
-                    if (active.isEmpty()) {
+                    if (active.isEmpty() && !engine.hasActiveWorkers()) {
                         idleTicks++
-                        if (idleTicks >= 4) {
+                        // 12 ticks (~18s) grace window so starting/resuming torrents never get cut off
+                        if (idleTicks >= 12) {
                             withContext(Dispatchers.Main) {
+                                releaseTransferLocks()
                                 stopForeground(STOP_FOREGROUND_REMOVE)
+                                isForegroundActive = false
                                 stopSelf()
                             }
                             break
                         }
                     } else {
                         idleTicks = 0
+                        acquireTransferLocks()
                         nm.cancel(PAUSED_NOTIFICATION_ID)
+                        if (active.isNotEmpty() && !engine.hasActiveWorkers()) {
+                            engine.ensureActiveTorrentsRunning()
+                        }
                         val totalBytes = active.sumOf { it.totalBytes }.coerceAtLeast(1L)
                         val dlBytes = active.sumOf { it.downloadedBytes }
                         val pct = ((dlBytes * 100L) / totalBytes).toInt().coerceIn(0, 100)
                         val dlKbps = active.sumOf { it.downloadRateBps } / 1024L
                         val ulKbps = active.sumOf { it.uploadRateBps } / 1024L
-                        val title = if (active.size == 1) active.first().title else "${active.size} active torrents"
+                        val title = when {
+                            active.isEmpty() -> "Preparing torrent download..."
+                            active.size == 1 -> active.first().title
+                            else -> "${active.size} active torrents"
+                        }
                         val folder = if (active.size == 1) {
                             engine.resolveStagingDirForTask(active.first()).name
                         } else {
                             "AeroTorrents"
                         }
-                        val notif = buildActiveNotification(active.size, title, folder, pct, dlKbps, ulKbps)
+                        val notif = buildActiveNotification(active.size.coerceAtLeast(1), title, folder, pct, dlKbps, ulKbps)
                         nm.notify(NOTIFICATION_ID, notif)
                     }
                 } catch (ce: CancellationException) {
@@ -251,6 +347,7 @@ class TorrentDownloadService : Service() {
     }
 
     override fun onDestroy() {
+        releaseTransferLocks()
         monitorJob?.cancel()
         scope.cancel()
         super.onDestroy()

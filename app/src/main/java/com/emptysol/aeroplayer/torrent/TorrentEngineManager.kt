@@ -71,6 +71,7 @@ class TorrentEngineManager(
     private val activeCoordinators = ConcurrentHashMap<String, TorrentDownloadCoordinator>()
     private val activeJobs = ConcurrentHashMap<String, Job>()
     private val metainfoCache = ConcurrentHashMap<String, TorrentMetainfo>()
+    private val deletedHashes = ConcurrentHashMap.newKeySet<String>()
 
     val torrentsFlow: StateFlow<List<TorrentTaskEntity>> = torrentDao.getAllTorrentsFlow()
         .stateIn(scope, SharingStarted.Eagerly, emptyList())
@@ -114,13 +115,16 @@ class TorrentEngineManager(
         }
         val prefs = preferenceRepository.getPreferencesDirect()
         applyPreferences(prefs)
-        // Re-tune any active downloading tasks immediately
-        val activeTasks = torrentDao.getAllTorrentsDirect().filter {
-            it.status in setOf("DOWNLOADING", "METADATA")
-        }
-        activeTasks.forEach { task ->
-            startWorker(task, metainfoCache[task.infoHash])
-        }
+        // Tune active coordinators live without dropping peer connections or resetting progress
+        activeCoordinators.values.forEach { it.setSpeedBoostLive(enabled) }
+        // Start any active torrents whose workers are not yet running
+        ensureActiveTorrentsRunning()
+    }
+
+    fun hasActiveWorkers(): Boolean = activeJobs.values.any { it.isActive }
+
+    suspend fun ensureActiveTorrentsRunning() = withContext(Dispatchers.IO) {
+        resumePersistedActiveTorrents()
     }
 
     private val _lastRssPreviewItems = MutableStateFlow<Map<Long, List<RssFeedItem>>>(emptyMap())
@@ -338,6 +342,7 @@ class TorrentEngineManager(
                         encryptionMode = prefs.torrentEncryptionMode,
                         trackersJson = JSONArray(magnet.trackers).toString()
                     )
+                    deletedHashes.remove(magnet.infoHashHex)
                     torrentDao.upsertTorrent(entity)
                     startWorker(entity, metainfo = null)
                     Result.success(entity)
@@ -390,6 +395,7 @@ class TorrentEngineManager(
                     pieceLength = meta.pieceLength,
                     totalPieces = meta.pieceHashes.size
                 )
+                deletedHashes.remove(meta.infoHashHex)
                 torrentDao.upsertTorrent(entity)
                 startWorker(entity, meta)
                 Result.success(entity)
@@ -398,24 +404,50 @@ class TorrentEngineManager(
             }
         }
 
+    internal fun isDirectoryWritable(dir: File): Boolean {
+        return try {
+            if (!dir.exists() && !dir.mkdirs() && !dir.exists()) return false
+            val probe = File(dir, ".aero_probe_${System.nanoTime()}")
+            if (probe.createNewFile()) {
+                probe.delete()
+                true
+            } else {
+                false
+            }
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    private fun appScopedTorrentRoot(): File {
+        val ext = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+        val candidate = File(ext ?: context.filesDir, "AeroTorrents")
+        if (isDirectoryWritable(candidate)) return candidate
+        return File(context.filesDir, "AeroTorrents").apply { mkdirs() }
+    }
+
     private fun resolveSaveLocation(prefs: PreferenceEntity): String {
         if (prefs.torrentDownloadFolderUri.isNotBlank()) return prefs.torrentDownloadFolderUri
         val publicDl = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-        val fallback = File(publicDl, "AeroTorrents")
-        return try {
-            if (fallback.mkdirs() || fallback.exists()) fallback.absolutePath
-            else File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "AeroTorrents").apply { mkdirs() }.absolutePath
-        } catch (_: Exception) {
-            File(context.filesDir, "AeroTorrents").apply { mkdirs() }.absolutePath
+        val publicTarget = File(publicDl, "AeroTorrents")
+        return if (isDirectoryWritable(publicTarget)) {
+            publicTarget.absolutePath
+        } else {
+            appScopedTorrentRoot().absolutePath
         }
     }
 
     private fun resolveStagingDir(task: TorrentTaskEntity): File {
-        return if (task.saveLocation.startsWith("content://")) {
-            File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: context.filesDir, "AeroTorrents/${task.infoHash}")
-        } else {
-            File(task.saveLocation, task.infoHash)
+        if (task.saveLocation.startsWith("content://") || task.saveLocation.isBlank()) {
+            return File(appScopedTorrentRoot(), task.infoHash)
         }
+        val configuredDir = File(task.saveLocation, task.infoHash)
+        val parentDir = File(task.saveLocation)
+        // Verify real write access so Android 11+ Scoped Storage EACCES falls back cleanly
+        if (isDirectoryWritable(parentDir)) {
+            return configuredDir
+        }
+        return File(appScopedTorrentRoot(), task.infoHash)
     }
 
     fun resolveStagingDirForTask(task: TorrentTaskEntity): File = resolveStagingDir(task)
@@ -502,10 +534,24 @@ class TorrentEngineManager(
             ipFilterManager = ipFilterManager,
             trackerClient = trackerClient,
             speedBoostEnabled = speedBoostEnabledFlag,
+            onFatalError = { errorMsg ->
+                if (deletedHashes.contains(task.infoHash)) return@TorrentDownloadCoordinator
+                val latest = torrentDao.getTorrentByHash(task.infoHash) ?: return@TorrentDownloadCoordinator
+                torrentDao.upsertTorrent(
+                    latest.copy(
+                        status = "ERROR",
+                        errorMessage = errorMsg,
+                        downloadRateBps = 0L,
+                        uploadRateBps = 0L
+                    )
+                )
+            },
             onProgressUpdate = { meta, dlBytes, ulBytes, dlRate, ulRate, peers, seeds, donePieces, playableFile, isCompleted ->
+                // Guard against resurrecting a torrent that was deleted while an update was in flight
+                if (deletedHashes.contains(task.infoHash)) return@TorrentDownloadCoordinator
                 if (meta != null) metainfoCache[task.infoHash] = meta
-                val latest = torrentDao.getTorrentByHash(task.infoHash) ?: task
-                if (latest.status == "PAUSED" || latest.status == "VPN_PAUSED" || latest.status == "SCHEDULE_PAUSED") {
+                val latest = torrentDao.getTorrentByHash(task.infoHash) ?: return@TorrentDownloadCoordinator
+                if (latest.status == "PAUSED" || latest.status == "VPN_PAUSED" || latest.status == "SCHEDULE_PAUSED" || latest.status == "ERROR") {
                     return@TorrentDownloadCoordinator
                 }
                 val newStatus = when {
@@ -518,11 +564,14 @@ class TorrentEngineManager(
                 } else {
                     latest.filesJson
                 }
+                val totalLen = meta?.totalLength ?: latest.totalBytes
+                val clampedDl = if (totalLen > 0L) dlBytes.coerceIn(0L, totalLen) else dlBytes.coerceAtLeast(0L)
                 val updated = latest.copy(
                     title = meta?.name ?: latest.title,
                     status = newStatus,
-                    totalBytes = meta?.totalLength ?: latest.totalBytes,
-                    downloadedBytes = maxOf(latest.downloadedBytes, dlBytes),
+                    errorMessage = null,
+                    totalBytes = totalLen,
+                    downloadedBytes = if (isCompleted && totalLen > 0L) totalLen else maxOf(latest.downloadedBytes.coerceAtMost(totalLen.coerceAtLeast(clampedDl)), clampedDl),
                     uploadedBytes = maxOf(latest.uploadedBytes, ulBytes),
                     downloadRateBps = dlRate,
                     uploadRateBps = ulRate,
@@ -531,10 +580,11 @@ class TorrentEngineManager(
                     filesJson = updatedFilesJson,
                     pieceLength = meta?.pieceLength ?: latest.pieceLength,
                     totalPieces = meta?.pieceHashes?.size ?: latest.totalPieces,
-                    completedPieces = donePieces,
+                    completedPieces = maxOf(latest.completedPieces, donePieces),
                     primaryMediaPath = playableFile?.absolutePath ?: latest.primaryMediaPath,
                     completedAtMs = if (isCompleted && latest.completedAtMs == null) System.currentTimeMillis() else latest.completedAtMs
                 )
+                if (deletedHashes.contains(task.infoHash)) return@TorrentDownloadCoordinator
                 torrentDao.upsertTorrent(updated)
 
                 if (isCompleted) {
@@ -543,10 +593,29 @@ class TorrentEngineManager(
             }
         )
 
+        deletedHashes.remove(task.infoHash)
         activeCoordinators[task.infoHash] = coordinator
         activeJobs[task.infoHash] = scope.launch(Dispatchers.IO) {
             try {
                 coordinator.runSession()
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                android.util.Log.e("TorrentEngine", "Torrent session failed for ${task.infoHash}", t)
+                if (!deletedHashes.contains(task.infoHash)) {
+                    torrentDao.getTorrentByHash(task.infoHash)?.let { cur ->
+                        if (cur.status in setOf("DOWNLOADING", "METADATA", "QUEUED")) {
+                            torrentDao.upsertTorrent(
+                                cur.copy(
+                                    status = "ERROR",
+                                    errorMessage = t.message ?: "Download interrupted",
+                                    downloadRateBps = 0L,
+                                    uploadRateBps = 0L
+                                )
+                            )
+                        }
+                    }
+                }
             } finally {
                 activeCoordinators.remove(task.infoHash)
                 activeJobs.remove(task.infoHash)
@@ -612,21 +681,23 @@ class TorrentEngineManager(
         return report
     }
 
-    suspend fun pauseTorrent(infoHash: String) {
+    suspend fun pauseTorrent(infoHash: String) = withContext(Dispatchers.IO) {
         stopWorker(infoHash)
         torrentDao.getTorrentByHash(infoHash)?.let {
             torrentDao.upsertTorrent(it.copy(status = "PAUSED", downloadRateBps = 0L, uploadRateBps = 0L))
         }
     }
 
-    suspend fun resumeTorrent(infoHash: String) {
-        val task = torrentDao.getTorrentByHash(infoHash) ?: return
-        val next = task.copy(status = if (task.totalPieces > 0) "DOWNLOADING" else "METADATA", errorMessage = null)
+    suspend fun resumeTorrent(infoHash: String) = withContext(Dispatchers.IO) {
+        deletedHashes.remove(infoHash)
+        val task = torrentDao.getTorrentByHash(infoHash) ?: return@withContext
+        val nextStatus = if (task.totalPieces > 0 || metainfoCache.containsKey(infoHash)) "DOWNLOADING" else "METADATA"
+        val next = task.copy(status = nextStatus, errorMessage = null)
         torrentDao.upsertTorrent(next)
         startWorker(next, metainfoCache[infoHash])
     }
 
-    suspend fun pauseAllTorrents() {
+    suspend fun pauseAllTorrents() = withContext(Dispatchers.IO) {
         torrentDao.getAllTorrentsDirect().forEach { t ->
             if (t.status in setOf("DOWNLOADING", "METADATA", "SEEDING", "QUEUED")) {
                 pauseTorrent(t.infoHash)
@@ -634,28 +705,44 @@ class TorrentEngineManager(
         }
     }
 
-    suspend fun resumeAllTorrents() {
+    suspend fun resumeAllTorrents() = withContext(Dispatchers.IO) {
         torrentDao.getAllTorrentsDirect().forEach { t ->
-            if (t.status in setOf("PAUSED", "VPN_PAUSED", "SCHEDULE_PAUSED", "QUEUED")) {
+            if (t.status in setOf("PAUSED", "VPN_PAUSED", "SCHEDULE_PAUSED", "QUEUED", "ERROR")) {
                 resumeTorrent(t.infoHash)
             }
         }
     }
 
-    suspend fun removeTorrent(infoHash: String, deleteFiles: Boolean) {
-        stopWorker(infoHash)
+    suspend fun removeTorrent(infoHash: String, deleteFiles: Boolean) = withContext(Dispatchers.IO) {
+        // Mark deleted FIRST so any in-flight progress callback can never re-insert the row
+        deletedHashes.add(infoHash)
+        val runningJob = activeJobs.remove(infoHash)
+        activeCoordinators.remove(infoHash)?.stop()
+        runningJob?.cancel()
+        try {
+            withTimeoutOrNull(1200L) { runningJob?.join() }
+        } catch (_: Throwable) {
+        }
         val task = torrentDao.getTorrentByHash(infoHash)
         torrentDao.deleteTorrent(infoHash)
         metainfoCache.remove(infoHash)
         if (deleteFiles && task != null) {
-            val stagingDir = resolveStagingDir(task)
-            parseFilesJson(task.filesJson).forEach { entry ->
+            val dirsToClean = linkedSetOf(resolveStagingDir(task))
+            if (task.saveLocation.isNotBlank() && !task.saveLocation.startsWith("content://")) {
+                dirsToClean.add(File(task.saveLocation, task.infoHash))
+            }
+            dirsToClean.forEach { stagingDir ->
+                parseFilesJson(task.filesJson).forEach { entry ->
+                    try {
+                        mediaRepository.deleteMedia(Uri.fromFile(File(stagingDir, entry.path)).toString())
+                    } catch (_: Throwable) {
+                    }
+                }
                 try {
-                    mediaRepository.deleteMedia(Uri.fromFile(File(stagingDir, entry.path)).toString())
+                    if (stagingDir.exists()) stagingDir.deleteRecursively()
                 } catch (_: Throwable) {
                 }
             }
-            stagingDir.deleteRecursively()
         }
     }
 

@@ -8,7 +8,6 @@ import android.net.Uri
 import android.os.Environment
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -16,8 +15,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -29,12 +29,16 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.emptysol.aeroplayer.data.database.MediaEntity
 import com.emptysol.aeroplayer.ui.components.AeroExplorerEmptyState
 import com.emptysol.aeroplayer.ui.components.AeroStatusBadge
+import com.emptysol.aeroplayer.ui.components.AeroTonalCard
+import com.emptysol.aeroplayer.ui.components.AppScreenScaffold
+import com.emptysol.aeroplayer.ui.theme.AeroTheme
 import com.emptysol.aeroplayer.ui.viewmodel.MainViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -172,114 +176,93 @@ fun DownloadManagerScreen(
         }
     }
 
-    Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
-        topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Text(
-                            text = "Download Manager",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 18.sp,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        Text(
-                            text = "$activeCount active • $completedCount completed • Direct HTTP/HTTPS",
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                },
-                navigationIcon = {
-                    IconButton(
-                        onClick = onBack,
-                        modifier = Modifier.testTag("download_manager_back_btn")
-                    ) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                    }
-                },
-                actions = {
-                    IconButton(
-                        onClick = { refreshTrigger++ },
-                        modifier = Modifier.testTag("download_refresh_btn")
-                    ) {
-                        Icon(Icons.Default.Refresh, contentDescription = "Refresh Downloads", tint = MaterialTheme.colorScheme.primary)
-                    }
-                    IconButton(
-                        onClick = onOpenTorrentManager,
-                        modifier = Modifier.testTag("download_open_torrents_btn")
-                    ) {
-                        Icon(Icons.Default.CloudDownload, contentDescription = "Open Torrent Manager", tint = MaterialTheme.colorScheme.primary)
-                    }
-                    IconButton(
-                        onClick = onOpenVpnManager,
-                        modifier = Modifier.testTag("download_open_vpn_btn")
-                    ) {
-                        Icon(Icons.Default.VpnKey, contentDescription = "Open VPN Manager", tint = MaterialTheme.colorScheme.primary)
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)
-            )
-        }
-    ) { paddingValues ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues)
-        ) {
-            // URL Input Card
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 10.dp)
-                    .testTag("download_url_card"),
-                shape = RoundedCornerShape(18.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.75f)),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+    AppScreenScaffold(
+        title = "Download Manager",
+        subtitle = "$activeCount active • $completedCount completed • Direct HTTP/HTTPS",
+        onNavigateBack = onBack,
+        backButtonTestTag = "download_manager_back_btn",
+        actions = {
+            IconButton(
+                onClick = onOpenTorrentManager,
+                modifier = Modifier.testTag("download_open_torrents_btn")
             ) {
-                Column(
-                    modifier = Modifier.padding(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                Icon(Icons.Default.CloudDownload, contentDescription = "Open Torrent Manager", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            IconButton(
+                onClick = onOpenVpnManager,
+                modifier = Modifier.testTag("download_open_vpn_btn")
+            ) {
+                Icon(Icons.Default.VpnKey, contentDescription = "Open VPN Manager", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    ) {
+        // URL Input Card (Tonal surface without heavy borders)
+        AeroTonalCard(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 10.dp)
+                .testTag("download_url_card")
+        ) {
+            Column(
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
                         text = "New Direct Download",
-                        fontWeight = FontWeight.Bold,
+                        fontWeight = FontWeight.SemiBold,
                         fontSize = 14.sp,
                         color = MaterialTheme.colorScheme.onSurface
                     )
-                    OutlinedTextField(
-                        value = urlInput,
-                        onValueChange = { urlInput = it },
-                        placeholder = { Text("https://example.com/video.mp4", fontSize = 13.sp) },
-                        leadingIcon = { Icon(Icons.Default.Link, contentDescription = null, modifier = Modifier.size(18.dp)) },
-                        trailingIcon = {
-                            if (urlInput.isNotEmpty()) {
-                                IconButton(onClick = { urlInput = "" }) {
-                                    Icon(Icons.Default.Close, contentDescription = "Clear URL", modifier = Modifier.size(18.dp))
-                                }
-                            } else {
-                                IconButton(
-                                    onClick = {
-                                        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-                                        val clipText = cm?.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString()
-                                        if (!clipText.isNullOrBlank()) {
-                                            urlInput = clipText.trim()
-                                        }
-                                    }
-                                ) {
-                                    Icon(Icons.Default.ContentPaste, contentDescription = "Paste URL", modifier = Modifier.size(18.dp))
-                                }
+                    IconButton(
+                        onClick = { refreshTrigger++ },
+                        modifier = Modifier.size(32.dp).testTag("download_refresh_btn")
+                    ) {
+                        Icon(
+                            Icons.Default.Refresh,
+                            contentDescription = "Refresh Downloads",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+                OutlinedTextField(
+                    value = urlInput,
+                    onValueChange = { urlInput = it },
+                    placeholder = { Text("https://example.com/video.mp4", fontSize = 13.sp) },
+                    leadingIcon = { Icon(Icons.Default.Link, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                    trailingIcon = {
+                        if (urlInput.isNotEmpty()) {
+                            IconButton(onClick = { urlInput = "" }) {
+                                Icon(Icons.Default.Close, contentDescription = "Clear URL", modifier = Modifier.size(18.dp))
                             }
-                        },
-                        singleLine = true,
-                        shape = RoundedCornerShape(14.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("download_url_input")
-                    )
+                        } else {
+                            IconButton(
+                                onClick = {
+                                    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                                    val clipText = cm?.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString()
+                                    if (!clipText.isNullOrBlank()) {
+                                        urlInput = clipText.trim()
+                                    }
+                                }
+                            ) {
+                                Icon(Icons.Default.ContentPaste, contentDescription = "Paste URL", modifier = Modifier.size(18.dp))
+                            }
+                        }
+                    },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = { if (!isMagnetOrTorrent) enqueueDirectUrl(urlInput) }),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("download_url_input")
+                )
 
                     if (isMagnetOrTorrent) {
                         FilledTonalButton(
@@ -380,7 +363,6 @@ fun DownloadManagerScreen(
                     item { Spacer(Modifier.height(32.dp)) }
                 }
             }
-        }
     }
 }
 
@@ -404,7 +386,7 @@ private fun DirectDownloadCard(
             .testTag("download_item_${item.id}"),
         shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.30f))
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
         Column(
             modifier = Modifier.padding(14.dp),
@@ -449,14 +431,19 @@ private fun DirectDownloadCard(
                     )
                 }
 
+                val ext = AeroTheme.extendedColors
                 AeroStatusBadge(
                     text = item.statusLabel,
                     containerColor = when (item.status) {
-                        DownloadManager.STATUS_SUCCESSFUL -> MaterialTheme.colorScheme.secondaryContainer
+                        DownloadManager.STATUS_SUCCESSFUL -> ext.successContainer
                         DownloadManager.STATUS_FAILED -> MaterialTheme.colorScheme.errorContainer
-                        else -> MaterialTheme.colorScheme.primaryContainer
+                        else -> ext.infoContainer
                     },
-                    contentColor = MaterialTheme.colorScheme.onSurface
+                    contentColor = when (item.status) {
+                        DownloadManager.STATUS_SUCCESSFUL -> ext.onSuccessContainer
+                        DownloadManager.STATUS_FAILED -> MaterialTheme.colorScheme.onErrorContainer
+                        else -> ext.onInfoContainer
+                    }
                 )
             }
 

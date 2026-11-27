@@ -44,8 +44,7 @@ fun AeroExplorerHeaderCard(
     Surface(
         modifier = modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.78f),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+        color = MaterialTheme.colorScheme.surfaceContainerLow
     ) {
         Row(
             modifier = Modifier
@@ -138,10 +137,7 @@ fun AeroExplorerFolderGridCard(
                 MaterialTheme.colorScheme.surfaceContainerLow
             }
         ),
-        border = BorderStroke(
-            width = if (isSelected) 1.5.dp else 1.dp,
-            color = if (isSelected) primary else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.30f)
-        ),
+        border = if (isSelected) BorderStroke(1.5.dp, primary) else null,
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
         Box(
@@ -252,10 +248,7 @@ fun AeroExplorerFolderListRow(
                 MaterialTheme.colorScheme.surfaceContainerLow
             }
         ),
-        border = BorderStroke(
-            width = if (isSelected) 1.5.dp else 1.dp,
-            color = if (isSelected) primary else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.28f)
-        ),
+        border = if (isSelected) BorderStroke(1.5.dp, primary) else null,
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
         Row(

@@ -1479,15 +1479,14 @@ fun TorrentDetailsBottomSheet(
                 selectedFileForSheet = null
                 onOpenFolder(task)
             },
-            onDeleteNameOnly = {
-                viewModel.removeTorrentFile(task.infoHash, activeFile.index, deleteFromDisk = false)
+            onDeleteConfirmed = { deleteFromDisk ->
+                viewModel.removeTorrentFile(task.infoHash, activeFile.index, deleteFromDisk = deleteFromDisk)
                 selectedFileForSheet = null
-                Toast.makeText(context, "Removed file from download list (data kept)", Toast.LENGTH_SHORT).show()
-            },
-            onDeleteWithData = {
-                viewModel.removeTorrentFile(task.infoHash, activeFile.index, deleteFromDisk = true)
-                selectedFileForSheet = null
-                Toast.makeText(context, "Deleted file entry and data from storage", Toast.LENGTH_SHORT).show()
+                Toast.makeText(
+                    context,
+                    if (deleteFromDisk) "Deleted file and data from storage" else "Removed file from list (data kept)",
+                    Toast.LENGTH_SHORT
+                ).show()
             }
         )
     }
@@ -1503,12 +1502,12 @@ private fun TorrentFileOptionsBottomSheet(
     onDismiss: () -> Unit,
     onPlayFile: (com.emptysol.aeroplayer.data.database.MediaEntity) -> Unit,
     onOpenFolder: () -> Unit,
-    onDeleteNameOnly: () -> Unit,
-    onDeleteWithData: () -> Unit
+    onDeleteConfirmed: (deleteFromDisk: Boolean) -> Unit
 ) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false)
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val isPaused = fileEntry.priority == "SKIP"
     val fileSizeMb = String.format(Locale.US, "%.1f MB", fileEntry.length / (1024.0 * 1024.0))
+    var deleteFileData by remember(fileEntry.index) { mutableStateOf(false) }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -1521,7 +1520,6 @@ private fun TorrentFileOptionsBottomSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .fillMaxHeight(0.95f)
                 .navigationBarsPadding()
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 20.dp, vertical = 8.dp),
@@ -1529,25 +1527,26 @@ private fun TorrentFileOptionsBottomSheet(
         ) {
             Text(
                 text = fileEntry.path.substringAfterLast('/'),
-                fontWeight = FontWeight.Bold,
+                fontWeight = FontWeight.SemiBold,
                 fontSize = 17.sp,
-                color = MaterialTheme.colorScheme.primary,
+                color = MaterialTheme.colorScheme.onSurface,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis
             )
             Text(
-                text = "$fileSizeMb • Path: ${fileEntry.path}",
+                text = "$fileSizeMb • ${fileEntry.path}",
                 fontSize = 12.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis
             )
 
-            HorizontalDivider()
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
 
             if (playableFileMedia != null) {
                 Button(
                     onClick = { onPlayFile(playableFileMedia) },
+                    shape = RoundedCornerShape(14.dp),
                     modifier = Modifier.fillMaxWidth().testTag("file_sheet_play_btn")
                 ) {
                     Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -1562,6 +1561,7 @@ private fun TorrentFileOptionsBottomSheet(
                         viewModel.updateTorrentFilePriority(task.infoHash, fileEntry.index, if (isPaused) "NORMAL" else "SKIP")
                         onDismiss()
                     },
+                    shape = RoundedCornerShape(14.dp),
                     modifier = Modifier.weight(1f).testTag("file_sheet_toggle_pause")
                 ) {
                     Icon(if (isPaused) Icons.Default.PlayArrow else Icons.Default.Pause, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -1571,6 +1571,7 @@ private fun TorrentFileOptionsBottomSheet(
 
                 FilledTonalButton(
                     onClick = onOpenFolder,
+                    shape = RoundedCornerShape(14.dp),
                     modifier = Modifier.weight(1f)
                 ) {
                     Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -1598,29 +1599,56 @@ private fun TorrentFileOptionsBottomSheet(
                 }
             }
 
-            HorizontalDivider()
-            Text("Delete File Options", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = MaterialTheme.colorScheme.error)
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
 
-            OutlinedButton(
-                onClick = onDeleteNameOnly,
-                modifier = Modifier.fillMaxWidth().testTag("file_sheet_delete_name_only")
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surfaceContainer,
+                modifier = Modifier.fillMaxWidth()
             ) {
-                Icon(Icons.Default.PlaylistRemove, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(8.dp))
-                Text("Delete File Name Only (Keep Data)", fontWeight = FontWeight.SemiBold)
+                Column(
+                    modifier = Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { deleteFileData = !deleteFileData },
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f).padding(end = 10.dp)) {
+                            Text("Also delete file from storage", fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                            Text(
+                                if (deleteFileData) "Removes entry and deletes file on disk" else "Removes entry from list only",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = deleteFileData,
+                            onCheckedChange = { deleteFileData = it },
+                            modifier = Modifier.testTag("file_sheet_delete_data_switch")
+                        )
+                    }
+
+                    Button(
+                        onClick = { onDeleteConfirmed(deleteFileData) },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.error,
+                            contentColor = MaterialTheme.colorScheme.onError
+                        ),
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier.fillMaxWidth().testTag("file_sheet_confirm_delete")
+                    ) {
+                        Icon(Icons.Default.DeleteOutline, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text(if (deleteFileData) "Delete File & Data" else "Delete File Entry", fontWeight = FontWeight.SemiBold)
+                    }
+                }
             }
 
-            Button(
-                onClick = onDeleteWithData,
-                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
-                modifier = Modifier.fillMaxWidth().testTag("file_sheet_delete_with_data")
-            ) {
-                Icon(Icons.Default.DeleteForever, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(8.dp))
-                Text("Delete File + Data", fontWeight = FontWeight.Bold)
-            }
-
-            Spacer(Modifier.height(20.dp))
+            Spacer(Modifier.height(16.dp))
         }
     }
 }
