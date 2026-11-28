@@ -302,18 +302,18 @@ class TorrentSubsystemTest {
         engine.setSpeedBoostEnabled(true)
         assertTrue(engine.isSpeedBoostEnabled())
         assertTrue(engine.engineStatus.value.speedBoostEnabled)
-        assertEquals(64, engine.engineStatus.value.pipelineDepth)
+        assertEquals(128, engine.engineStatus.value.pipelineDepth)
 
         engine.setSpeedBoostEnabled(false)
         assertFalse(engine.isSpeedBoostEnabled())
         assertFalse(engine.engineStatus.value.speedBoostEnabled)
-        assertEquals(32, engine.engineStatus.value.pipelineDepth)
+        assertEquals(48, engine.engineStatus.value.pipelineDepth)
 
         // Restore default Turbo ON and verify expanded peer discovery lists
         engine.setSpeedBoostEnabled(true)
         val trackerClient = TrackerAndDhtClient()
-        assertTrue(trackerClient.publicFallbackTrackers.size >= 6)
-        assertTrue(trackerClient.publicBootstrapDhtNodes.size >= 5)
+        assertTrue(trackerClient.publicFallbackTrackers.size >= 10)
+        assertTrue(trackerClient.publicBootstrapDhtNodes.size >= 6)
     }
 
     @Test
@@ -490,5 +490,124 @@ class TorrentSubsystemTest {
         service.onStartCommand(android.content.Intent(RuntimeEnvironment.getApplication(), com.emptysol.aeroplayer.service.TorrentDownloadService::class.java).setAction(com.emptysol.aeroplayer.service.TorrentDownloadService.ACTION_RESUME_ALL), 0, 2)
         service.onStartCommand(android.content.Intent(RuntimeEnvironment.getApplication(), com.emptysol.aeroplayer.service.TorrentDownloadService::class.java).setAction(com.emptysol.aeroplayer.service.TorrentDownloadService.ACTION_STOP), 0, 3)
         controller.destroy()
+    }
+
+    @Test
+    fun torrentEngine_completedTorrentIsNotResetOrDoubleDownloaded() = runBlocking {
+        val app = RuntimeEnvironment.getApplication()
+        val db = com.emptysol.aeroplayer.data.database.AppDatabase.getDatabase(app)
+        val engine = TorrentEngineManager(
+            context = app,
+            database = db,
+            mediaRepository = com.emptysol.aeroplayer.data.repository.MediaRepository(db.mediaDao()),
+            preferenceRepository = com.emptysol.aeroplayer.data.repository.PreferenceRepository(db.preferenceDao()),
+            scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO)
+        )
+
+        val pieceData = ByteArray(32768) { (it * 7 and 0xFF).toByte() }
+        val infoMap = linkedMapOf<String, Any>(
+            "name" to "AlreadyDoneMovie.mp4".toByteArray(StandardCharsets.UTF_8),
+            "piece length" to 32768L,
+            "pieces" to BencodeCodec.sha1(pieceData),
+            "length" to pieceData.size.toLong()
+        )
+        val encodedTorrent = BencodeCodec.encode(linkedMapOf<String, Any>("info" to infoMap))
+        val meta = TorrentMetainfoParser.parse(encodedTorrent)
+
+        db.torrentDao().upsertTorrent(
+            TorrentTaskEntity(
+                infoHash = meta.infoHashHex,
+                title = meta.name,
+                sourceUri = "magnet:?xt=urn:btih:${meta.infoHashHex}",
+                saveLocation = "/tmp/done",
+                status = "COMPLETED",
+                totalBytes = meta.totalLength,
+                downloadedBytes = meta.totalLength,
+                completedPieces = 1,
+                totalPieces = 1
+            )
+        )
+
+        // 1. Re-adding same magnet must NOT reset or restart the COMPLETED torrent
+        val magnetResult = engine.addTorrentFromInput("magnet:?xt=urn:btih:${meta.infoHashHex}&dn=AlreadyDoneMovie")
+        assertTrue(magnetResult.isSuccess)
+        val afterMagnet = db.torrentDao().getTorrentByHash(meta.infoHashHex)!!
+        assertEquals("COMPLETED", afterMagnet.status)
+        assertEquals(meta.totalLength, afterMagnet.downloadedBytes)
+
+        // 2. Re-adding same .torrent bytes must NOT reset or double-download
+        val bytesResult = engine.enqueueTorrentBytes(encodedTorrent, "AlreadyDoneMovie.torrent")
+        assertTrue(bytesResult.isSuccess)
+        val afterBytes = db.torrentDao().getTorrentByHash(meta.infoHashHex)!!
+        assertEquals("COMPLETED", afterBytes.status)
+        assertEquals(meta.totalLength, afterBytes.downloadedBytes)
+    }
+
+    @Test
+    fun peerWireCoordinator_finishesImmediatelyWhenAllPiecesAlreadyVerifiedOnDisk() = runBlocking {
+        val app = RuntimeEnvironment.getApplication()
+        val tempDir = kotlin.io.path.createTempDirectory("aero_precompleted_test").toFile()
+        try {
+            val pieceLen = 32768
+            val pieceData = ByteArray(pieceLen) { (it * 13 and 0xFF).toByte() }
+            val expectedHash = BencodeCodec.sha1(pieceData)
+            val infoHashBytes = ByteArray(20) { 0x55 }
+            val meta = TorrentMetainfo(
+                infoHashHex = BencodeCodec.toHex(infoHashBytes),
+                infoHashBytes = infoHashBytes,
+                name = "PreCompletedClip",
+                pieceLength = pieceLen.toLong(),
+                pieceHashes = listOf(expectedHash),
+                totalLength = pieceLen.toLong(),
+                files = listOf(TorrentFileEntry(0, "clip.mp4", pieceLen.toLong(), "NORMAL", 0L)),
+                trackers = emptyList()
+            )
+            // Pre-populate the exact completed file on disk
+            File(tempDir, "clip.mp4").writeBytes(pieceData)
+
+            var emittedCompleted = false
+            var emittedDlRate = -1L
+            var emittedPeers = -1
+            var emittedDownloaded = -1L
+
+            val coordinator = TorrentDownloadCoordinator(
+                context = app,
+                infoHashHex = meta.infoHashHex,
+                infoHashBytes = infoHashBytes,
+                peerId = ByteArray(20) { 0x66 },
+                initialMetainfo = meta,
+                initialTrackers = emptyList(),
+                stagingDir = tempDir,
+                safTreeUriString = "",
+                filePriorities = emptyMap(),
+                isSequential = false,
+                encryptionMode = "PREFER",
+                dhtEnabled = false,
+                pexEnabled = false,
+                seedOnlyMode = false,
+                globalDlThrottler = BandwidthThrottler(0),
+                globalUlThrottler = BandwidthThrottler(0),
+                taskDlThrottler = BandwidthThrottler(0),
+                taskUlThrottler = BandwidthThrottler(0),
+                ipFilterManager = IpFilterManager(),
+                trackerClient = TrackerAndDhtClient(),
+                speedBoostEnabled = true,
+                onProgressUpdate = { _, downloaded, _, dlRate, _, peers, _, _, _, isCompleted ->
+                    emittedDownloaded = downloaded
+                    emittedDlRate = dlRate
+                    emittedPeers = peers
+                    emittedCompleted = isCompleted
+                }
+            )
+
+            coordinator.runSession()
+
+            assertTrue("Expected immediate completion when disk file already matches all SHA-1 hashes", emittedCompleted)
+            assertEquals(pieceLen.toLong(), emittedDownloaded)
+            assertEquals(0L, emittedDlRate)
+            assertEquals(0, emittedPeers)
+        } finally {
+            tempDir.deleteRecursively()
+        }
     }
 }

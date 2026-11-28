@@ -1,5 +1,6 @@
 package com.emptysol.aeroplayer.torrent
 
+import kotlinx.coroutines.*
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.net.DatagramPacket
@@ -11,7 +12,9 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.charset.StandardCharsets
 import java.security.SecureRandom
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 data class PeerEndpoint(
     val host: String,
@@ -30,26 +33,34 @@ data class AnnounceResult(
 )
 
 /**
- * Real BitTorrent peer discovery over:
- * 1) HTTP/HTTPS Tracker Announce (BEP-3 + BEP-23 compact peers)
+ * High-speed BitTorrent peer discovery over:
+ * 1) HTTP/HTTPS Tracker Announce (BEP-3 + BEP-23 compact peers, numwant=200)
  * 2) UDP Tracker Protocol (BEP-15)
- * 3) Mainline DHT KRPC over UDP (BEP-5)
+ * 3) Parallel Mainline DHT KRPC over UDP (BEP-5) with persistent routing table
  * 4) Peer Exchange ut_pex compact parser (BEP-11)
  */
 class TrackerAndDhtClient(
     private val okHttpClient: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(8, TimeUnit.SECONDS)
-        .readTimeout(8, TimeUnit.SECONDS)
+        .connectTimeout(6, TimeUnit.SECONDS)
+        .readTimeout(6, TimeUnit.SECONDS)
         .build()
 ) {
     private val random = SecureRandom()
+
+    // Persistent DHT routing table populated across queries so DHT climbs past 50+ live nodes quickly
+    private val knownDhtNodes = ConcurrentHashMap<String, Pair<String, Int>>()
+    private val liveDhtNodeCount = AtomicInteger(0)
+
+    val dhtNodeCount: Int
+        get() = maxOf(liveDhtNodeCount.get(), knownDhtNodes.size)
 
     val publicBootstrapDhtNodes = listOf(
         "router.bittorrent.com" to 6881,
         "dht.transmissionbt.com" to 6881,
         "router.utorrent.com" to 6881,
         "dht.aelitis.com" to 6881,
-        "dht.libtorrent.org" to 25401
+        "dht.libtorrent.org" to 25401,
+        "router.silotis.us" to 6881
     )
 
     val publicFallbackTrackers = listOf(
@@ -58,7 +69,13 @@ class TrackerAndDhtClient(
         "udp://tracker.torrent.eu.org:451/announce",
         "udp://exodus.desync.com:6969/announce",
         "udp://tracker.tiny-vps.com:6969/announce",
-        "https://tracker.tamersunion.org:443/announce"
+        "udp://open.demonii.com:1337/announce",
+        "udp://tracker.moeking.me:6969/announce",
+        "udp://explodie.org:6969/announce",
+        "udp://tracker.dler.org:6969/announce",
+        "https://tracker.tamersunion.org:443/announce",
+        "https://tracker.gbitt.info:443/announce",
+        "http://tracker.opentrackr.org:1337/announce"
     )
 
     fun generatePeerId(): ByteArray {
@@ -180,7 +197,7 @@ class TrackerAndDhtClient(
         val addr = InetAddress.getByName(host)
 
         DatagramSocket().use { socket ->
-            socket.soTimeout = 2500
+            socket.soTimeout = 2000
             val txId = random.nextInt()
 
             // Step 1: Connect Request (BEP-15)
@@ -258,78 +275,111 @@ class TrackerAndDhtClient(
     }
 
     /**
-     * BEP-5 DHT KRPC `get_peers` query against bootstrap nodes and discovered routing nodes.
+     * High-speed parallel BEP-5 DHT KRPC `get_peers` crawler.
+     * Fires concurrent UDP waves against bootstrap routers + persistent routing table
+     * so DHT climbs above 50+ live nodes within seconds without serial timeout stalls.
      */
-    @Suppress("UNCHECKED_CAST")
-    fun queryDhtPeers(infoHashBytes: ByteArray, nodeId: ByteArray): List<PeerEndpoint> {
-        val discoveredPeers = linkedMapOf<String, PeerEndpoint>()
-        val nodesQueue = ArrayDeque<Pair<String, Int>>().apply {
-            publicBootstrapDhtNodes.forEach { add(it) }
-        }
-        val visitedNodes = hashSetOf<String>()
-        var queriesSent = 0
+    suspend fun queryDhtPeersParallel(
+        infoHashBytes: ByteArray,
+        nodeId: ByteArray,
+        maxWaves: Int = 4,
+        waveConcurrency: Int = 12
+    ): List<PeerEndpoint> = supervisorScope {
+        val discoveredPeers = ConcurrentHashMap<String, PeerEndpoint>()
+        val visited = ConcurrentHashMap.newKeySet<String>()
+        val frontier = ConcurrentHashMap<String, Pair<String, Int>>()
 
-        try {
-            DatagramSocket().use { socket ->
-                socket.soTimeout = 1200
-                while (nodesQueue.isNotEmpty() && queriesSent < 28 && discoveredPeers.size < 150) {
-                    val (host, port) = nodesQueue.removeFirst()
-                    val nodeKey = "$host:$port"
-                    if (!visitedNodes.add(nodeKey)) continue
-                    queriesSent++
+        publicBootstrapDhtNodes.forEach { (h, p) -> frontier["$h:$p"] = h to p }
+        knownDhtNodes.values.take(40).forEach { (h, p) -> frontier["$h:$p"] = h to p }
 
-                    try {
-                        val txBytes = ByteArray(2).also { random.nextBytes(it) }
-                        val query = linkedMapOf<String, Any>(
-                            "t" to txBytes,
-                            "y" to "q".toByteArray(StandardCharsets.US_ASCII),
-                            "q" to "get_peers".toByteArray(StandardCharsets.US_ASCII),
-                            "a" to linkedMapOf(
-                                "id" to nodeId,
-                                "info_hash" to infoHashBytes
-                            )
-                        )
-                        val payload = BencodeCodec.encode(query)
-                        val addr = InetAddress.getByName(host)
-                        socket.send(DatagramPacket(payload, payload.size, addr, port))
+        repeat(maxWaves) {
+            if (discoveredPeers.size >= 250) return@repeat
+            val batch = frontier.entries
+                .asSequence()
+                .filter { visited.add(it.key) }
+                .take(waveConcurrency)
+                .map { it.value }
+                .toList()
+            if (batch.isEmpty()) return@repeat
 
-                        val buf = ByteArray(2048)
-                        val pkt = DatagramPacket(buf, buf.size)
-                        socket.receive(pkt)
-                        val reply = BencodeCodec.decode(buf.copyOfRange(0, pkt.length)) as? Map<String, Any?> ?: continue
-                        val r = reply["r"] as? Map<String, Any?> ?: continue
+            val waveResults = batch.map { (host, port) ->
+                async(Dispatchers.IO) {
+                    querySingleDhtNode(host, port, infoHashBytes, nodeId)
+                }
+            }.awaitAll()
 
-                        // Extract peers if returned directly in 'values'
-                        val values = r["values"] as? List<*>
-                        values?.forEach { entry ->
-                            (entry as? ByteArray)?.let { compact ->
-                                parseCompactPeersIpv4(compact, "dht").forEach { p ->
-                                    discoveredPeers[p.key] = p
-                                }
-                            }
-                        }
-
-                        // Follow closer nodes in compact 'nodes' (26 bytes per node: 20 ID + 4 IP + 2 port)
-                        val nodesBytes = r["nodes"] as? ByteArray
-                        if (nodesBytes != null) {
-                            var off = 0
-                            while (off + 26 <= nodesBytes.size) {
-                                val ipStr = "${nodesBytes[off + 20].toInt() and 0xFF}.${nodesBytes[off + 21].toInt() and 0xFF}.${nodesBytes[off + 22].toInt() and 0xFF}.${nodesBytes[off + 23].toInt() and 0xFF}"
-                                val p = ((nodesBytes[off + 24].toInt() and 0xFF) shl 8) or (nodesBytes[off + 25].toInt() and 0xFF)
-                                if (p in 1..65535 && !visitedNodes.contains("$ipStr:$p")) {
-                                    nodesQueue.addLast(ipStr to p)
-                                }
-                                off += 26
-                            }
-                        }
-                    } catch (_: Exception) {
-                        // Continue to next DHT node on UDP timeout
+            waveResults.forEach { (peers, nextNodes) ->
+                peers.forEach { p -> discoveredPeers[p.key] = p }
+                nextNodes.forEach { (nh, np) ->
+                    val nk = "$nh:$np"
+                    if (knownDhtNodes.size < 200) {
+                        knownDhtNodes[nk] = nh to np
+                    }
+                    if (!visited.contains(nk) && frontier.size < 160) {
+                        frontier[nk] = nh to np
                     }
                 }
             }
-        } catch (_: Exception) {
+            liveDhtNodeCount.set(knownDhtNodes.size)
         }
-        return discoveredPeers.values.toList()
+        discoveredPeers.values.toList()
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun querySingleDhtNode(
+        host: String,
+        port: Int,
+        infoHashBytes: ByteArray,
+        nodeId: ByteArray
+    ): Pair<List<PeerEndpoint>, List<Pair<String, Int>>> {
+        val foundPeers = mutableListOf<PeerEndpoint>()
+        val foundNodes = mutableListOf<Pair<String, Int>>()
+        try {
+            DatagramSocket().use { socket ->
+                socket.soTimeout = 900
+                val txBytes = ByteArray(2).also { random.nextBytes(it) }
+                val query = linkedMapOf<String, Any>(
+                    "t" to txBytes,
+                    "y" to "q".toByteArray(StandardCharsets.US_ASCII),
+                    "q" to "get_peers".toByteArray(StandardCharsets.US_ASCII),
+                    "a" to linkedMapOf(
+                        "id" to nodeId,
+                        "info_hash" to infoHashBytes
+                    )
+                )
+                val payload = BencodeCodec.encode(query)
+                val addr = InetAddress.getByName(host)
+                socket.send(DatagramPacket(payload, payload.size, addr, port))
+
+                val buf = ByteArray(2048)
+                val pkt = DatagramPacket(buf, buf.size)
+                socket.receive(pkt)
+                val reply = BencodeCodec.decode(buf.copyOfRange(0, pkt.length)) as? Map<String, Any?> ?: return foundPeers to foundNodes
+                val r = reply["r"] as? Map<String, Any?> ?: return foundPeers to foundNodes
+
+                val values = r["values"] as? List<*>
+                values?.forEach { entry ->
+                    (entry as? ByteArray)?.let { compact ->
+                        foundPeers.addAll(parseCompactPeersIpv4(compact, "dht"))
+                    }
+                }
+
+                val nodesBytes = r["nodes"] as? ByteArray
+                if (nodesBytes != null) {
+                    var off = 0
+                    while (off + 26 <= nodesBytes.size) {
+                        val ipStr = "${nodesBytes[off + 20].toInt() and 0xFF}.${nodesBytes[off + 21].toInt() and 0xFF}.${nodesBytes[off + 22].toInt() and 0xFF}.${nodesBytes[off + 23].toInt() and 0xFF}"
+                        val p = ((nodesBytes[off + 24].toInt() and 0xFF) shl 8) or (nodesBytes[off + 25].toInt() and 0xFF)
+                        if (p in 1..65535 && ipStr != "0.0.0.0") {
+                            foundNodes.add(ipStr to p)
+                        }
+                        off += 26
+                    }
+                }
+            }
+        } catch (_: Throwable) {
+        }
+        return foundPeers to foundNodes
     }
 
     /**

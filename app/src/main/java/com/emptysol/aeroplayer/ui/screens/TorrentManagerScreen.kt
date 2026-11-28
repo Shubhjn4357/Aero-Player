@@ -1233,9 +1233,10 @@ private fun DownloadsDashboardTab(
                     )
                     Text(
                         text = if (engineStatus.speedBoostEnabled) {
-                            "${engineStatus.pipelineDepth}-block pipeline • Disk-stream I/O • Peak ${engineStatus.peakDownloadBps / 1024} KB/s"
+                            val natTag = if (engineStatus.natMapped) "UPnP" else if (engineStatus.listenPort > 0) "Port ${engineStatus.listenPort}" else "NAT"
+                            "${engineStatus.pipelineDepth}-block • DHT ${engineStatus.dhtNodeCount} • $natTag • Peak ${engineStatus.peakDownloadBps / 1024} KB/s"
                         } else {
-                            "Balanced 32-block pipeline • Tap to enable Turbo"
+                            "Balanced 48-block pipeline • Tap to enable Turbo"
                         },
                         fontSize = 11.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,

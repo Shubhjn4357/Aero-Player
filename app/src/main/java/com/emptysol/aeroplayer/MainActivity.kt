@@ -203,6 +203,7 @@ class MainActivity : ComponentActivity() {
 
             if (isMagnetOrTorrent) {
                 requestedScreenState.value = "Torrents"
+                intent.data = null
                 lifecycleScope.launch(Dispatchers.IO) {
                     mainViewModel.torrentEngineManager.addTorrentFromInput(uriStr)
                 }

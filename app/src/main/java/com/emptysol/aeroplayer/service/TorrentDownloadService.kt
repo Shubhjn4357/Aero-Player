@@ -229,8 +229,8 @@ class TorrentDownloadService : Service() {
 
                     if (active.isEmpty() && !engine.hasActiveWorkers()) {
                         idleTicks++
-                        // 12 ticks (~18s) grace window so starting/resuming torrents never get cut off
-                        if (idleTicks >= 12) {
+                        val maxIdleTicks = if (completed.isNotEmpty()) 3 else 12
+                        if (idleTicks >= maxIdleTicks) {
                             withContext(Dispatchers.Main) {
                                 releaseTransferLocks()
                                 stopForeground(STOP_FOREGROUND_REMOVE)

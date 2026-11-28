@@ -36,8 +36,11 @@ data class TorrentEngineStatus(
     val peakDownloadBps: Long = 0L,
     val activeCount: Int = 0,
     val activePeerCount: Int = 0,
+    val dhtNodeCount: Int = 0,
+    val listenPort: Int = 6881,
+    val natMapped: Boolean = false,
     val speedBoostEnabled: Boolean = true,
-    val pipelineDepth: Int = 64
+    val pipelineDepth: Int = 128
 )
 
 /**
@@ -63,6 +66,7 @@ class TorrentEngineManager(
         .build()
 
     private val trackerClient = TrackerAndDhtClient(okHttpClient)
+    private val natAndListenerManager = NatAndListenerManager(context, scope)
     private val rssDownloader = RssAutoDownloader(okHttpClient)
     private val ipFilterManager = IpFilterManager()
     private val globalDlThrottler = BandwidthThrottler(0)
@@ -72,6 +76,7 @@ class TorrentEngineManager(
     private val activeJobs = ConcurrentHashMap<String, Job>()
     private val metainfoCache = ConcurrentHashMap<String, TorrentMetainfo>()
     private val deletedHashes = ConcurrentHashMap.newKeySet<String>()
+    private val completedHandledHashes = ConcurrentHashMap.newKeySet<String>()
 
     val torrentsFlow: StateFlow<List<TorrentTaskEntity>> = torrentDao.getAllTorrentsFlow()
         .stateIn(scope, SharingStarted.Eagerly, emptyList())
@@ -94,7 +99,7 @@ class TorrentEngineManager(
     private val _engineStatus = MutableStateFlow(
         TorrentEngineStatus(
             speedBoostEnabled = speedBoostEnabledFlag,
-            pipelineDepth = if (speedBoostEnabledFlag) 64 else 32
+            pipelineDepth = if (speedBoostEnabledFlag) 128 else 48
         )
     )
     val engineStatus: StateFlow<TorrentEngineStatus> = _engineStatus.asStateFlow()
@@ -110,7 +115,7 @@ class TorrentEngineManager(
         _engineStatus.update {
             it.copy(
                 speedBoostEnabled = enabled,
-                pipelineDepth = if (enabled) 64 else 32
+                pipelineDepth = if (enabled) 128 else 48
             )
         }
         val prefs = preferenceRepository.getPreferencesDirect()
@@ -139,6 +144,7 @@ class TorrentEngineManager(
 
     fun startMonitoring() {
         scope.launch(Dispatchers.IO) {
+            natAndListenerManager.start()
             refreshVpnStatusOnly()
             registerVpnNetworkCallback()
             resumePersistedActiveTorrents()
@@ -271,6 +277,7 @@ class TorrentEngineManager(
         val totalDl = list.sumOf { it.downloadRateBps }
         val totalUl = list.sumOf { it.uploadRateBps }
         val totalPeers = list.sumOf { it.peerCount }
+        val nat = natAndListenerManager.status
         _engineStatus.update {
             it.copy(
                 vpnStatus = vpn,
@@ -281,8 +288,11 @@ class TorrentEngineManager(
                 peakDownloadBps = maxOf(it.peakDownloadBps, totalDl),
                 activeCount = active,
                 activePeerCount = totalPeers,
+                dhtNodeCount = trackerClient.dhtNodeCount,
+                listenPort = nat.listenPort,
+                natMapped = nat.natMapped,
                 speedBoostEnabled = speedBoostEnabledFlag,
-                pipelineDepth = if (speedBoostEnabledFlag) 64 else 32
+                pipelineDepth = if (speedBoostEnabledFlag) 128 else 48
             )
         }
     }
@@ -330,6 +340,17 @@ class TorrentEngineManager(
             when {
                 MagnetParser.isMagnetUri(trimmed) -> {
                     val magnet = MagnetParser.parse(trimmed)
+                    val existing = torrentDao.getTorrentByHash(magnet.infoHashHex)
+                    if (existing != null) {
+                        if (existing.status == "COMPLETED") {
+                            return@withContext Result.success(existing)
+                        }
+                        if (existing.status in setOf("DOWNLOADING", "METADATA", "QUEUED") && activeJobs[existing.infoHash]?.isActive == true) {
+                            return@withContext Result.success(existing)
+                        }
+                        resumeTorrent(existing.infoHash)
+                        return@withContext Result.success(torrentDao.getTorrentByHash(existing.infoHash) ?: existing)
+                    }
                     val entity = TorrentTaskEntity(
                         infoHash = magnet.infoHashHex,
                         title = magnet.displayName,
@@ -343,6 +364,7 @@ class TorrentEngineManager(
                         trackersJson = JSONArray(magnet.trackers).toString()
                     )
                     deletedHashes.remove(magnet.infoHashHex)
+                    completedHandledHashes.remove(magnet.infoHashHex)
                     torrentDao.upsertTorrent(entity)
                     startWorker(entity, metainfo = null)
                     Result.success(entity)
@@ -373,6 +395,17 @@ class TorrentEngineManager(
             try {
                 val meta = TorrentMetainfoParser.parse(torrentBytes)
                 metainfoCache[meta.infoHashHex] = meta
+                val existing = torrentDao.getTorrentByHash(meta.infoHashHex)
+                if (existing != null) {
+                    if (existing.status == "COMPLETED") {
+                        return@withContext Result.success(existing)
+                    }
+                    if (existing.status in setOf("DOWNLOADING", "METADATA", "QUEUED") && activeJobs[existing.infoHash]?.isActive == true) {
+                        return@withContext Result.success(existing)
+                    }
+                    resumeTorrent(existing.infoHash)
+                    return@withContext Result.success(torrentDao.getTorrentByHash(existing.infoHash) ?: existing)
+                }
                 val prefs = preferenceRepository.getPreferencesDirect()
                 val folderLoc = resolveSaveLocation(prefs)
                 val existingCount = torrentDao.getAllTorrentsDirect().size
@@ -396,6 +429,7 @@ class TorrentEngineManager(
                     totalPieces = meta.pieceHashes.size
                 )
                 deletedHashes.remove(meta.infoHashHex)
+                completedHandledHashes.remove(meta.infoHashHex)
                 torrentDao.upsertTorrent(entity)
                 startWorker(entity, meta)
                 Result.success(entity)
@@ -533,6 +567,7 @@ class TorrentEngineManager(
             taskUlThrottler = BandwidthThrottler(task.uploadCapKbps),
             ipFilterManager = ipFilterManager,
             trackerClient = trackerClient,
+            natAndListenerManager = natAndListenerManager,
             speedBoostEnabled = speedBoostEnabledFlag,
             onFatalError = { errorMsg ->
                 if (deletedHashes.contains(task.infoHash)) return@TorrentDownloadCoordinator
@@ -547,11 +582,10 @@ class TorrentEngineManager(
                 )
             },
             onProgressUpdate = { meta, dlBytes, ulBytes, dlRate, ulRate, peers, seeds, donePieces, playableFile, isCompleted ->
-                // Guard against resurrecting a torrent that was deleted while an update was in flight
                 if (deletedHashes.contains(task.infoHash)) return@TorrentDownloadCoordinator
                 if (meta != null) metainfoCache[task.infoHash] = meta
                 val latest = torrentDao.getTorrentByHash(task.infoHash) ?: return@TorrentDownloadCoordinator
-                if (latest.status == "PAUSED" || latest.status == "VPN_PAUSED" || latest.status == "SCHEDULE_PAUSED" || latest.status == "ERROR") {
+                if (latest.status in setOf("PAUSED", "VPN_PAUSED", "SCHEDULE_PAUSED", "ERROR", "COMPLETED")) {
                     return@TorrentDownloadCoordinator
                 }
                 val newStatus = when {
@@ -565,6 +599,7 @@ class TorrentEngineManager(
                     latest.filesJson
                 }
                 val totalLen = meta?.totalLength ?: latest.totalBytes
+                val totalPcs = meta?.pieceHashes?.size ?: latest.totalPieces
                 val clampedDl = if (totalLen > 0L) dlBytes.coerceIn(0L, totalLen) else dlBytes.coerceAtLeast(0L)
                 val updated = latest.copy(
                     title = meta?.name ?: latest.title,
@@ -573,21 +608,22 @@ class TorrentEngineManager(
                     totalBytes = totalLen,
                     downloadedBytes = if (isCompleted && totalLen > 0L) totalLen else maxOf(latest.downloadedBytes.coerceAtMost(totalLen.coerceAtLeast(clampedDl)), clampedDl),
                     uploadedBytes = maxOf(latest.uploadedBytes, ulBytes),
-                    downloadRateBps = dlRate,
-                    uploadRateBps = ulRate,
-                    peerCount = peers,
-                    seedCount = seeds,
+                    downloadRateBps = if (isCompleted) 0L else dlRate,
+                    uploadRateBps = if (isCompleted) 0L else ulRate,
+                    peerCount = if (isCompleted) 0 else peers,
+                    seedCount = if (isCompleted) 0 else seeds,
                     filesJson = updatedFilesJson,
                     pieceLength = meta?.pieceLength ?: latest.pieceLength,
-                    totalPieces = meta?.pieceHashes?.size ?: latest.totalPieces,
-                    completedPieces = maxOf(latest.completedPieces, donePieces),
+                    totalPieces = totalPcs,
+                    completedPieces = if (isCompleted && totalPcs > 0) totalPcs else maxOf(latest.completedPieces, donePieces),
                     primaryMediaPath = playableFile?.absolutePath ?: latest.primaryMediaPath,
                     completedAtMs = if (isCompleted && latest.completedAtMs == null) System.currentTimeMillis() else latest.completedAtMs
                 )
                 if (deletedHashes.contains(task.infoHash)) return@TorrentDownloadCoordinator
                 torrentDao.upsertTorrent(updated)
 
-                if (isCompleted) {
+                if (isCompleted && completedHandledHashes.add(task.infoHash)) {
+                    activeCoordinators.remove(task.infoHash)?.stop()
                     onTorrentCompleted(updated, stagingDir)
                 }
             }
@@ -963,6 +999,7 @@ class TorrentEngineManager(
         registeredNetworkCallback = null
         networkCallbackRegistered = false
         remoteServer?.stop()
+        natAndListenerManager.stop()
         activeCoordinators.values.forEach { it.stop() }
         activeJobs.values.forEach { it.cancel() }
     }
